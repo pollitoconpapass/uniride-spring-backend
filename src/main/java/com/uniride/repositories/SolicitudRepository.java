@@ -2,6 +2,7 @@ package com.uniride.repositories;
 
 import com.uniride.entities.Solicitud;
 import com.uniride.enums.EstadoSolicitud;
+import com.uniride.enums.EstadoViaje;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -37,4 +38,35 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
             + "ORDER BY s.fechaCreacion DESC")
     Page<Solicitud> buscarPorViajeYEstado(@Param("viajeId") Long viajeId,
             @Param("estado") EstadoSolicitud estado, Pageable pageable);
+
+    @Query("SELECT COUNT(s) FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId AND s.estado = :aceptada "
+            + "AND s.viaje.estado = :estadoViaje")
+    long contarRealizadosComoPasajero(@Param("pasajeroId") Long pasajeroId,
+            @Param("aceptada") EstadoSolicitud aceptada,
+            @Param("estadoViaje") EstadoViaje estadoViaje);
+
+    @Query("SELECT s.viaje.dia, COUNT(s) FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId AND s.estado = :aceptada "
+            + "AND s.viaje.estado = :estadoViaje GROUP BY s.viaje.dia")
+    List<Object[]> frecuenciaPorDiaComoPasajero(@Param("pasajeroId") Long pasajeroId,
+            @Param("aceptada") EstadoSolicitud aceptada,
+            @Param("estadoViaje") EstadoViaje estadoViaje);
+
+    @Query("SELECT COUNT(DISTINCT s.viaje.id) FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId AND s.viaje.estado = :estadoViaje")
+    long contarViajesCanceladosComoPasajero(@Param("pasajeroId") Long pasajeroId,
+            @Param("estadoViaje") EstadoViaje estadoViaje);
+
+    @Query("SELECT COUNT(DISTINCT s.viaje.id) FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId AND s.viaje.estado = :estadoViaje "
+            + "AND NOT EXISTS (SELECT p FROM Penalidad p "
+            + "WHERE p.viaje.id = s.viaje.id AND p.usuario.id = :pasajeroId)")
+    long contarViajesCanceladosPorTerceros(@Param("pasajeroId") Long pasajeroId,
+            @Param("estadoViaje") EstadoViaje estadoViaje);
+
+    @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId "
+            + "AND s.estado IN :estados ORDER BY s.viaje.fecha DESC, s.viaje.hora DESC")
+    List<Solicitud> historialComoPasajero(@Param("pasajeroId") Long pasajeroId,
+            @Param("estados") Collection<EstadoSolicitud> estados);
 }

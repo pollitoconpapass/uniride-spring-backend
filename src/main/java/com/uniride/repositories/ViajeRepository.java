@@ -20,6 +20,31 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     boolean existsByRutaId(Long rutaId);
 
+    long countByRutaConductorIdAndEstado(Long conductorId, EstadoViaje estado);
+
+    @Query("SELECT v.dia, COUNT(v) FROM Viaje v "
+            + "WHERE v.ruta.conductor.id = :conductorId AND v.estado = :estado "
+            + "GROUP BY v.dia")
+    List<Object[]> frecuenciaPorDiaComoConductor(@Param("conductorId") Long conductorId,
+            @Param("estado") EstadoViaje estado);
+
+    @Query("SELECT r.origen, r.destino, COUNT(v) FROM Viaje v JOIN v.ruta r "
+            + "WHERE r.conductor.id = :conductorId AND v.estado = :estado "
+            + "GROUP BY r.origen, r.destino ORDER BY COUNT(v) DESC")
+    List<Object[]> rankingRutasComoConductor(@Param("conductorId") Long conductorId,
+            @Param("estado") EstadoViaje estado);
+
+    @Query("SELECT r.origen, r.destino, COUNT(p) FROM Penalidad p JOIN p.viaje v JOIN v.ruta r "
+            + "WHERE r.conductor.id = :conductorId "
+            + "GROUP BY r.origen, r.destino")
+    List<Object[]> penalidadesPorRutaComoConductor(@Param("conductorId") Long conductorId);
+
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
+            + "AND (v.estado <> :programado OR v.fecha <= :hoy) "
+            + "ORDER BY v.fecha DESC, v.hora DESC")
+    List<Viaje> historialComoConductor(@Param("conductorId") Long conductorId,
+            @Param("programado") EstadoViaje programado, @Param("hoy") LocalDate hoy);
+
     @Query("SELECT v FROM Viaje v JOIN v.ruta r "
             + "WHERE v.fecha >= CURRENT_DATE AND v.estado = :estado "
             + "AND LOWER(r.origen) = COALESCE(:origen, LOWER(r.origen)) "

@@ -2,7 +2,8 @@ package com.uniride.enums;
 
 public enum EstadoViaje {
     PROGRAMADO,
-    REALIZADO,
+    EN_PROGRESO,
+    COMPLETADO,
     CANCELADO,
     VENCIDO
 }

@@ -171,6 +171,100 @@ public class ViajeService {
     }
 
     @Transactional
+    public ViajeRespuesta iniciar(Long id) {
+        Usuario conductor = usuarioService.usuarioActual();
+        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
+            notificacionService.notificar(conductor, TipoNotificacion.EXITO,
+                    "Viaje ya iniciado",
+                    "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                            + " a las " + viaje.getHora() + " ya estaba en progreso.");
+            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
+            respuesta.setMensaje("El viaje ya estaba iniciado");
+            return respuesta;
+        }
+        if (viaje.getEstado() == EstadoViaje.COMPLETADO) {
+            notificacionService.notificar(conductor, TipoNotificacion.EXITO,
+                    "Viaje ya completado",
+                    "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                            + " a las " + viaje.getHora() + " ya había sido completado.");
+            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
+            respuesta.setMensaje("El viaje ya había sido completado");
+            return respuesta;
+        }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje no puede iniciarse; estado actual: " + viaje.getEstado());
+        }
+        if (!viaje.isConfirmado()) {
+            throw new BusinessException("El viaje debe estar confirmado para poder iniciarlo");
+        }
+
+        viaje.setEstado(EstadoViaje.EN_PROGRESO);
+        Viaje iniciado = viajeRepository.save(viaje);
+
+        notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Viaje iniciado",
+                "Iniciaste el viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                        + " a las " + viaje.getHora() + ".");
+        for (Solicitud solicitud : solicitudRepository.findByViajeIdAndEstadoIn(
+                id, List.of(EstadoSolicitud.ACEPTADA))) {
+            notificacionService.notificar(solicitud.getPasajero(), TipoNotificacion.EXITO,
+                    "Tu viaje inició",
+                    "El conductor inició el viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                            + " a las " + viaje.getHora()
+                            + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino() + ").");
+        }
+
+        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(iniciado);
+        respuesta.setMensaje("Viaje iniciado");
+        return respuesta;
+    }
+
+    @Transactional
+    public ViajeRespuesta completar(Long id) {
+        Usuario conductor = usuarioService.usuarioActual();
+        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        if (viaje.getEstado() == EstadoViaje.COMPLETADO) {
+            notificacionService.notificar(conductor, TipoNotificacion.EXITO,
+                    "Viaje ya completado",
+                    "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                            + " a las " + viaje.getHora() + " ya estaba completado.");
+            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
+            respuesta.setMensaje("El viaje ya estaba completado");
+            return respuesta;
+        }
+        if (viaje.getEstado() != EstadoViaje.EN_PROGRESO) {
+            throw new BusinessException(
+                    "El viaje solo puede completarse desde EN_PROGRESO; estado actual: "
+                            + viaje.getEstado());
+        }
+
+        viaje.setEstado(EstadoViaje.COMPLETADO);
+        Viaje completado = viajeRepository.save(viaje);
+
+        notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Viaje completado",
+                "Completaste el viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                        + " a las " + viaje.getHora() + ".");
+        for (Solicitud solicitud : solicitudRepository.findByViajeIdAndEstadoIn(
+                id, List.of(EstadoSolicitud.ACEPTADA))) {
+            notificacionService.notificar(solicitud.getPasajero(), TipoNotificacion.EXITO,
+                    "Viaje completado",
+                    "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
+                            + " a las " + viaje.getHora()
+                            + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino()
+                            + ") fue completado. ¡Gracias por viajar con UniRide!");
+        }
+
+        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(completado);
+        respuesta.setMensaje("Viaje completado");
+        return respuesta;
+    }
+
+    @Transactional
     public ViajeRespuesta cancelar(Long id) {
         Usuario usuario = usuarioService.usuarioActual();
         Viaje viaje = viajeRepository.findById(id)

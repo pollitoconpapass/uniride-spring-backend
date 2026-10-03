@@ -62,6 +62,16 @@ public class ViajeController {
         return ResponseEntity.ok(respuesta);
     }
 
+    @PutMapping("/viajes/{id}/iniciar")
+    public ResponseEntity<ViajeRespuesta> iniciarViaje(@PathVariable Long id) {
+        return ResponseEntity.ok(viajeService.iniciar(id));
+    }
+
+    @PutMapping("/viajes/{id}/completar")
+    public ResponseEntity<ViajeRespuesta> completarViaje(@PathVariable Long id) {
+        return ResponseEntity.ok(viajeService.completar(id));
+    }
+
     @PutMapping("/viajes/{id}/cancelar")
     public ResponseEntity<ViajeRespuesta> cancelarViaje(@PathVariable Long id) {
         return ResponseEntity.ok(viajeService.cancelar(id));

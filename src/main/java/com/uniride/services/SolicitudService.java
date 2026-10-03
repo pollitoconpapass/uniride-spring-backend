@@ -70,6 +70,10 @@ public class SolicitudService {
         if (viaje.getFecha().isBefore(LocalDate.now())) {
             throw new BusinessException("El viaje ya ocurrió");
         }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje ya no acepta solicitudes; estado actual: " + viaje.getEstado());
+        }
         if (solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
                 viajeId, pasajero.getId(), ESTADOS_BLOQUEANTES)) {
             throw new BusinessException("Ya enviaste una solicitud para este viaje");
@@ -115,6 +119,11 @@ public class SolicitudService {
 
         if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
             throw new BusinessException(mensajeEstadoActual(solicitud));
+        }
+        if (solicitud.getViaje().getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje ya no está activo; estado actual: "
+                            + solicitud.getViaje().getEstado());
         }
         if (solicitud.getViaje().getFecha().isBefore(LocalDate.now())) {
             throw new BusinessException("El viaje ya ocurrió; no puedes cancelar la solicitud");

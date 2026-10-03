@@ -106,4 +106,20 @@ class PenalidadRepositoryTest {
                 viaje.getId(), 9999L)).isFalse();
         assertThat(penalidadRepository.findByViajeId(viaje.getId())).hasSize(1);
     }
+
+    @Test
+    void contarPenalidadesSoloLasAsociadasAViaje() {
+        Usuario conductor = crearUsuario("pen4@upc.edu.pe", Rol.CONDUCTOR);
+        Viaje viaje = crearViaje(conductor);
+
+        penalidadRepository.save(Penalidad.builder()
+                .usuario(conductor).viaje(viaje).tipo(TipoPenalidad.LEVE)
+                .motivo("Cancelación con 10 horas").build());
+        penalidadRepository.save(Penalidad.builder()
+                .usuario(conductor).tipo(TipoPenalidad.GRAVE)
+                .motivo("Incumplimiento general").build());
+
+        assertThat(penalidadRepository.countByUsuarioId(conductor.getId())).isEqualTo(2);
+        assertThat(penalidadRepository.countByUsuarioIdAndViajeIsNotNull(conductor.getId())).isEqualTo(1);
+    }
 }
