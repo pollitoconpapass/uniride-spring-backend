@@ -161,4 +161,66 @@ class SolicitudRepositoryTest {
         assertThat(solicitudRepository.findByIdAndPasajeroId(solicitud.getId(), pasajero.getId())).isPresent();
         assertThat(solicitudRepository.findByIdAndPasajeroId(solicitud.getId(), otro.getId())).isEmpty();
     }
+
+    @Test
+    void buscarSolicitudPorIdYConductorDeLaRuta() {
+        Usuario conductor = crearUsuario("sol16@upc.edu.pe", Rol.CONDUCTOR);
+        Usuario otroConductor = crearUsuario("sol17@upc.edu.pe", Rol.CONDUCTOR);
+        Usuario pasajero = crearUsuario("sol18@upc.edu.pe", Rol.PASAJERO);
+        Viaje viaje = crearViaje(conductor);
+        Solicitud solicitud = solicitudRepository.save(crearSolicitud(viaje, pasajero, EstadoSolicitud.PENDIENTE));
+
+        assertThat(solicitudRepository.findByIdAndViajeRutaConductorId(
+                solicitud.getId(), conductor.getId())).isPresent();
+        assertThat(solicitudRepository.findByIdAndViajeRutaConductorId(
+                solicitud.getId(), otroConductor.getId())).isEmpty();
+    }
+
+    @Test
+    void buscarSolicitudesRecibidasPorViaje() {
+        Usuario conductor = crearUsuario("sol19@upc.edu.pe", Rol.CONDUCTOR);
+        Viaje viaje = crearViaje(conductor);
+
+        Solicitud reciente = solicitudRepository.save(crearSolicitud(viaje,
+                crearUsuario("sol20@upc.edu.pe", Rol.PASAJERO), EstadoSolicitud.ACEPTADA));
+        reciente.setFechaCreacion(LocalDateTime.of(2026, 10, 2, 10, 0));
+        solicitudRepository.save(reciente);
+
+        Solicitud antigua = solicitudRepository.save(crearSolicitud(viaje,
+                crearUsuario("sol21@upc.edu.pe", Rol.PASAJERO), EstadoSolicitud.PENDIENTE));
+        antigua.setFechaCreacion(LocalDateTime.of(2026, 10, 1, 10, 0));
+        solicitudRepository.save(antigua);
+
+        Page<Solicitud> todas = solicitudRepository.findByViajeIdOrderByFechaCreacionDesc(
+                viaje.getId(), PageRequest.of(0, 10));
+        Page<Solicitud> pendientes = solicitudRepository.buscarPorViajeYEstado(
+                viaje.getId(), EstadoSolicitud.PENDIENTE, PageRequest.of(0, 10));
+
+        assertThat(todas.getContent()).hasSize(2);
+        assertThat(todas.getContent().get(0).getEstado()).isEqualTo(EstadoSolicitud.ACEPTADA);
+        assertThat(todas.getContent().get(1).getEstado()).isEqualTo(EstadoSolicitud.PENDIENTE);
+        assertThat(pendientes.getContent()).hasSize(1);
+    }
+
+    @Test
+    void buscarSolicitudesPorViajeYEstadosParaNotificar() {
+        Usuario conductor = crearUsuario("sol22@upc.edu.pe", Rol.CONDUCTOR);
+        Viaje viaje = crearViaje(conductor);
+
+        solicitudRepository.save(crearSolicitud(viaje,
+                crearUsuario("sol23@upc.edu.pe", Rol.PASAJERO), EstadoSolicitud.ACEPTADA));
+        solicitudRepository.save(crearSolicitud(viaje,
+                crearUsuario("sol24@upc.edu.pe", Rol.PASAJERO), EstadoSolicitud.PENDIENTE));
+        solicitudRepository.save(crearSolicitud(viaje,
+                crearUsuario("sol25@upc.edu.pe", Rol.PASAJERO), EstadoSolicitud.RECHAZADA));
+
+        List<Solicitud> involucradas = solicitudRepository.findByViajeIdAndEstadoIn(
+                viaje.getId(), List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA));
+        List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
+                viaje.getId(), List.of(EstadoSolicitud.ACEPTADA));
+
+        assertThat(involucradas).hasSize(2);
+        assertThat(aceptadas).hasSize(1);
+        assertThat(aceptadas.get(0).getEstado()).isEqualTo(EstadoSolicitud.ACEPTADA);
+    }
 }

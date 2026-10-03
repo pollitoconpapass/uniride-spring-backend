@@ -2,7 +2,9 @@ package com.uniride.repositories;
 
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoViaje;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -30,4 +32,11 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("dia") String dia, @Param("hora") LocalTime hora,
             @Param("distrito") String distrito, @Param("estado") EstadoViaje estado,
             Pageable pageable);
+
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
+            + "AND v.confirmado = false AND v.estado = :estado "
+            + "AND v.fecha BETWEEN :desde AND :hasta")
+    List<Viaje> buscarPendientesDeConfirmacion(@Param("conductorId") Long conductorId,
+            @Param("estado") EstadoViaje estado, @Param("desde") LocalDate desde,
+            @Param("hasta") LocalDate hasta);
 }

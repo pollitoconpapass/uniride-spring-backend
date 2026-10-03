@@ -1,10 +1,13 @@
 package com.uniride.controllers;
 
+import com.uniride.dto.RechazarMultipleRequest;
+import com.uniride.dto.RechazarRequest;
 import com.uniride.dto.SolicitudRequest;
 import com.uniride.dto.SolicitudRespuesta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.services.SolicitudService;
 import jakarta.validation.Valid;
+import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -44,5 +47,22 @@ public class SolicitudController {
     @PutMapping("/{id}/cancelar")
     public ResponseEntity<SolicitudRespuesta> cancelar(@PathVariable Long id) {
         return ResponseEntity.ok(solicitudService.cancelar(id));
+    }
+
+    @PutMapping("/{id}/aceptar")
+    public ResponseEntity<SolicitudRespuesta> aceptar(@PathVariable Long id) {
+        return ResponseEntity.ok(solicitudService.aceptar(id));
+    }
+
+    @PutMapping("/{id}/rechazar")
+    public ResponseEntity<SolicitudRespuesta> rechazar(@PathVariable Long id,
+            @RequestBody(required = false) RechazarRequest request) {
+        return ResponseEntity.ok(solicitudService.rechazar(id, request));
+    }
+
+    @PutMapping("/rechazar-multiples")
+    public ResponseEntity<List<SolicitudRespuesta>> rechazarMultiple(
+            @Valid @RequestBody RechazarMultipleRequest request) {
+        return ResponseEntity.ok(solicitudService.rechazarMultiple(request));
     }
 }

@@ -23,4 +23,5 @@ public class ViajeRespuesta {
     private boolean confirmado;
     private LocalDateTime fechaConfirmacion;
     private EstadoViaje estado;
+    private String mensaje;
 }

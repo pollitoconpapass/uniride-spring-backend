@@ -19,6 +19,8 @@ public interface SolicitudMapper {
     Solicitud toSolicitud(SolicitudRequest request);
 
     @Mapping(target = "advertencia", ignore = true)
+    @Mapping(target = "pasajeroCarrera", ignore = true)
+    @Mapping(target = "pasajeroDistrito", ignore = true)
     @Mapping(source = "viaje.id", target = "viajeId")
     @Mapping(source = "viaje.fecha", target = "fecha")
     @Mapping(source = "viaje.hora", target = "hora")
@@ -26,5 +28,10 @@ public interface SolicitudMapper {
     @Mapping(source = "viaje.ruta.id", target = "rutaId")
     @Mapping(source = "viaje.ruta.origen", target = "origen")
     @Mapping(source = "viaje.ruta.destino", target = "destino")
+    @Mapping(source = "pasajero.id", target = "pasajeroId")
+    @Mapping(source = "pasajero.nombre", target = "pasajeroNombre")
+    @Mapping(source = "pasajero.correoInstitucional", target = "pasajeroCorreo")
+    @Mapping(source = "acuerdo.terminos", target = "acuerdoTerminos")
+    @Mapping(source = "acuerdo.estado", target = "acuerdoEstado")
     SolicitudRespuesta toSolicitudRespuesta(Solicitud solicitud);
 }
