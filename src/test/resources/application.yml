@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:uniride;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+  mail:
+    host: localhost
+    port: 1025
+    username: ""
+    password: ""
+
+uniride:
+  jwt:
+    secret: dW5pcmlkZS10ZXN0LXNlY3JldC1kZS0zMi1ieXRlcyE=
+    expiracion-ms: 3600000
+
+server:
+  port: 0
+  servlet:
+    context-path: /api
