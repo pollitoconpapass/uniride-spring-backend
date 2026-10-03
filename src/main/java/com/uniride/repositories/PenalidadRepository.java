@@ -8,7 +8,11 @@ public interface PenalidadRepository extends JpaRepository<Penalidad, Long> {
 
     long countByUsuarioId(Long usuarioId);
 
+    long countByUsuarioIdAndViajeIsNotNull(Long usuarioId);
+
     boolean existsByViajeIdAndUsuarioId(Long viajeId, Long usuarioId);
 
     List<Penalidad> findByViajeId(Long viajeId);
+
+    List<Penalidad> findByUsuarioId(Long usuarioId);
 }

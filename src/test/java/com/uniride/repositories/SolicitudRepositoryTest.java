@@ -2,14 +2,17 @@ package com.uniride.repositories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uniride.entities.Penalidad;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
+import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
+import com.uniride.enums.TipoPenalidad;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -35,6 +38,9 @@ class SolicitudRepositoryTest {
 
     @Autowired
     private UsuarioRepository usuarioRepository;
+
+    @Autowired
+    private PenalidadRepository penalidadRepository;
 
     private Usuario crearUsuario(String correo, Rol rol) {
         return usuarioRepository.save(Usuario.builder()
@@ -73,6 +79,24 @@ class SolicitudRepositoryTest {
                 .preferenciaCompensacion(TipoCompensacion.DINERO)
                 .estado(estado)
                 .build();
+    }
+
+    private Viaje crearViajeConEstado(Usuario conductor, EstadoViaje estado) {
+        Ruta ruta = rutaRepository.save(Ruta.builder()
+                .conductor(conductor)
+                .origen("San Borja")
+                .destino("UPC")
+                .capacidadMaxima(3)
+                .puntosReferencia("Av. Arequipa")
+                .estado(EstadoRuta.ACTIVA)
+                .build());
+        return viajeRepository.save(Viaje.builder()
+                .ruta(ruta)
+                .fecha(LocalDate.of(2026, 10, 5))
+                .hora(LocalTime.of(7, 30))
+                .dia("Lunes")
+                .estado(estado)
+                .build());
     }
 
     @Test
@@ -222,5 +246,51 @@ class SolicitudRepositoryTest {
         assertThat(involucradas).hasSize(2);
         assertThat(aceptadas).hasSize(1);
         assertThat(aceptadas.get(0).getEstado()).isEqualTo(EstadoSolicitud.ACEPTADA);
+    }
+
+    @Test
+    void contarRealizadosYFrecuenciaComoPasajero() {
+        Usuario conductor = crearUsuario("sol26@upc.edu.pe", Rol.CONDUCTOR);
+        Usuario pasajero = crearUsuario("sol27@upc.edu.pe", Rol.PASAJERO);
+        Viaje completado = crearViajeConEstado(conductor, EstadoViaje.COMPLETADO);
+        Viaje enProgreso = crearViajeConEstado(conductor, EstadoViaje.EN_PROGRESO);
+
+        solicitudRepository.save(crearSolicitud(completado, pasajero, EstadoSolicitud.ACEPTADA));
+        solicitudRepository.save(crearSolicitud(enProgreso, pasajero, EstadoSolicitud.ACEPTADA));
+
+        long realizados = solicitudRepository.contarRealizadosComoPasajero(
+                pasajero.getId(), EstadoSolicitud.ACEPTADA, EstadoViaje.COMPLETADO);
+        List<Object[]> frecuencia = solicitudRepository.frecuenciaPorDiaComoPasajero(
+                pasajero.getId(), EstadoSolicitud.ACEPTADA, EstadoViaje.COMPLETADO);
+
+        assertThat(realizados).isEqualTo(1);
+        assertThat(frecuencia).hasSize(1);
+        assertThat((String) frecuencia.get(0)[0]).isEqualTo("Lunes");
+        assertThat(((Number) frecuencia.get(0)[1]).longValue()).isEqualTo(1);
+    }
+
+    @Test
+    void contarViajesCanceladosPorTerceros() {
+        Usuario conductor = crearUsuario("sol28@upc.edu.pe", Rol.CONDUCTOR);
+        Usuario pasajero = crearUsuario("sol29@upc.edu.pe", Rol.PASAJERO);
+        Viaje sinMiPenalidad = crearViajeConEstado(conductor, EstadoViaje.CANCELADO);
+        Viaje conMiPenalidad = crearViajeConEstado(conductor, EstadoViaje.CANCELADO);
+
+        solicitudRepository.save(crearSolicitud(sinMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
+        solicitudRepository.save(crearSolicitud(conMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
+        penalidadRepository.save(Penalidad.builder()
+                .usuario(pasajero)
+                .viaje(conMiPenalidad)
+                .tipo(TipoPenalidad.GRAVE)
+                .motivo("Canceló el viaje con pocas horas")
+                .build());
+
+        long total = solicitudRepository.contarViajesCanceladosComoPasajero(
+                pasajero.getId(), EstadoViaje.CANCELADO);
+        long porTerceros = solicitudRepository.contarViajesCanceladosPorTerceros(
+                pasajero.getId(), EstadoViaje.CANCELADO);
+
+        assertThat(total).isEqualTo(2);
+        assertThat(porTerceros).isEqualTo(1);
     }
 }

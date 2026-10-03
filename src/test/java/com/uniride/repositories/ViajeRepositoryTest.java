@@ -2,14 +2,17 @@ package com.uniride.repositories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uniride.entities.Penalidad;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.Rol;
+import com.uniride.enums.TipoPenalidad;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -27,6 +30,9 @@ class ViajeRepositoryTest {
 
     @Autowired
     private UsuarioRepository usuarioRepository;
+
+    @Autowired
+    private PenalidadRepository penalidadRepository;
 
     private Usuario crearUsuario(String correo) {
         return usuarioRepository.save(Usuario.builder()
@@ -169,5 +175,87 @@ class ViajeRepositoryTest {
 
         assertThat(cercanos.getContent()).hasSize(1);
         assertThat(lejanos.getContent()).isEmpty();
+    }
+
+    @Test
+    void contarYRankingViajesCompletadosComoConductor() {
+        Usuario conductor = crearUsuario("viaje9@upc.edu.pe");
+        Ruta sanBorja = crearRuta(conductor, "San Borja");
+        Ruta surco = crearRuta(conductor, "Surco");
+
+        viajeRepository.save(Viaje.builder().ruta(sanBorja).fecha(LocalDate.of(2026, 10, 5))
+                .hora(LocalTime.of(7, 30)).dia("Lunes").estado(EstadoViaje.COMPLETADO).build());
+        viajeRepository.save(Viaje.builder().ruta(sanBorja).fecha(LocalDate.of(2026, 10, 6))
+                .hora(LocalTime.of(7, 30)).dia("Martes").estado(EstadoViaje.COMPLETADO).build());
+        viajeRepository.save(Viaje.builder().ruta(surco).fecha(LocalDate.of(2026, 10, 7))
+                .hora(LocalTime.of(7, 30)).dia("Miercoles").estado(EstadoViaje.COMPLETADO).build());
+        viajeRepository.save(crearViaje(sanBorja, LocalDate.of(2026, 10, 8), LocalTime.of(7, 30)));
+        viajeRepository.save(Viaje.builder().ruta(sanBorja).fecha(LocalDate.of(2026, 10, 9))
+                .hora(LocalTime.of(7, 30)).dia("Viernes").estado(EstadoViaje.CANCELADO).build());
+
+        long completados = viajeRepository.countByRutaConductorIdAndEstado(
+                conductor.getId(), EstadoViaje.COMPLETADO);
+        long cancelados = viajeRepository.countByRutaConductorIdAndEstado(
+                conductor.getId(), EstadoViaje.CANCELADO);
+        List<Object[]> ranking = viajeRepository.rankingRutasComoConductor(
+                conductor.getId(), EstadoViaje.COMPLETADO);
+        List<Object[]> frecuencia = viajeRepository.frecuenciaPorDiaComoConductor(
+                conductor.getId(), EstadoViaje.COMPLETADO);
+
+        assertThat(completados).isEqualTo(3);
+        assertThat(cancelados).isEqualTo(1);
+        assertThat(ranking).hasSize(2);
+        assertThat((String) ranking.get(0)[0]).isEqualTo("San Borja");
+        assertThat(((Number) ranking.get(0)[2]).longValue()).isEqualTo(2);
+        assertThat(frecuencia).hasSize(3);
+    }
+
+    @Test
+    void agruparPenalidadesPorRutaComoConductor() {
+        Usuario conductor = crearUsuario("viaje10@upc.edu.pe");
+        Ruta ruta = crearRuta(conductor, "San Borja");
+        Viaje viaje = viajeRepository.save(
+                crearViaje(ruta, LocalDate.of(2026, 10, 5), LocalTime.of(7, 30)));
+
+        penalidadRepository.save(Penalidad.builder()
+                .usuario(conductor)
+                .viaje(viaje)
+                .tipo(TipoPenalidad.LEVE)
+                .motivo("No confirmó a tiempo")
+                .build());
+
+        List<Object[]> resultado = viajeRepository.penalidadesPorRutaComoConductor(conductor.getId());
+
+        assertThat(resultado).hasSize(1);
+        assertThat((String) resultado.get(0)[0]).isEqualTo("San Borja");
+        assertThat(((Number) resultado.get(0)[2]).longValue()).isEqualTo(1);
+    }
+
+    @Test
+    void historialComoConductorExcluyeSoloFuturosProgramados() {
+        Usuario conductor = crearUsuario("viaje11@upc.edu.pe");
+        Ruta ruta = crearRuta(conductor, "San Borja");
+        LocalDate hoy = LocalDate.now();
+
+        Viaje futuroProgramado = viajeRepository.save(Viaje.builder().ruta(ruta)
+                .fecha(hoy.plusDays(5)).hora(LocalTime.of(7, 30)).dia("Lunes")
+                .estado(EstadoViaje.PROGRAMADO).build());
+        Viaje pasado = viajeRepository.save(Viaje.builder().ruta(ruta)
+                .fecha(hoy.minusDays(5)).hora(LocalTime.of(7, 30)).dia("Lunes")
+                .estado(EstadoViaje.PROGRAMADO).build());
+        Viaje canceladoFuturo = viajeRepository.save(Viaje.builder().ruta(ruta)
+                .fecha(hoy.plusDays(2)).hora(LocalTime.of(7, 30)).dia("Lunes")
+                .estado(EstadoViaje.CANCELADO).build());
+        Viaje completado = viajeRepository.save(Viaje.builder().ruta(ruta)
+                .fecha(hoy.minusDays(1)).hora(LocalTime.of(7, 30)).dia("Lunes")
+                .estado(EstadoViaje.COMPLETADO).build());
+
+        List<Viaje> historial = viajeRepository.historialComoConductor(
+                conductor.getId(), EstadoViaje.PROGRAMADO, hoy);
+
+        assertThat(historial).hasSize(3);
+        assertThat(historial).extracting(Viaje::getId)
+                .doesNotContain(futuroProgramado.getId())
+                .contains(pasado.getId(), canceladoFuturo.getId(), completado.getId());
     }
 }
