@@ -38,6 +38,13 @@ public class PerfilService {
         return perfilMapper.toPerfilRespuesta(perfil);
     }
 
+    @Transactional(readOnly = true)
+    public PerfilRespuesta perfilDeUsuario(Long usuarioId) {
+        Perfil perfil = perfilRepository.findByUsuarioId(usuarioId)
+                .orElseThrow(() -> new ResourceNotFoundException("Perfil no encontrado"));
+        return perfilMapper.toPerfilRespuesta(perfil);
+    }
+
     @Transactional
     public PerfilRespuesta guardarDatosPersonales(PerfilRequest request) {
         Usuario usuario = usuarioService.usuarioActual();

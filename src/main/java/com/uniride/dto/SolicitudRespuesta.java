@@ -1,5 +1,6 @@
 package com.uniride.dto;
 
+import com.uniride.enums.EstadoAcuerdo;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.TipoCompensacion;
 import java.time.LocalDate;
@@ -30,4 +31,11 @@ public class SolicitudRespuesta {
     private String motivoRechazo;
     private LocalDateTime fechaCreacion;
     private String advertencia;
+    private Long pasajeroId;
+    private String pasajeroNombre;
+    private String pasajeroCorreo;
+    private String pasajeroCarrera;
+    private String pasajeroDistrito;
+    private String acuerdoTerminos;
+    private EstadoAcuerdo acuerdoEstado;
 }

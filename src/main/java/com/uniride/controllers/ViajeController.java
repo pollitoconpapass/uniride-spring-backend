@@ -1,7 +1,11 @@
 package com.uniride.controllers;
 
+import com.uniride.dto.SolicitudRespuesta;
 import com.uniride.dto.ViajeRequest;
 import com.uniride.dto.ViajeRespuesta;
+import com.uniride.enums.EstadoSolicitud;
+import com.uniride.enums.EstadoViaje;
+import com.uniride.services.SolicitudService;
 import com.uniride.services.ViajeService;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
@@ -11,6 +15,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,9 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class ViajeController {
 
     private final ViajeService viajeService;
+    private final SolicitudService solicitudService;
 
-    public ViajeController(ViajeService viajeService) {
+    public ViajeController(ViajeService viajeService, SolicitudService solicitudService) {
         this.viajeService = viajeService;
+        this.solicitudService = solicitudService;
     }
 
     @PostMapping("/rutas/{rutaId}/viajes")
@@ -35,6 +42,29 @@ public class ViajeController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
         return ResponseEntity.ok(viajeService.listarPorRuta(rutaId, page, size));
+    }
+
+    @GetMapping("/viajes/{viajeId}/solicitudes")
+    public ResponseEntity<Page<SolicitudRespuesta>> solicitudesRecibidas(
+            @PathVariable Long viajeId,
+            @RequestParam(required = false) EstadoSolicitud estado,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return ResponseEntity.ok(solicitudService.listarRecibidas(viajeId, estado, page, size));
+    }
+
+    @PutMapping("/viajes/{id}/confirmar")
+    public ResponseEntity<ViajeRespuesta> confirmarViaje(@PathVariable Long id) {
+        ViajeRespuesta respuesta = viajeService.confirmar(id);
+        if (respuesta.getEstado() == EstadoViaje.VENCIDO) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(respuesta);
+        }
+        return ResponseEntity.ok(respuesta);
+    }
+
+    @PutMapping("/viajes/{id}/cancelar")
+    public ResponseEntity<ViajeRespuesta> cancelarViaje(@PathVariable Long id) {
+        return ResponseEntity.ok(viajeService.cancelar(id));
     }
 
     @DeleteMapping("/viajes/{id}")
