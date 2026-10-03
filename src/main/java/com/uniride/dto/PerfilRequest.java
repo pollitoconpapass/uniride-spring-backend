@@ -20,6 +20,9 @@ public class PerfilRequest {
     @NotBlank(message = "El nombre es obligatorio")
     private String nombre;
 
+    @NotBlank(message = "Los apellidos son obligatorios")
+    private String apellidos;
+
     @NotBlank(message = "La carrera es obligatoria")
     private String carrera;
 
@@ -41,6 +44,5 @@ public class PerfilRequest {
     @NotNull(message = "La fecha de fin de clases es obligatoria")
     private LocalDate fechaFinClases;
 
-    @NotNull(message = "El método de compensación favorito es obligatorio")
     private TipoCompensacion metodoCompensacionFavorito;
 }

@@ -18,6 +18,7 @@ public class PerfilRespuesta {
 
     private Long id;
     private String nombre;
+    private String apellidos;
     private String carrera;
     private String distrito;
     private String universidad;

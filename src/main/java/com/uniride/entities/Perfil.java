@@ -42,6 +42,9 @@ public class Perfil {
     @Column(name = "nombre", nullable = false)
     private String nombre;
 
+    @Column(name = "apellidos", nullable = false)
+    private String apellidos;
+
     @Column(name = "carrera", nullable = false)
     private String carrera;
 
@@ -64,7 +67,7 @@ public class Perfil {
     private LocalDate fechaFinClases;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "metodo_compensacion_favorito", nullable = false)
+    @Column(name = "metodo_compensacion_favorito")
     private TipoCompensacion metodoCompensacionFavorito;
 
     @Column(name = "gustos", columnDefinition = "text")

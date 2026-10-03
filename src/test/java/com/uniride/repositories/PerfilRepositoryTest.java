@@ -37,7 +37,8 @@ class PerfilRepositoryTest {
     private Perfil crearPerfil(Usuario usuario, String distrito) {
         return Perfil.builder()
                 .usuario(usuario)
-                .nombre("Ana Garcia")
+                .nombre("Ana")
+                .apellidos("Garcia")
                 .carrera("Ingenieria de Sistemas")
                 .distrito(distrito)
                 .universidad("UPC")
