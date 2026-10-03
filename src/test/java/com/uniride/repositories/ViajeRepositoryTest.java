@@ -111,4 +111,63 @@ class ViajeRepositoryTest {
         assertThat(viajeRepository.findByRutaIdOrderByFechaAscHoraAsc(ruta.getId(),
                 PageRequest.of(0, 10)).getContent()).isEmpty();
     }
+
+    @Test
+    void buscarViajesSinFiltrosDevuelveSoloFuturosProgramados() {
+        Usuario conductor = crearUsuario("viaje6@upc.edu.pe");
+        Ruta ruta = crearRuta(conductor, "San Borja");
+
+        viajeRepository.save(crearViaje(ruta, LocalDate.of(2026, 10, 5), LocalTime.of(7, 30)));
+        viajeRepository.save(crearViaje(ruta, LocalDate.of(2026, 10, 6), LocalTime.of(18, 0)));
+        viajeRepository.save(crearViaje(ruta, LocalDate.of(2020, 1, 1), LocalTime.of(7, 30)));
+        viajeRepository.save(Viaje.builder()
+                .ruta(ruta)
+                .fecha(LocalDate.of(2026, 10, 7))
+                .hora(LocalTime.of(8, 0))
+                .dia("Lunes")
+                .estado(EstadoViaje.CANCELADO)
+                .build());
+
+        Page<Viaje> resultados = viajeRepository.buscarViajes(null, null, null, null,
+                null, EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+
+        assertThat(resultados.getContent()).hasSize(2);
+    }
+
+    @Test
+    void buscarViajesPorOrigenDestinoDiaYHora() {
+        Usuario conductor = crearUsuario("viaje7@upc.edu.pe");
+        Ruta rutaSanBorja = crearRuta(conductor, "San Borja");
+        Ruta rutaSurco = crearRuta(conductor, "Surco");
+
+        viajeRepository.save(crearViaje(rutaSanBorja, LocalDate.of(2026, 10, 5), LocalTime.of(7, 30)));
+        viajeRepository.save(crearViaje(rutaSurco, LocalDate.of(2026, 10, 6), LocalTime.of(18, 0)));
+
+        Page<Viaje> porOrigen = viajeRepository.buscarViajes("san borja", "upc", "lunes", null,
+                null, EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+        Page<Viaje> porHora = viajeRepository.buscarViajes(null, null, null, LocalTime.of(18, 0),
+                null, EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+        Page<Viaje> porDiaSinResultados = viajeRepository.buscarViajes(null, null, "martes", null,
+                null, EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+
+        assertThat(porOrigen.getContent()).hasSize(1);
+        assertThat(porOrigen.getContent().get(0).getRuta().getOrigen()).isEqualTo("San Borja");
+        assertThat(porHora.getContent()).hasSize(1);
+        assertThat(porDiaSinResultados.getContent()).isEmpty();
+    }
+
+    @Test
+    void buscarViajesPorCercania() {
+        Usuario conductor = crearUsuario("viaje8@upc.edu.pe");
+        Ruta ruta = crearRuta(conductor, "San Borja");
+        viajeRepository.save(crearViaje(ruta, LocalDate.of(2026, 10, 5), LocalTime.of(7, 30)));
+
+        Page<Viaje> cercanos = viajeRepository.buscarViajes(null, null, null, null,
+                "%san borja%", EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+        Page<Viaje> lejanos = viajeRepository.buscarViajes(null, null, null, null,
+                "%surco%", EstadoViaje.PROGRAMADO, PageRequest.of(0, 10));
+
+        assertThat(cercanos.getContent()).hasSize(1);
+        assertThat(lejanos.getContent()).isEmpty();
+    }
 }
