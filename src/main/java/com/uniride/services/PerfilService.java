@@ -5,7 +5,9 @@ import com.uniride.dto.PerfilRequest;
 import com.uniride.dto.PerfilRespuesta;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Usuario;
+import com.uniride.enums.Rol;
 import com.uniride.enums.TipoNotificacion;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.PerfilMapper;
 import com.uniride.repositories.PerfilRepository;
@@ -39,6 +41,13 @@ public class PerfilService {
     @Transactional
     public PerfilRespuesta guardarDatosPersonales(PerfilRequest request) {
         Usuario usuario = usuarioService.usuarioActual();
+
+        if (request.getMetodoCompensacionFavorito() == null
+                && usuario.getRolPrincipal() == Rol.CONDUCTOR) { // -> solo los conductores tienen metodo de compensacion favorito
+            throw new CamposInvalidosException(
+                    "El método de compensación favorito es obligatorio para conductores");
+        }
+
         Perfil perfil = perfilRepository.findByUsuarioId(usuario.getId()).orElse(null);
 
         boolean esNuevo = perfil == null;
