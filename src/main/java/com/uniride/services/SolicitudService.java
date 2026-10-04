@@ -23,7 +23,6 @@ import com.uniride.repositories.PerfilRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -86,8 +85,7 @@ public class SolicitudService {
             throw new BusinessException("Ya enviaste una solicitud para este viaje");
         }
 
-        long aceptadas = solicitudRepository.countByViajeIdAndEstado(viajeId, EstadoSolicitud.ACEPTADA);
-        if (aceptadas >= viaje.getRuta().getCapacidadMaxima()) {
+        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
             throw new BusinessException("La ruta ya no tiene cupos disponibles");
         }
 
@@ -178,14 +176,15 @@ public class SolicitudService {
         validarSolicitudProcesable(solicitud);
 
         Viaje viaje = solicitud.getViaje();
-        long aceptadas = solicitudRepository.countByViajeIdAndEstado(
-                viaje.getId(), EstadoSolicitud.ACEPTADA);
-        if (aceptadas >= viaje.getRuta().getCapacidadMaxima()) {
+        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
             throw new BusinessException("La ruta ya no tiene cupos disponibles");
         }
 
         solicitud.setEstado(EstadoSolicitud.ACEPTADA);
         Solicitud aceptada = solicitudRepository.save(solicitud);
+
+        viaje.setPasajeros(viaje.getPasajeros() + 1);
+        viajeRepository.save(viaje);
 
         AcuerdoCompensacion acuerdo = AcuerdoCompensacion.builder()
                 .solicitud(aceptada)

@@ -58,6 +58,9 @@ public class Viaje {
     @Column(nullable = false)
     private EstadoViaje estado;
 
+    @Column(name = "pasajeros", nullable = false, columnDefinition = "integer default 0")
+    private int pasajeros;
+
     @Column(name = "recordatorio_enviado", columnDefinition = "boolean default false")
     private boolean recordatorioEnviado;
 
