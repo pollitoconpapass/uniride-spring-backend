@@ -1,10 +1,10 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.AuthRespuesta;
-import com.uniride.dto.LoginRequest;
-import com.uniride.dto.ReenviarCodigoRequest;
-import com.uniride.dto.RegistroRequest;
-import com.uniride.dto.VerificarCodigoRequest;
+import com.uniride.dto.responses.AuthRespuesta;
+import com.uniride.dto.requests.LoginRequest;
+import com.uniride.dto.requests.ReenviarCodigoRequest;
+import com.uniride.dto.requests.RegistroRequest;
+import com.uniride.dto.requests.VerificarCodigoRequest;
 import com.uniride.services.AuthService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;

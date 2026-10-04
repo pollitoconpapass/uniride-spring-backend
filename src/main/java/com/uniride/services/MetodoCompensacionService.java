@@ -1,7 +1,7 @@
 package com.uniride.services;
 
-import com.uniride.dto.MetodoCompensacionRequest;
-import com.uniride.dto.MetodoCompensacionRespuesta;
+import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.entities.MetodoCompensacion;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.EstadoSolicitud;
@@ -42,10 +42,10 @@ public class MetodoCompensacionService {
     @Transactional
     public MetodoCompensacionRespuesta registrar(MetodoCompensacionRequest request) {
         Usuario usuario = usuarioService.usuarioActual();
-        String descripcion = request.getDescripcion().trim();
+        String descripcion = request.descripcion().trim();
 
         if (metodoCompensacionRepository.existsByUsuarioIdAndTipoAndDescripcionIgnoreCase(
-                usuario.getId(), request.getTipo(), descripcion)) {
+                usuario.getId(), request.tipo(), descripcion)) {
             throw new BusinessException("Ya tienes un método con el mismo tipo y descripción en tu lista");
         }
 
@@ -69,16 +69,16 @@ public class MetodoCompensacionService {
                 .findByIdAndUsuarioId(id, usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Método de compensación no encontrado"));
 
-        String descripcion = request.getDescripcion().trim();
+        String descripcion = request.descripcion().trim();
         if (metodoCompensacionRepository.existsByUsuarioIdAndTipoAndDescripcionIgnoreCaseAndIdNot(
-                usuario.getId(), request.getTipo(), descripcion, id)) {
+                usuario.getId(), request.tipo(), descripcion, id)) {
             throw new BusinessException("Ya tienes un método con el mismo tipo y descripción en tu lista");
         }
 
         metodoCompensacionMapper.actualizarMetodoCompensacion(request, metodo);
         metodo.setDescripcion(descripcion);
-        if (request.getActivo() != null) {
-            metodo.setActivo(request.getActivo());
+        if (request.activo() != null) {
+            metodo.setActivo(request.activo());
         }
         MetodoCompensacion actualizado = metodoCompensacionRepository.save(metodo);
 

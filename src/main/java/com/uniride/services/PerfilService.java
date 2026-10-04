@@ -1,8 +1,8 @@
 package com.uniride.services;
 
-import com.uniride.dto.InfoAdicionalRequest;
-import com.uniride.dto.PerfilRequest;
-import com.uniride.dto.PerfilRespuesta;
+import com.uniride.dto.requests.InfoAdicionalRequest;
+import com.uniride.dto.requests.PerfilRequest;
+import com.uniride.dto.responses.PerfilRespuesta;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
@@ -49,7 +49,7 @@ public class PerfilService {
     public PerfilRespuesta guardarDatosPersonales(PerfilRequest request) {
         Usuario usuario = usuarioService.usuarioActual();
 
-        if (request.getMetodoCompensacionFavorito() == null
+        if (request.metodoCompensacionFavorito() == null
                 && usuario.getRolPrincipal() == Rol.CONDUCTOR) { // -> solo los conductores tienen metodo de compensacion favorito
             throw new CamposInvalidosException(
                     "El método de compensación favorito es obligatorio para conductores");

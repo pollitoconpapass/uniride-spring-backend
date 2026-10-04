@@ -1,7 +1,7 @@
 package com.uniride.mappers;
 
-import com.uniride.dto.RutaRequest;
-import com.uniride.dto.RutaRespuesta;
+import com.uniride.dto.requests.RutaRequest;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.Ruta;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;

@@ -1,8 +1,8 @@
 package com.uniride.services;
 
-import com.uniride.dto.ArchivoRespuesta;
-import com.uniride.dto.CursoRequest;
-import com.uniride.dto.CursoRespuesta;
+import com.uniride.dto.responses.ArchivoRespuesta;
+import com.uniride.dto.requests.CursoRequest;
+import com.uniride.dto.responses.CursoRespuesta;
 import com.uniride.entities.ArchivoCarga;
 import com.uniride.entities.Curso;
 import com.uniride.entities.HorarioAcademico;
@@ -135,27 +135,23 @@ public class HorarioAcademicoService {
                 ? "Archivo subido correctamente. Se importaron " + cursosImportados + " cursos."
                 : "Archivo subido correctamente.";
 
-        return ArchivoRespuesta.builder()
-                .mensaje(mensaje)
-                .cursosImportados(cursosImportados)
-                .nombreArchivo(nombreArchivo)
-                .build();
+        return new ArchivoRespuesta(mensaje, cursosImportados, nombreArchivo);
     }
 
     private void validarCurso(CursoRequest request) {
-        if (request.getNombre() == null || request.getNombre().isBlank()) {
+        if (request.nombre() == null || request.nombre().isBlank()) {
             throw new CamposInvalidosException("Falta ingresar el nombre de un curso");
         }
-        if (request.getDia() == null || request.getDia().isBlank()) {
+        if (request.dia() == null || request.dia().isBlank()) {
             throw new CamposInvalidosException("Falta ingresar el día de un curso");
         }
-        if (request.getHoraInicio() == null) {
+        if (request.horaInicio() == null) {
             throw new CamposInvalidosException("Falta ingresar la hora de inicio de un curso");
         }
-        if (request.getHoraFin() == null) {
+        if (request.horaFin() == null) {
             throw new CamposInvalidosException("Falta ingresar la hora de fin de un curso");
         }
-        if (!request.getHoraFin().isAfter(request.getHoraInicio())) {
+        if (!request.horaFin().isAfter(request.horaInicio())) {
             throw new CamposInvalidosException("La hora de fin debe ser posterior a la hora de inicio");
         }
     }

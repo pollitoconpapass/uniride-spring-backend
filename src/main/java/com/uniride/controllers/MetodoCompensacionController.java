@@ -1,7 +1,7 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.MetodoCompensacionRequest;
-import com.uniride.dto.MetodoCompensacionRespuesta;
+import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.services.MetodoCompensacionService;
 import jakarta.validation.Valid;
 import java.util.List;

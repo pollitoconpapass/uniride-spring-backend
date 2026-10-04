@@ -16,6 +16,8 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import jakarta.persistence.OneToOne;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -73,7 +75,7 @@ public class Solicitud {
             estado = EstadoSolicitud.PENDIENTE;
         }
         if (fechaCreacion == null) {
-            fechaCreacion = LocalDateTime.now();
+            fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
         }
     }
 }

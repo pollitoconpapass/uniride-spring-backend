@@ -1,7 +1,7 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.CambiarRolRequest;
-import com.uniride.dto.UsuarioRespuesta;
+import com.uniride.dto.requests.CambiarRolRequest;
+import com.uniride.dto.responses.UsuarioRespuesta;
 import com.uniride.services.UsuarioService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;

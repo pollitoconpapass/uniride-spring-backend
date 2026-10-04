@@ -1,7 +1,7 @@
 package com.uniride.mappers;
 
-import com.uniride.dto.MetodoCompensacionRequest;
-import com.uniride.dto.MetodoCompensacionRespuesta;
+import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.entities.MetodoCompensacion;
 import java.util.List;
 import org.mapstruct.Mapper;

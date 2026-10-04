@@ -1,7 +1,7 @@
 package com.uniride.services;
 
-import com.uniride.dto.RutaRequest;
-import com.uniride.dto.RutaRespuesta;
+import com.uniride.dto.requests.RutaRequest;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;

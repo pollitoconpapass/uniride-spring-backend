@@ -1,10 +1,9 @@
 package com.uniride.services;
 
-import com.uniride.dto.BusquedaRespuesta;
+import com.uniride.dto.responses.BusquedaRespuesta;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.EstadoViaje;
-import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.BusquedaMapper;
 import com.uniride.repositories.PerfilRepository;

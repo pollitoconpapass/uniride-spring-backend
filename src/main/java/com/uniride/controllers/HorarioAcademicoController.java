@@ -1,8 +1,8 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.ArchivoRespuesta;
-import com.uniride.dto.CursoRequest;
-import com.uniride.dto.CursoRespuesta;
+import com.uniride.dto.responses.ArchivoRespuesta;
+import com.uniride.dto.requests.CursoRequest;
+import com.uniride.dto.responses.CursoRespuesta;
 import com.uniride.services.HorarioAcademicoService;
 import jakarta.validation.Valid;
 import java.util.List;

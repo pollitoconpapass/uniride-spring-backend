@@ -11,6 +11,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -68,7 +70,7 @@ public class Usuario {
     @PrePersist
     void antesDeGuardar() {
         if (fechaRegistro == null) {
-            fechaRegistro = LocalDateTime.now();
+            fechaRegistro = LocalDateTime.now(ZoneId.systemDefault());
         }
     }
 }

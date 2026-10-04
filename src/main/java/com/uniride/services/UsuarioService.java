@@ -1,7 +1,7 @@
 package com.uniride.services;
 
-import com.uniride.dto.CambiarRolRequest;
-import com.uniride.dto.UsuarioRespuesta;
+import com.uniride.dto.requests.CambiarRolRequest;
+import com.uniride.dto.responses.UsuarioRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.exceptions.NoAutorizadoException;
 import com.uniride.exceptions.ResourceNotFoundException;
@@ -40,7 +40,7 @@ public class UsuarioService {
     @Transactional
     public UsuarioRespuesta cambiarRol(CambiarRolRequest request) {
         Usuario usuario = usuarioActual();
-        usuario.setRolPrincipal(request.getRol());
+        usuario.setRolPrincipal(request.rol());
         usuarioRepository.save(usuario);
         return usuarioMapper.toUsuarioRespuesta(usuario);
     }

@@ -1,9 +1,9 @@
 package com.uniride.services;
 
-import com.uniride.dto.RechazarMultipleRequest;
-import com.uniride.dto.RechazarRequest;
-import com.uniride.dto.SolicitudRequest;
-import com.uniride.dto.SolicitudRespuesta;
+import com.uniride.dto.requests.RechazarMultipleRequest;
+import com.uniride.dto.requests.RechazarRequest;
+import com.uniride.dto.requests.SolicitudRequest;
+import com.uniride.dto.responses.SolicitudRespuesta;
 import com.uniride.entities.AcuerdoCompensacion;
 import com.uniride.entities.MetodoCompensacion;
 import com.uniride.entities.Perfil;
@@ -23,6 +23,8 @@ import com.uniride.repositories.PerfilRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -72,7 +74,7 @@ public class SolicitudService {
         if (conductor.getId().equals(pasajero.getId())) {
             throw new BusinessException("No puedes solicitar un viaje de tu propia ruta");
         }
-        if (viaje.getFecha().isBefore(LocalDate.now())) {
+        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new BusinessException("El viaje ya ocurrió");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
@@ -102,9 +104,8 @@ public class SolicitudService {
                 pasajero.getNombre() + " solicitó unirse a tu viaje del "
                         + viaje.getDia() + " " + viaje.getFecha() + " a las " + viaje.getHora() + ".");
 
-        SolicitudRespuesta respuesta = solicitudMapper.toSolicitudRespuesta(guardada);
-        respuesta.setAdvertencia(advertenciaPreferencia(pasajero, conductor, request));
-        return respuesta;
+        return solicitudMapper.toSolicitudRespuesta(guardada,
+                advertenciaPreferencia(pasajero, conductor, request), null, null);
     }
 
     @Transactional(readOnly = true)
@@ -133,7 +134,7 @@ public class SolicitudService {
                     "El viaje ya no está activo; estado actual: "
                             + solicitud.getViaje().getEstado());
         }
-        if (solicitud.getViaje().getFecha().isBefore(LocalDate.now())) {
+        if (solicitud.getViaje().getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new BusinessException("El viaje ya ocurrió; no puedes cancelar la solicitud");
         }
 
@@ -161,12 +162,11 @@ public class SolicitudService {
                 : solicitudRepository.buscarPorViajeYEstado(viajeId, estado, pageable);
 
         return solicitudes.map(solicitud -> {
-            SolicitudRespuesta respuesta = solicitudMapper.toSolicitudRespuesta(solicitud);
-            perfilRepository.findByUsuarioId(solicitud.getPasajero().getId()).ifPresent(perfil -> {
-                respuesta.setPasajeroCarrera(perfil.getCarrera());
-                respuesta.setPasajeroDistrito(perfil.getDistrito());
-            });
-            return respuesta;
+            Perfil perfil = perfilRepository.findByUsuarioId(solicitud.getPasajero().getId())
+                    .orElse(null);
+            return solicitudMapper.toSolicitudRespuesta(solicitud, null,
+                    perfil == null ? null : perfil.getCarrera(),
+                    perfil == null ? null : perfil.getDistrito());
         });
     }
 
@@ -212,7 +212,7 @@ public class SolicitudService {
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
         validarSolicitudProcesable(solicitud);
 
-        return rechazarInterna(solicitud, request == null ? null : request.getMotivo(), conductor);
+        return rechazarInterna(solicitud, request == null ? null : request.motivo(), conductor);
     }
 
     @Transactional
@@ -220,11 +220,11 @@ public class SolicitudService {
         Usuario conductor = usuarioService.usuarioActual();
         List<SolicitudRespuesta> resultados = new ArrayList<>();
 
-        for (Long id : new LinkedHashSet<>(request.getIds())) {
+        for (Long id : new LinkedHashSet<>(request.ids())) {
             Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                     .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada: " + id));
             validarSolicitudProcesable(solicitud);
-            resultados.add(rechazarInterna(solicitud, request.getMotivo(), conductor));
+            resultados.add(rechazarInterna(solicitud, request.motivo(), conductor));
         }
         return resultados;
     }
@@ -257,25 +257,25 @@ public class SolicitudService {
             throw new BusinessException(
                     "El viaje ya no está activo; estado actual: " + viaje.getEstado());
         }
-        if (viaje.getFecha().isBefore(LocalDate.now())) {
+        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new BusinessException("El viaje ya ocurrió");
         }
     }
 
     private MetodoCompensacion validarMetodoCompensacion(SolicitudRequest request, Usuario pasajero) {
-        if (request.getMetodoCompensacionId() == null) {
+        if (request.metodoCompensacionId() == null) {
             return null;
         }
         MetodoCompensacion metodo = metodoCompensacionRepository
-                .findByIdAndUsuarioId(request.getMetodoCompensacionId(), pasajero.getId())
+                .findByIdAndUsuarioId(request.metodoCompensacionId(), pasajero.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Método de compensación no encontrado"));
         if (!metodo.isActivo()) {
             throw new BusinessException("El método de compensación seleccionado está desactivado");
         }
-        if (metodo.getTipo() != request.getPreferenciaCompensacion()) {
+        if (metodo.getTipo() != request.preferenciaCompensacion()) {
             throw new BusinessException("El método seleccionado (" + metodo.getTipo()
                     + ") no coincide con tu preferencia de compensación ("
-                    + request.getPreferenciaCompensacion() + ")");
+                    + request.preferenciaCompensacion() + ")");
         }
         return metodo;
     }
@@ -317,8 +317,8 @@ public class SolicitudService {
         if (perfilConductor == null || perfilConductor.getMetodoCompensacionFavorito() == null) {
             return null;
         }
-        if (perfilConductor.getMetodoCompensacionFavorito() != request.getPreferenciaCompensacion()) {
-            return "Tu preferencia de compensación (" + request.getPreferenciaCompensacion()
+        if (perfilConductor.getMetodoCompensacionFavorito() != request.preferenciaCompensacion()) {
+            return "Tu preferencia de compensación (" + request.preferenciaCompensacion()
                     + ") difiere de la del conductor (" + perfilConductor.getMetodoCompensacionFavorito()
                     + "). Puedes enviarla igualmente.";
         }

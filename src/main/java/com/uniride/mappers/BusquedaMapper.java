@@ -1,6 +1,6 @@
 package com.uniride.mappers;
 
-import com.uniride.dto.BusquedaRespuesta;
+import com.uniride.dto.responses.BusquedaRespuesta;
 import com.uniride.entities.Viaje;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;

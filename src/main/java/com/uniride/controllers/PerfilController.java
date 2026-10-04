@@ -1,14 +1,13 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.InfoAdicionalRequest;
-import com.uniride.dto.PerfilRequest;
-import com.uniride.dto.PerfilRespuesta;
+import com.uniride.dto.requests.InfoAdicionalRequest;
+import com.uniride.dto.requests.PerfilRequest;
+import com.uniride.dto.responses.PerfilRespuesta;
 import com.uniride.services.PerfilService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
