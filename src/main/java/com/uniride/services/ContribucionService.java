@@ -1,6 +1,6 @@
 package com.uniride.services;
 
-import com.uniride.dto.SugerenciaContribucionRespuesta;
+import com.uniride.dto.responses.SugerenciaContribucionRespuesta;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.exceptions.BusinessException;
@@ -49,22 +49,21 @@ public class ContribucionService {
         double aporte = redondear(costoTotal / pasajeros);
         double litros = redondear(aporte / PRECIO_LITRO_GASOLINA);
 
-        return SugerenciaContribucionRespuesta.builder()
-                .viajeId(viaje.getId())
-                .origen(viaje.getRuta().getOrigen())
-                .destino(viaje.getRuta().getDestino())
-                .dia(viaje.getDia())
-                .fecha(viaje.getFecha())
-                .hora(viaje.getHora())
-                .pasajeros(pasajeros)
-                .esHoraPico(esHoraPico)
-                .costoTotalEstimado(costoTotal)
-                .aporteEstimado(aporte)
-                .litrosGasolinaAprox(litros)
-                .sugerenciaFavor("Un favor acordado con el conductor de valor equivalente al aporte estimado")
-                .nota("Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; "
-                        + "el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros.")
-                .build();
+        return new SugerenciaContribucionRespuesta(
+                viaje.getId(),
+                viaje.getRuta().getOrigen(),
+                viaje.getRuta().getDestino(),
+                viaje.getDia(),
+                viaje.getFecha(),
+                viaje.getHora(),
+                pasajeros,
+                esHoraPico,
+                costoTotal,
+                aporte,
+                litros,
+                "Un favor acordado con el conductor de valor equivalente al aporte estimado",
+                "Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; "
+                        + "el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros.");
     }
 
     private boolean esHoraPico(LocalTime hora) {

@@ -1,11 +1,10 @@
 package com.uniride.mappers;
 
-import com.uniride.dto.ViajeRequest;
-import com.uniride.dto.ViajeRespuesta;
+import com.uniride.dto.requests.ViajeRequest;
+import com.uniride.dto.responses.ViajeRespuesta;
 import com.uniride.entities.Viaje;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
-import org.mapstruct.MappingTarget;
 
 @Mapper(componentModel = "spring")
 public interface ViajeMapper {
@@ -22,4 +21,8 @@ public interface ViajeMapper {
     @Mapping(source = "ruta.id", target = "rutaId")
     @Mapping(target = "mensaje", ignore = true)
     ViajeRespuesta toViajeRespuesta(Viaje viaje);
+
+    @Mapping(source = "viaje.ruta.id", target = "rutaId")
+    @Mapping(source = "mensaje", target = "mensaje")
+    ViajeRespuesta toViajeRespuesta(Viaje viaje, String mensaje);
 }

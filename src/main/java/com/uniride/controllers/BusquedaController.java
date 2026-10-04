@@ -1,6 +1,6 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.BusquedaRespuesta;
+import com.uniride.dto.responses.BusquedaRespuesta;
 import com.uniride.services.BusquedaService;
 import java.time.LocalTime;
 import org.springframework.data.domain.Page;

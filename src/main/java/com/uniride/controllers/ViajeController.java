@@ -1,9 +1,9 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.SolicitudRespuesta;
-import com.uniride.dto.SugerenciaContribucionRespuesta;
-import com.uniride.dto.ViajeRequest;
-import com.uniride.dto.ViajeRespuesta;
+import com.uniride.dto.responses.SolicitudRespuesta;
+import com.uniride.dto.responses.SugerenciaContribucionRespuesta;
+import com.uniride.dto.requests.ViajeRequest;
+import com.uniride.dto.responses.ViajeRespuesta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.services.ContribucionService;
@@ -68,7 +68,7 @@ public class ViajeController {
     @PutMapping("/viajes/{id}/confirmar")
     public ResponseEntity<ViajeRespuesta> confirmarViaje(@PathVariable Long id) {
         ViajeRespuesta respuesta = viajeService.confirmar(id);
-        if (respuesta.getEstado() == EstadoViaje.VENCIDO) {
+        if (respuesta.estado() == EstadoViaje.VENCIDO) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(respuesta);
         }
         return ResponseEntity.ok(respuesta);

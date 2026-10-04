@@ -1,7 +1,7 @@
 package com.uniride.services;
 
-import com.uniride.dto.ViajeRequest;
-import com.uniride.dto.ViajeRespuesta;
+import com.uniride.dto.requests.ViajeRequest;
+import com.uniride.dto.responses.ViajeRespuesta;
 import com.uniride.entities.Penalidad;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Solicitud;
@@ -23,6 +23,7 @@ import com.uniride.repositories.ViajeRepository;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -63,13 +64,13 @@ public class ViajeService {
         Usuario conductor = usuarioService.usuarioActual();
         Ruta ruta = buscarRutaPropia(rutaId, conductor);
 
-        if (request.getFecha().isBefore(LocalDate.now())) {
+        if (request.fecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new CamposInvalidosException("La fecha del viaje no puede ser en el pasado");
         }
 
         Viaje viaje = viajeMapper.toViaje(request);
         viaje.setRuta(ruta);
-        viaje.setDia(diaDeLaSemana(request.getFecha()));
+        viaje.setDia(diaDeLaSemana(request.fecha()));
         viaje.setEstado(EstadoViaje.PROGRAMADO);
         Viaje guardado = viajeRepository.save(viaje);
 
@@ -114,16 +115,14 @@ public class ViajeService {
                     "Viaje ya confirmado",
                     "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora() + " ya estaba confirmado previamente.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El viaje ya estaba confirmado");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba confirmado");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
             throw new BusinessException(
                     "El viaje no puede confirmarse; estado actual: " + viaje.getEstado());
         }
 
-        Duration hastaSalida = Duration.between(LocalDateTime.now(), horaSalida(viaje));
+        Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
         if (hastaSalida.isNegative()) {
             throw new BusinessException("El viaje ya ocurrió");
         }
@@ -141,14 +140,13 @@ public class ViajeService {
                     "No confirmaste a tiempo el viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora()
                             + ". El viaje quedó VENCIDO y se registró una penalidad leve en tu perfil.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El plazo de confirmación (24 horas antes) venció; "
-                    + "el viaje quedó VENCIDO y se registró una penalidad leve");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje,
+                    "El plazo de confirmación (24 horas antes) venció; "
+                            + "el viaje quedó VENCIDO y se registró una penalidad leve");
         }
 
         viaje.setConfirmado(true);
-        viaje.setFechaConfirmacion(LocalDateTime.now());
+        viaje.setFechaConfirmacion(LocalDateTime.now(ZoneId.systemDefault()));
         Viaje guardado = viajeRepository.save(viaje);
 
         List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
@@ -165,9 +163,8 @@ public class ViajeService {
                 "Confirmaste el viaje del " + viaje.getDia() + " " + viaje.getFecha()
                         + " a las " + viaje.getHora() + ".");
 
-        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(guardado);
-        respuesta.setMensaje("Viaje confirmado; se notificó a los pasajeros aceptados");
-        return respuesta;
+        return viajeMapper.toViajeRespuesta(guardado,
+                "Viaje confirmado; se notificó a los pasajeros aceptados");
     }
 
     @Transactional
@@ -181,18 +178,14 @@ public class ViajeService {
                     "Viaje ya iniciado",
                     "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora() + " ya estaba en progreso.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El viaje ya estaba iniciado");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba iniciado");
         }
         if (viaje.getEstado() == EstadoViaje.COMPLETADO) {
             notificacionService.notificar(conductor, TipoNotificacion.EXITO,
                     "Viaje ya completado",
                     "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora() + " ya había sido completado.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El viaje ya había sido completado");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje, "El viaje ya había sido completado");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
             throw new BusinessException(
@@ -217,9 +210,7 @@ public class ViajeService {
                             + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino() + ").");
         }
 
-        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(iniciado);
-        respuesta.setMensaje("Viaje iniciado");
-        return respuesta;
+        return viajeMapper.toViajeRespuesta(iniciado, "Viaje iniciado");
     }
 
     @Transactional
@@ -233,9 +224,7 @@ public class ViajeService {
                     "Viaje ya completado",
                     "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora() + " ya estaba completado.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El viaje ya estaba completado");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba completado");
         }
         if (viaje.getEstado() != EstadoViaje.EN_PROGRESO) {
             throw new BusinessException(
@@ -259,9 +248,7 @@ public class ViajeService {
                             + ") fue completado. ¡Gracias por viajar con UniRide!");
         }
 
-        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(completado);
-        respuesta.setMensaje("Viaje completado");
-        return respuesta;
+        return viajeMapper.toViajeRespuesta(completado, "Viaje completado");
     }
 
     @Transactional
@@ -285,16 +272,14 @@ public class ViajeService {
                     "Viaje ya cancelado",
                     "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
                             + " a las " + viaje.getHora() + " ya estaba cancelado.");
-            ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(viaje);
-            respuesta.setMensaje("El viaje ya estaba cancelado");
-            return respuesta;
+            return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba cancelado");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
             throw new BusinessException(
                     "El viaje no puede cancelarse; estado actual: " + viaje.getEstado());
         }
 
-        Duration hastaSalida = Duration.between(LocalDateTime.now(), horaSalida(viaje));
+        Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
         if (hastaSalida.isNegative()) {
             throw new BusinessException("El viaje ya ocurrió");
         }
@@ -358,14 +343,12 @@ public class ViajeService {
                     + (penalidad == TipoPenalidad.GRAVE ? "GRAVE" : "LEVE") + " registrada";
         }
 
-        ViajeRespuesta respuesta = viajeMapper.toViajeRespuesta(cancelado);
-        respuesta.setMensaje(mensajeActor);
-        return respuesta;
+        return viajeMapper.toViajeRespuesta(cancelado, mensajeActor);
     }
 
     private void enviarRecordatorios(Usuario conductor) {
-        LocalDate hoy = LocalDate.now();
-        LocalDateTime ahora = LocalDateTime.now();
+        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
         List<Viaje> candidatos = viajeRepository.buscarPendientesDeConfirmacion(
                 conductor.getId(), EstadoViaje.PROGRAMADO, hoy, hoy.plusDays(2));
 

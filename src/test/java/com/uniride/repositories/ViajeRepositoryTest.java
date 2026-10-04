@@ -12,6 +12,7 @@ import com.uniride.enums.Rol;
 import com.uniride.enums.TipoPenalidad;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -235,7 +236,7 @@ class ViajeRepositoryTest {
     void historialComoConductorExcluyeSoloFuturosProgramados() {
         Usuario conductor = crearUsuario("viaje11@upc.edu.pe");
         Ruta ruta = crearRuta(conductor, "San Borja");
-        LocalDate hoy = LocalDate.now();
+        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
 
         Viaje futuroProgramado = viajeRepository.save(Viaje.builder().ruta(ruta)
                 .fecha(hoy.plusDays(5)).hora(LocalTime.of(7, 30)).dia("Lunes")

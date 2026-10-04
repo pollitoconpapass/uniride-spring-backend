@@ -1,9 +1,9 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.RechazarMultipleRequest;
-import com.uniride.dto.RechazarRequest;
-import com.uniride.dto.SolicitudRequest;
-import com.uniride.dto.SolicitudRespuesta;
+import com.uniride.dto.requests.RechazarMultipleRequest;
+import com.uniride.dto.requests.RechazarRequest;
+import com.uniride.dto.requests.SolicitudRequest;
+import com.uniride.dto.responses.SolicitudRespuesta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.services.SolicitudService;
 import jakarta.validation.Valid;

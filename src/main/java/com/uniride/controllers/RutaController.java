@@ -1,7 +1,7 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.RutaRequest;
-import com.uniride.dto.RutaRespuesta;
+import com.uniride.dto.requests.RutaRequest;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.services.RutaService;
 import jakarta.validation.Valid;

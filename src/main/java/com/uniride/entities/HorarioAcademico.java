@@ -12,6 +12,8 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -41,12 +43,12 @@ public class HorarioAcademico {
     @PrePersist
     void antesDeGuardar() {
         if (fechaActualizacion == null) {
-            fechaActualizacion = LocalDateTime.now();
+            fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
         }
     }
 
     @PreUpdate
     void antesDeActualizar() {
-        fechaActualizacion = LocalDateTime.now();
+        fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }

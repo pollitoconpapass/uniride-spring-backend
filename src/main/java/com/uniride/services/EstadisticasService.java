@@ -10,11 +10,11 @@ import com.lowagie.text.Phrase;
 import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfWriter;
-import com.uniride.dto.AnalisisSemanalRespuesta;
-import com.uniride.dto.DiaCantidadRespuesta;
-import com.uniride.dto.EstadisticasRespuesta;
-import com.uniride.dto.RankingRutasRespuesta;
-import com.uniride.dto.RutaFrecuenteRespuesta;
+import com.uniride.dto.responses.AnalisisSemanalRespuesta;
+import com.uniride.dto.responses.DiaCantidadRespuesta;
+import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.dto.responses.RankingRutasRespuesta;
+import com.uniride.dto.responses.RutaFrecuenteRespuesta;
 import com.uniride.entities.Penalidad;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
@@ -29,6 +29,7 @@ import com.uniride.repositories.ViajeRepository;
 import java.awt.Color;
 import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -75,12 +76,11 @@ public class EstadisticasService {
                 id, EstadoViaje.CANCELADO);
         long penalidades = penalidadRepository.countByUsuarioId(id);
 
-        return EstadisticasRespuesta.builder()
-                .viajesComoConductor(viajesComoConductor)
-                .viajesComoPasajero(viajesComoPasajero)
-                .viajesCancelados(canceladosComoConductor + canceladosComoPasajero)
-                .penalidadesAcumuladas(penalidades)
-                .build();
+        return new EstadisticasRespuesta(
+                viajesComoConductor,
+                viajesComoPasajero,
+                canceladosComoConductor + canceladosComoPasajero,
+                penalidades);
     }
 
     @Transactional(readOnly = true)
@@ -96,15 +96,14 @@ public class EstadisticasService {
                 id, EstadoViaje.CANCELADO);
 
         if (realizados < VIAJES_MINIMOS) {
-            return AnalisisSemanalRespuesta.builder()
-                    .suficientesDatos(false)
-                    .mensaje("Tienes " + realizados
+            return new AnalisisSemanalRespuesta(
+                    false,
+                    "Tienes " + realizados
                             + " viaje(s) completado(s); necesitas al menos "
-                            + VIAJES_MINIMOS + " para generar el análisis semanal.")
-                    .viajesPorDia(List.of())
-                    .canceladosPorMi(canceladosPorMi)
-                    .canceladosPorTerceros(canceladosPorTerceros)
-                    .build();
+                            + VIAJES_MINIMOS + " para generar el análisis semanal.",
+                    List.of(),
+                    canceladosPorMi,
+                    canceladosPorTerceros);
         }
 
         Map<String, Long> conteo = new HashMap<>();
@@ -120,12 +119,12 @@ public class EstadisticasService {
                 .map(dia -> new DiaCantidadRespuesta(dia, conteo.getOrDefault(dia, 0L)))
                 .toList();
 
-        return AnalisisSemanalRespuesta.builder()
-                .suficientesDatos(true)
-                .viajesPorDia(porDia)
-                .canceladosPorMi(canceladosPorMi)
-                .canceladosPorTerceros(canceladosPorTerceros)
-                .build();
+        return new AnalisisSemanalRespuesta(
+                true,
+                null,
+                porDia,
+                canceladosPorMi,
+                canceladosPorTerceros);
     }
 
     @Transactional(readOnly = true)
@@ -136,13 +135,12 @@ public class EstadisticasService {
         long completados = viajeRepository.countByRutaConductorIdAndEstado(
                 id, EstadoViaje.COMPLETADO);
         if (completados < VIAJES_MINIMOS) {
-            return RankingRutasRespuesta.builder()
-                    .suficientesDatos(false)
-                    .mensaje("Tienes " + completados
+            return new RankingRutasRespuesta(
+                    false,
+                    "Tienes " + completados
                             + " viaje(s) completado(s) como conductor; necesitas al menos "
-                            + VIAJES_MINIMOS + " para generar el ranking de rutas.")
-                    .ranking(List.of())
-                    .build();
+                            + VIAJES_MINIMOS + " para generar el ranking de rutas.",
+                    List.of());
         }
 
         Map<String, RutaFrecuenteRespuesta> porCombo = new LinkedHashMap<>();
@@ -150,25 +148,24 @@ public class EstadisticasService {
             String origen = (String) fila[0];
             String destino = (String) fila[1];
             long cantidad = ((Number) fila[2]).longValue();
-            porCombo.put(clave(origen, destino), RutaFrecuenteRespuesta.builder()
-                    .origen(origen)
-                    .destino(destino)
-                    .cantidad(cantidad)
-                    .penalidades(0)
-                    .build());
+            porCombo.put(clave(origen, destino),
+                    new RutaFrecuenteRespuesta(origen, destino, cantidad, 0));
         }
 
         for (Object[] fila : viajeRepository.penalidadesPorRutaComoConductor(id)) {
-            RutaFrecuenteRespuesta existente = porCombo.get(clave((String) fila[0], (String) fila[1]));
+            String claveCombo = clave((String) fila[0], (String) fila[1]);
+            RutaFrecuenteRespuesta existente = porCombo.get(claveCombo);
             if (existente != null) {
-                existente.setPenalidades(((Number) fila[2]).longValue());
+                porCombo.put(claveCombo, new RutaFrecuenteRespuesta(
+                        existente.origen(), existente.destino(), existente.cantidad(),
+                        ((Number) fila[2]).longValue()));
             }
         }
 
-        return RankingRutasRespuesta.builder()
-                .suficientesDatos(true)
-                .ranking(new ArrayList<>(porCombo.values()))
-                .build();
+        return new RankingRutasRespuesta(
+                true,
+                null,
+                new ArrayList<>(porCombo.values()));
     }
 
     @Transactional(readOnly = true)
@@ -188,7 +185,7 @@ public class EstadisticasService {
 
         Map<Long, String> penalidades = penalidadesPorViaje(usuario.getId());
         List<FilaHistorial> filas = new ArrayList<>();
-        LocalDate hoy = LocalDate.now();
+        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
 
         if (!tipoLimpio.equals("pasajero")) {
             List<Viaje> viajes = viajeRepository.historialComoConductor(
@@ -301,7 +298,7 @@ public class EstadisticasService {
                     + usuario.getApellidos() + " (" + usuario.getCorreoInstitucional() + ")",
                     fuenteSub));
             documento.add(new Paragraph(rango + " | Exportado el "
-                    + LocalDate.now().format(FORMATO_FECHA), fuenteSub));
+                    + LocalDate.now(ZoneId.systemDefault()).format(FORMATO_FECHA), fuenteSub));
             documento.add(new Paragraph(" ", fuenteSub));
 
             PdfPTable tabla = new PdfPTable(new float[]{9, 9, 7, 31, 9, 13, 22});

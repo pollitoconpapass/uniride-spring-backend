@@ -1,8 +1,8 @@
 package com.uniride.controllers;
 
-import com.uniride.dto.AnalisisSemanalRespuesta;
-import com.uniride.dto.EstadisticasRespuesta;
-import com.uniride.dto.RankingRutasRespuesta;
+import com.uniride.dto.responses.AnalisisSemanalRespuesta;
+import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.dto.responses.RankingRutasRespuesta;
 import com.uniride.services.EstadisticasService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
