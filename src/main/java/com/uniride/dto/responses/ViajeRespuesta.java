@@ -14,5 +14,6 @@ public record ViajeRespuesta(
         boolean confirmado,
         LocalDateTime fechaConfirmacion,
         EstadoViaje estado,
+        int pasajeros,
         String mensaje) {
 }

@@ -286,6 +286,7 @@ public class ViajeService {
             solicitud.setEstado(EstadoSolicitud.CANCELADA);
         }
         solicitudRepository.saveAll(involucradas);
+        viaje.setPasajeros(0);
 
         Set<Usuario> aNotificar = new LinkedHashSet<>();
         aNotificar.add(viaje.getRuta().getConductor());

@@ -15,6 +15,7 @@ public interface ViajeMapper {
     @Mapping(target = "confirmado", ignore = true)
     @Mapping(target = "fechaConfirmacion", ignore = true)
     @Mapping(target = "estado", ignore = true)
+    @Mapping(target = "pasajeros", ignore = true)
     @Mapping(target = "recordatorioEnviado", ignore = true)
     Viaje toViaje(ViajeRequest request);
 

@@ -36,9 +36,15 @@ public class ContribucionService {
             throw new BusinessException("El viaje no está disponible para calcular una sugerencia; "
                     + "estado actual: " + viaje.getEstado());
         }
+
+        int pasajerosEnViaje = viaje.getPasajeros();
+        if (pasajerosEnViaje > 0) {
+            pasajeros = pasajerosEnViaje;
+        }
         if (pasajeros == null) {
             throw new CamposInvalidosException(
-                    "Debes indicar la cantidad de pasajeros para calcular la sugerencia");
+                    "El viaje aún no tiene pasajeros aceptados; indica la cantidad de pasajeros "
+                            + "para calcular la sugerencia");
         }
         if (pasajeros < 1) {
             throw new CamposInvalidosException("La cantidad de pasajeros debe ser al menos 1");
