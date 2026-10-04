@@ -124,25 +124,7 @@ public class ViajeService {
 
         Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
         if (hastaSalida.isNegative()) {
-            throw new BusinessException("El viaje ya ocurrió");
-        }
-        if (hastaSalida.compareTo(PLAZO_CONFIRMACION) < 0) {
-            viaje.setEstado(EstadoViaje.VENCIDO);
-            viajeRepository.save(viaje);
-            penalidadRepository.save(Penalidad.builder()
-                    .usuario(conductor)
-                    .viaje(viaje)
-                    .tipo(TipoPenalidad.LEVE)
-                    .motivo("No confirmó el viaje dentro del plazo de 24 horas antes de la salida")
-                    .build());
-            notificacionService.notificar(conductor, TipoNotificacion.ERROR,
-                    "Confirmación vencida",
-                    "No confirmaste a tiempo el viaje del " + viaje.getDia() + " " + viaje.getFecha()
-                            + " a las " + viaje.getHora()
-                            + ". El viaje quedó VENCIDO y se registró una penalidad leve en tu perfil.");
-            return viajeMapper.toViajeRespuesta(viaje,
-                    "El plazo de confirmación (24 horas antes) venció; "
-                            + "el viaje quedó VENCIDO y se registró una penalidad leve");
+            throw new BusinessException("El viaje ya ocurrió; no se puede confirmar");
         }
 
         viaje.setConfirmado(true);
