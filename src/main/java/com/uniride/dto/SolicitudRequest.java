@@ -17,4 +17,6 @@ public class SolicitudRequest {
 
     @NotNull(message = "La preferencia de compensación es obligatoria")
     private TipoCompensacion preferenciaCompensacion;
+
+    private Long metodoCompensacionId;
 }

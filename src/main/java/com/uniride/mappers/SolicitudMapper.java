@@ -16,6 +16,7 @@ public interface SolicitudMapper {
     @Mapping(target = "estado", ignore = true)
     @Mapping(target = "motivoRechazo", ignore = true)
     @Mapping(target = "fechaCreacion", ignore = true)
+    @Mapping(target = "metodoCompensacion", ignore = true)
     Solicitud toSolicitud(SolicitudRequest request);
 
     @Mapping(target = "advertencia", ignore = true)
@@ -33,5 +34,8 @@ public interface SolicitudMapper {
     @Mapping(source = "pasajero.correoInstitucional", target = "pasajeroCorreo")
     @Mapping(source = "acuerdo.terminos", target = "acuerdoTerminos")
     @Mapping(source = "acuerdo.estado", target = "acuerdoEstado")
+    @Mapping(source = "metodoCompensacion.id", target = "metodoCompensacionId")
+    @Mapping(source = "metodoCompensacion.tipo", target = "metodoCompensacionTipo")
+    @Mapping(source = "metodoCompensacion.descripcion", target = "metodoCompensacionDescripcion")
     SolicitudRespuesta toSolicitudRespuesta(Solicitud solicitud);
 }

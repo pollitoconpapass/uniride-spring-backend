@@ -1,10 +1,12 @@
 package com.uniride.controllers;
 
 import com.uniride.dto.SolicitudRespuesta;
+import com.uniride.dto.SugerenciaContribucionRespuesta;
 import com.uniride.dto.ViajeRequest;
 import com.uniride.dto.ViajeRespuesta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
+import com.uniride.services.ContribucionService;
 import com.uniride.services.SolicitudService;
 import com.uniride.services.ViajeService;
 import jakarta.validation.Valid;
@@ -25,10 +27,13 @@ public class ViajeController {
 
     private final ViajeService viajeService;
     private final SolicitudService solicitudService;
+    private final ContribucionService contribucionService;
 
-    public ViajeController(ViajeService viajeService, SolicitudService solicitudService) {
+    public ViajeController(ViajeService viajeService, SolicitudService solicitudService,
+            ContribucionService contribucionService) {
         this.viajeService = viajeService;
         this.solicitudService = solicitudService;
+        this.contribucionService = contribucionService;
     }
 
     @PostMapping("/rutas/{rutaId}/viajes")
@@ -51,6 +56,13 @@ public class ViajeController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
         return ResponseEntity.ok(solicitudService.listarRecibidas(viajeId, estado, page, size));
+    }
+
+    @GetMapping("/viajes/{id}/sugerencia-contribucion")
+    public ResponseEntity<SugerenciaContribucionRespuesta> sugerenciaContribucion(
+            @PathVariable Long id,
+            @RequestParam(required = false) Integer pasajeros) {
+        return ResponseEntity.ok(contribucionService.sugerencia(id, pasajeros));
     }
 
     @PutMapping("/viajes/{id}/confirmar")

@@ -5,6 +5,7 @@ import com.uniride.dto.RechazarRequest;
 import com.uniride.dto.SolicitudRequest;
 import com.uniride.dto.SolicitudRespuesta;
 import com.uniride.entities.AcuerdoCompensacion;
+import com.uniride.entities.MetodoCompensacion;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
@@ -17,6 +18,7 @@ import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.SolicitudMapper;
 import com.uniride.repositories.AcuerdoCompensacionRepository;
+import com.uniride.repositories.MetodoCompensacionRepository;
 import com.uniride.repositories.PerfilRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
@@ -40,18 +42,21 @@ public class SolicitudService {
     private final ViajeRepository viajeRepository;
     private final PerfilRepository perfilRepository;
     private final AcuerdoCompensacionRepository acuerdoCompensacionRepository;
+    private final MetodoCompensacionRepository metodoCompensacionRepository;
     private final SolicitudMapper solicitudMapper;
     private final UsuarioService usuarioService;
     private final NotificacionService notificacionService;
 
     public SolicitudService(SolicitudRepository solicitudRepository, ViajeRepository viajeRepository,
             PerfilRepository perfilRepository, AcuerdoCompensacionRepository acuerdoCompensacionRepository,
+            MetodoCompensacionRepository metodoCompensacionRepository,
             SolicitudMapper solicitudMapper, UsuarioService usuarioService,
             NotificacionService notificacionService) {
         this.solicitudRepository = solicitudRepository;
         this.viajeRepository = viajeRepository;
         this.perfilRepository = perfilRepository;
         this.acuerdoCompensacionRepository = acuerdoCompensacionRepository;
+        this.metodoCompensacionRepository = metodoCompensacionRepository;
         this.solicitudMapper = solicitudMapper;
         this.usuarioService = usuarioService;
         this.notificacionService = notificacionService;
@@ -84,10 +89,13 @@ public class SolicitudService {
             throw new BusinessException("La ruta ya no tiene cupos disponibles");
         }
 
+        MetodoCompensacion metodo = validarMetodoCompensacion(request, pasajero);
+
         Solicitud solicitud = solicitudMapper.toSolicitud(request);
         solicitud.setViaje(viaje);
         solicitud.setPasajero(pasajero);
         solicitud.setEstado(EstadoSolicitud.PENDIENTE);
+        solicitud.setMetodoCompensacion(metodo);
         Solicitud guardada = solicitudRepository.save(solicitud);
 
         notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Nueva solicitud de viaje",
@@ -254,6 +262,24 @@ public class SolicitudService {
         }
     }
 
+    private MetodoCompensacion validarMetodoCompensacion(SolicitudRequest request, Usuario pasajero) {
+        if (request.getMetodoCompensacionId() == null) {
+            return null;
+        }
+        MetodoCompensacion metodo = metodoCompensacionRepository
+                .findByIdAndUsuarioId(request.getMetodoCompensacionId(), pasajero.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Método de compensación no encontrado"));
+        if (!metodo.isActivo()) {
+            throw new BusinessException("El método de compensación seleccionado está desactivado");
+        }
+        if (metodo.getTipo() != request.getPreferenciaCompensacion()) {
+            throw new BusinessException("El método seleccionado (" + metodo.getTipo()
+                    + ") no coincide con tu preferencia de compensación ("
+                    + request.getPreferenciaCompensacion() + ")");
+        }
+        return metodo;
+    }
+
     private String terminosAcuerdo(Solicitud solicitud) {
         Viaje viaje = solicitud.getViaje();
         return "Borrador de acuerdo de compensación\n"
@@ -263,6 +289,10 @@ public class SolicitudService {
                 + " (" + solicitud.getPasajero().getCorreoInstitucional() + ")\n"
                 + "Conductor: " + viaje.getRuta().getConductor().getNombre() + "\n"
                 + "Compensación propuesta: " + solicitud.getPreferenciaCompensacion() + "\n"
+                + (solicitud.getMetodoCompensacion() != null
+                        ? "Método de pago elegido: " + solicitud.getMetodoCompensacion().getTipo()
+                                + " (" + solicitud.getMetodoCompensacion().getDescripcion() + ")\n"
+                        : "")
                 + "Pendiente de revisión y confirmación por ambas partes.";
     }
 

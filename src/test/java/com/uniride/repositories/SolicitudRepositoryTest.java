@@ -2,6 +2,7 @@ package com.uniride.repositories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uniride.entities.MetodoCompensacion;
 import com.uniride.entities.Penalidad;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Solicitud;
@@ -41,6 +42,9 @@ class SolicitudRepositoryTest {
 
     @Autowired
     private PenalidadRepository penalidadRepository;
+
+    @Autowired
+    private MetodoCompensacionRepository metodoCompensacionRepository;
 
     private Usuario crearUsuario(String correo, Rol rol) {
         return usuarioRepository.save(Usuario.builder()
@@ -292,5 +296,31 @@ class SolicitudRepositoryTest {
 
         assertThat(total).isEqualTo(2);
         assertThat(porTerceros).isEqualTo(1);
+    }
+
+    @Test
+    void guardarSolicitudConMetodoCompensacion() {
+        Usuario conductor = crearUsuario("sol30@upc.edu.pe", Rol.CONDUCTOR);
+        Usuario pasajero = crearUsuario("sol31@upc.edu.pe", Rol.PASAJERO);
+        Viaje viaje = crearViajeConEstado(conductor, EstadoViaje.PROGRAMADO);
+        MetodoCompensacion metodo = metodoCompensacionRepository.save(MetodoCompensacion.builder()
+                .usuario(pasajero)
+                .tipo(TipoCompensacion.DINERO)
+                .descripcion("Yape - Juan")
+                .activo(true)
+                .build());
+
+        Solicitud guardada = solicitudRepository.save(Solicitud.builder()
+                .viaje(viaje)
+                .pasajero(pasajero)
+                .preferenciaCompensacion(TipoCompensacion.DINERO)
+                .estado(EstadoSolicitud.PENDIENTE)
+                .metodoCompensacion(metodo)
+                .build());
+
+        Solicitud relectura = solicitudRepository.findById(guardada.getId()).orElseThrow();
+        assertThat(relectura.getMetodoCompensacion()).isNotNull();
+        assertThat(relectura.getMetodoCompensacion().getId()).isEqualTo(metodo.getId());
+        assertThat(relectura.getMetodoCompensacion().getDescripcion()).isEqualTo("Yape - Juan");
     }
 }
