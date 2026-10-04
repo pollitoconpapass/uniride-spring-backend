@@ -101,6 +101,11 @@ public class HorarioAcademicoService {
             validarCurso(request);
             Curso curso = cursoMapper.toCurso(request);
             curso.setHorarioAcademico(horario);
+
+            Curso enConflicto = buscarConflicto(horario, curso, cursos);
+            if (enConflicto != null) {
+                throw new BusinessException(mensajeConflicto(enConflicto, curso));
+            }
             cursos.add(curso);
         }
 
@@ -152,7 +157,7 @@ public class HorarioAcademicoService {
         Usuario usuario = usuarioService.usuarioActual();
         HorarioAcademico horario = obtenerOCrearHorario(usuario);
 
-        int cursosImportados = importarCursosDesdePdf(archivo, horario);
+        ImportacionPdf importacion = importarCursosDesdePdf(archivo, horario);
 
         archivoCargaRepository.save(ArchivoCarga.builder()
                 .horarioAcademico(horario)
@@ -161,14 +166,39 @@ public class HorarioAcademicoService {
                 .tamanoMb(archivo.getSize() / (1024.0 * 1024.0))
                 .build());
 
-        notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Archivo cargado",
-                "El archivo " + nombreArchivo + " fue cargado correctamente.");
+        boolean hayConflictos = !importacion.conflictos().isEmpty();
+        notificacionService.notificar(usuario,
+                hayConflictos ? TipoNotificacion.ADVERTENCIA : TipoNotificacion.EXITO,
+                "Archivo cargado",
+                "El archivo " + nombreArchivo + " fue cargado correctamente."
+                        + (hayConflictos
+                                ? " " + importacion.conflictos().size()
+                                        + " cursos no se importaron por conflicto de horario."
+                                : ""));
 
-        String mensaje = cursosImportados > 0
-                ? "Archivo subido correctamente. Se importaron " + cursosImportados + " cursos."
-                : "Archivo subido correctamente. No se detectaron cursos en el PDF.";
+        return new ArchivoRespuesta(mensajeImportacion(importacion),
+                importacion.importados(),
+                importacion.conflictos().size(),
+                nombreArchivo);
+    }
 
-        return new ArchivoRespuesta(mensaje, cursosImportados, nombreArchivo);
+    private String mensajeImportacion(ImportacionPdf importacion) {
+        List<String> conflictos = importacion.conflictos();
+        String mensaje;
+        if (importacion.importados() > 0) {
+            mensaje = "Archivo subido correctamente. Se importaron "
+                    + importacion.importados() + " cursos.";
+        } else if (conflictos.isEmpty()) {
+            mensaje = "Archivo subido correctamente. No se detectaron cursos en el PDF.";
+        } else {
+            mensaje = "Archivo subido correctamente. Ningún curso del PDF pudo importarse.";
+        }
+        if (!conflictos.isEmpty()) {
+            mensaje += " " + conflictos.size() + " omitidos por conflicto de horario: "
+                    + String.join(" | ", conflictos)
+                    + ". Elimina o edita el curso existente y vuelve a subir el archivo.";
+        }
+        return mensaje;
     }
 
     private void validarCurso(CursoRequest request) {
@@ -206,7 +236,7 @@ public class HorarioAcademicoService {
         return "";
     }
 
-    private int importarCursosDesdePdf(MultipartFile archivo, HorarioAcademico horario) {
+    private ImportacionPdf importarCursosDesdePdf(MultipartFile archivo, HorarioAcademico horario) {
         String texto;
         try {
             texto = extraerTexto(archivo.getBytes());
@@ -219,6 +249,7 @@ public class HorarioAcademicoService {
         }
 
         List<Curso> cursos = new ArrayList<>();
+        List<String> conflictos = new ArrayList<>();
         Set<String> clavesVistas = new HashSet<>();
 
         for (CursoParseado parseado : parsearCursos(texto)) {
@@ -231,19 +262,57 @@ public class HorarioAcademicoService {
                 continue;
             }
 
-            cursos.add(Curso.builder()
+            Curso curso = Curso.builder()
                     .horarioAcademico(horario)
                     .nombre(parseado.nombre())
                     .dia(parseado.dia())
                     .horaInicio(parseado.horaInicio())
                     .horaFin(parseado.horaFin())
-                    .build());
+                    .build();
+
+            Curso enConflicto = buscarConflicto(horario, curso, cursos);
+            if (enConflicto != null) {
+                conflictos.add(describirCurso(curso));
+                continue;
+            }
+            cursos.add(curso);
         }
 
         if (!cursos.isEmpty()) {
             cursoRepository.saveAll(cursos);
         }
-        return cursos.size();
+        return new ImportacionPdf(cursos.size(), conflictos);
+    }
+
+    private Curso buscarConflicto(HorarioAcademico horario, Curso curso, List<Curso> pendientes) {
+        for (Curso previo : pendientes) {
+            if (seSolapan(previo, curso)) {
+                return previo;
+            }
+        }
+        return cursoRepository.buscarConflictos(horario.getId(), curso.getDia(),
+                        curso.getHoraInicio(), curso.getHoraFin())
+                .stream().findFirst().orElse(null);
+    }
+
+    private boolean seSolapan(Curso primero, Curso segundo) {
+        return primero.getDia().equalsIgnoreCase(segundo.getDia())
+                && primero.getHoraInicio().isBefore(segundo.getHoraFin())
+                && primero.getHoraFin().isAfter(segundo.getHoraInicio());
+    }
+
+    private String mensajeConflicto(Curso existente, Curso nuevo) {
+        return "Conflicto de horario: " + describirCurso(existente)
+                + " se solapa con " + describirCurso(nuevo)
+                + ". Elimina o edita uno de los cursos antes de continuar.";
+    }
+
+    private String describirCurso(Curso curso) {
+        return "«" + curso.getNombre() + "» (" + curso.getDia() + " de "
+                + curso.getHoraInicio() + " a " + curso.getHoraFin() + ")";
+    }
+
+    record ImportacionPdf(int importados, List<String> conflictos) {
     }
 
     String extraerTexto(byte[] bytes) {
