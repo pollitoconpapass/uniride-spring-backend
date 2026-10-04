@@ -98,4 +98,42 @@ class CursoRepositoryTest {
 
         assertThat(cursos).isEmpty();
     }
+
+    @Test
+    void buscarConflictosPorSolapeEnElMismoDia() {
+        HorarioAcademico horario = crearHorario("cursos5@upc.edu.pe");
+        cursoRepository.save(crearCurso(horario, "Calculo II", "Lunes", "08:00", "10:00"));
+        cursoRepository.save(crearCurso(horario, "Fisica I", "Lunes", "14:00", "16:00"));
+        cursoRepository.save(crearCurso(horario, "Ingles", "Martes", "08:00", "10:00"));
+
+        List<Curso> solapes = cursoRepository.buscarConflictos(horario.getId(),
+                "lunes", LocalTime.of(9, 0), LocalTime.of(11, 0));
+
+        assertThat(solapes).extracting(Curso::getNombre).containsExactly("Calculo II");
+    }
+
+    @Test
+    void buscarConflictosDetectaRangoContenidoEnUnCursoExistente() {
+        HorarioAcademico horario = crearHorario("cursos6@upc.edu.pe");
+        cursoRepository.save(crearCurso(horario, "Calculo II", "Lunes", "08:00", "10:00"));
+
+        List<Curso> solapes = cursoRepository.buscarConflictos(horario.getId(),
+                "Lunes", LocalTime.of(8, 30), LocalTime.of(9, 30));
+
+        assertThat(solapes).extracting(Curso::getNombre).containsExactly("Calculo II");
+    }
+
+    @Test
+    void buscarConflictosIgnoraDiasDistintosYHorariosQueSeTocan() {
+        HorarioAcademico horario = crearHorario("cursos7@upc.edu.pe");
+        cursoRepository.save(crearCurso(horario, "Calculo II", "Lunes", "08:00", "10:00"));
+
+        List<Curso> seTocan = cursoRepository.buscarConflictos(horario.getId(),
+                "Lunes", LocalTime.of(10, 0), LocalTime.of(12, 0));
+        List<Curso> otroDia = cursoRepository.buscarConflictos(horario.getId(),
+                "Miercoles", LocalTime.of(8, 0), LocalTime.of(10, 0));
+
+        assertThat(seTocan).isEmpty();
+        assertThat(otroDia).isEmpty();
+    }
 }
