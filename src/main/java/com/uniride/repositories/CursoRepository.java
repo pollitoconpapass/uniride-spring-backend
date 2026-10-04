@@ -1,6 +1,7 @@
 package com.uniride.repositories;
 
 import com.uniride.entities.Curso;
+import java.time.LocalTime;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -15,6 +16,9 @@ public interface CursoRepository extends JpaRepository<Curso, Long> {
     Page<Curso> findByHorarioAcademicoId(Long horarioAcademicoId, Pageable pageable);
 
     long countByHorarioAcademicoId(Long horarioAcademicoId);
+
+    boolean existsByHorarioAcademicoIdAndNombreAndDiaAndHoraInicio(Long horarioAcademicoId,
+            String nombre, String dia, LocalTime horaInicio);
 
     @Query("SELECT c FROM Curso c WHERE c.horarioAcademico.usuario.id = :usuarioId")
     Page<Curso> buscarPorUsuario(@Param("usuarioId") Long usuarioId, Pageable pageable);

@@ -263,7 +263,7 @@ Sube masivamente cursos y horarios desde un archivo (US23).
 
 | Regla | Detalle |
 |---|---|
-| Formatos | Solo `.txt` o `.pdf` |
+| Formatos | Solo `.pdf` |
 | Tamaño máx. | 1 MB |
 
 **Respuestas:** `201` ✅ `{mensaje, cursosImportados, nombreArchivo}` · `400` sin archivo, formato no permitido o tamaño mayor a 1 MB · `403` sin token
