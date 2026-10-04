@@ -60,6 +60,10 @@ public class Solicitud {
     @Column(name = "fecha_creacion", nullable = false)
     private LocalDateTime fechaCreacion;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "metodo_compensacion_id")
+    private MetodoCompensacion metodoCompensacion;
+
     @OneToOne(mappedBy = "solicitud", fetch = FetchType.LAZY)
     private AcuerdoCompensacion acuerdo;
 

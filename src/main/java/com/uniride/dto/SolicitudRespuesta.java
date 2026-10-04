@@ -38,4 +38,7 @@ public class SolicitudRespuesta {
     private String pasajeroDistrito;
     private String acuerdoTerminos;
     private EstadoAcuerdo acuerdoEstado;
+    private Long metodoCompensacionId;
+    private TipoCompensacion metodoCompensacionTipo;
+    private String metodoCompensacionDescripcion;
 }
