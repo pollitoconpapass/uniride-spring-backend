@@ -43,7 +43,7 @@ public class HorarioAcademicoService {
     private static final Pattern PATRON_HORARIO =
             Pattern.compile("(\\d{1,2}:\\d{2})\\s*-\\s*(\\d{1,2}:\\d{2})");
     private static final Pattern PATRON_CODIGO_CURSO =
-            Pattern.compile("\\s+-\\s+\\d{2}[A-Z]{2}\\d{3,6}\\s*$");
+            Pattern.compile("\\s+-\\s+\\d{1,3}[A-Z]{1,4}\\d{3,6}\\s*$");
     private static final Pattern PREFIJO_DIA = Pattern.compile(
             "(?i)^\\s*(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\\s+\\d{1,2}\\b");
     private static final DateTimeFormatter FORMATO_HORA = DateTimeFormatter.ofPattern("H:mm");
