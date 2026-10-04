@@ -37,6 +37,9 @@ uniride:
   jwt:
     secret: qlINUWVDUUnHDEaKxOC9NhklhoMxIjKSveeUaLsp59k=
     expiracion-ms: 86400000
+  ocr:
+    idioma: spa+eng
+    tessdata:
 
 server:
   port: 8080
