@@ -47,6 +47,36 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 
 ## Módulo 1 — Usuarios, sesión, perfil y horarios
 
+### Autorización por rol
+
+UniRide utiliza una única cuenta por usuario con un rol activo que puede
+alternarse entre `CONDUCTOR` y `PASAJERO`.
+
+El cambio de rol no crea una segunda cuenta ni elimina rutas, solicitudes
+o historial anteriores.
+
+El rol activo puede modificarse mediante:
+
+`PUT /api/usuarios/rol`
+
+#### CONDUCTOR
+
+Puede gestionar rutas y viajes propios, revisar solicitudes recibidas,
+confirmar, iniciar y completar viajes.
+
+#### PASAJERO
+
+Puede buscar viajes disponibles, crear y gestionar solicitudes y consultar
+sugerencias de contribución.
+
+#### Funcionalidades compartidas
+
+Perfil, horarios académicos, métodos de compensación, historial,
+estadísticas generales y cancelación de viajes según participación.
+
+Los endpoints restringidos responden `403 Forbidden` cuando el usuario
+autenticado no posee el rol requerido.
+
 ### Autenticación (público)
 
 #### `POST /api/auth/registro`
@@ -130,11 +160,16 @@ Devuelve el usuario autenticado (US03).
 **Respuestas:** `200` ✅ `{id, correo, nombre, apellidos, telefono, rol, cuentaVerificada}` · `403` sin token
 
 #### `PUT /api/usuarios/rol`
-Cambia el rol principal del usuario (US03, escenario alternativo).
 
-**Body (JSON)**
+Cambia el rol activo de la cuenta entre `CONDUCTOR` y `PASAJERO`
+sin crear una cuenta adicional.
+
+**Body**
+
 ```json
-{ "rol": "PASAJERO" }
+{
+  "rol": "PASAJERO"
+}
 ```
 
 | Campo | Tipo | Obligatorio |
