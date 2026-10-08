@@ -31,6 +31,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.scheduling.annotation.Scheduled;
 
 @Service
 public class ViajeService {
@@ -87,8 +88,11 @@ public class ViajeService {
     public Page<ViajeRespuesta> listarPorRuta(Long rutaId, int page, int size) {
         Usuario conductor = usuarioService.usuarioActual();
         buscarRutaPropia(rutaId, conductor);
-        enviarRecordatorios(conductor);
-        return viajeRepository.findByRutaIdOrderByFechaAscHoraAsc(rutaId, PageRequest.of(page, size))
+
+        return viajeRepository
+                .findByRutaIdOrderByFechaAscHoraAsc(
+                        rutaId,
+                        PageRequest.of(page, size))
                 .map(viajeMapper::toViajeRespuesta);
     }
 
@@ -361,29 +365,53 @@ public class ViajeService {
         return viajeMapper.toViajeRespuesta(cancelado, mensajeActor);
     }
 
-    private void enviarRecordatorios(Usuario conductor) {
-        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
-        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
-        List<Viaje> candidatos = viajeRepository.buscarPendientesDeConfirmacion(
-                conductor.getId(), EstadoViaje.PROGRAMADO, hoy, hoy.plusDays(2));
+    @Scheduled(fixedRate = 300000)
+    @Transactional
+    public void enviarRecordatoriosAutomaticos() {
+
+        LocalDate hoy =
+                LocalDate.now(ZoneId.systemDefault());
+
+        LocalDateTime ahora =
+                LocalDateTime.now(ZoneId.systemDefault());
+
+        List<Viaje> candidatos =
+                viajeRepository.buscarPendientesDeConfirmacionAutomaticos(
+                        EstadoViaje.PROGRAMADO,
+                        hoy,
+                        hoy.plusDays(2));
 
         for (Viaje viaje : candidatos) {
-            if (viaje.isRecordatorioEnviado()) {
-                continue;
-            }
-            Duration faltan = Duration.between(ahora, horaSalida(viaje));
+
+            Duration faltan =
+                    Duration.between(
+                            ahora,
+                            horaSalida(viaje));
+
             if (faltan.isNegative()
                     || faltan.compareTo(UMBRAL_RECORDATORIO) > 0
                     || faltan.compareTo(PLAZO_CONFIRMACION) < 0) {
                 continue;
             }
+
+            Usuario conductor =
+                    viaje.getRuta().getConductor();
+
             viaje.setRecordatorioEnviado(true);
             viajeRepository.save(viaje);
-            notificacionService.notificar(conductor, TipoNotificacion.RECORDATORIO,
+
+            notificacionService.notificar(
+                    conductor,
+                    TipoNotificacion.RECORDATORIO,
                     "Recordatorio: confirma tu viaje",
-                    "Faltan menos de 20 horas para tu viaje del " + viaje.getDia() + " "
-                            + viaje.getFecha() + " a las " + viaje.getHora()
-                            + ". Confírmalo a tiempo para evitar penalidades.");
+                    "Faltan menos de 20 horas para tu viaje del "
+                            + viaje.getDia()
+                            + " "
+                            + viaje.getFecha()
+                            + " a las "
+                            + viaje.getHora()
+                            + ". Confírmalo antes de que falten 12 horas "
+                            + "para evitar que el viaje venza.");
         }
     }
 

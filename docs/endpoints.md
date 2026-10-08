@@ -503,7 +503,11 @@ Confirma un viaje con al menos 12 horas de anticipación respecto a la salida (U
 - `409` viaje no `PROGRAMADO` o viaje ya ocurrido.
 - `404` viaje inexistente o ajeno.
 
-> Si el viaje continúa sin confirmar cuando faltan aproximadamente 20 horas para la salida, el sistema genera un recordatorio para el conductor.
+> El backend ejecuta automáticamente una revisión periódica de los
+> viajes pendientes de confirmación. Cuando un viaje se encuentra
+> entre 12 y 20 horas de su salida y aún no ha sido confirmado,
+> el sistema genera una única notificación de recordatorio para
+> el conductor.
 
 #### `PUT /api/viajes/{id}/iniciar`
 Pasa el viaje a `EN_PROGRESO` (ciclo de vida: `PROGRAMADO → EN_PROGRESO`).
