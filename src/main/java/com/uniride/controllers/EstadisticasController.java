@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/estadisticas")
@@ -29,6 +30,7 @@ public class EstadisticasController {
         return ResponseEntity.ok(estadisticasService.analisisSemanal());
     }
 
+    @PreAuthorize("hasRole('CONDUCTOR')")
     @GetMapping("/rutas")
     public ResponseEntity<RankingRutasRespuesta> rankingRutas() {
         return ResponseEntity.ok(estadisticasService.rankingRutas());

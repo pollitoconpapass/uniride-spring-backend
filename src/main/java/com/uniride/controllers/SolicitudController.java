@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/solicitudes")
@@ -30,12 +31,14 @@ public class SolicitudController {
         this.solicitudService = solicitudService;
     }
 
+    @PreAuthorize("hasRole('PASAJERO')")
     @PostMapping("/viajes/{viajeId}")
     public ResponseEntity<SolicitudRespuesta> solicitar(@PathVariable Long viajeId,
             @Valid @RequestBody SolicitudRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED).body(solicitudService.crear(viajeId, request));
     }
 
+    @PreAuthorize("hasRole('PASAJERO')")
     @GetMapping
     public ResponseEntity<Page<SolicitudRespuesta>> misSolicitudes(
             @RequestParam(required = false) EstadoSolicitud estado,
@@ -44,22 +47,26 @@ public class SolicitudController {
         return ResponseEntity.ok(solicitudService.listarMisSolicitudes(estado, page, size));
     }
 
+    @PreAuthorize("hasRole('PASAJERO')")
     @PutMapping("/{id}/cancelar")
     public ResponseEntity<SolicitudRespuesta> cancelar(@PathVariable Long id) {
         return ResponseEntity.ok(solicitudService.cancelar(id));
     }
 
+    @PreAuthorize("hasRole('CONDUCTOR')")
     @PutMapping("/{id}/aceptar")
     public ResponseEntity<SolicitudRespuesta> aceptar(@PathVariable Long id) {
         return ResponseEntity.ok(solicitudService.aceptar(id));
     }
 
+    @PreAuthorize("hasRole('CONDUCTOR')")
     @PutMapping("/{id}/rechazar")
     public ResponseEntity<SolicitudRespuesta> rechazar(@PathVariable Long id,
             @RequestBody(required = false) RechazarRequest request) {
         return ResponseEntity.ok(solicitudService.rechazar(id, request));
     }
 
+    @PreAuthorize("hasRole('CONDUCTOR')")
     @PutMapping("/rechazar-multiples")
     public ResponseEntity<List<SolicitudRespuesta>> rechazarMultiple(
             @Valid @RequestBody RechazarMultipleRequest request) {
