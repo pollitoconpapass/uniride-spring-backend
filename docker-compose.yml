@@ -1,0 +1,55 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: uniride-postgres
+
+    environment:
+      POSTGRES_DB: uniride
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - uniride_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d uniride"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: uniride-backend
+
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/uniride
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+
+      UNIRIDE_JWT_SECRET: ${JWT_SECRET}
+
+      EMAIL_ADDRESS: ${EMAIL_ADDRESS:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+
+      UNIRIDE_OCR_TESSDATA: /usr/share/tesseract-ocr/5/tessdata
+
+      TZ: America/Lima
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+volumes:
+  uniride_postgres_data:

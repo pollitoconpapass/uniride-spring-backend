@@ -12,3 +12,43 @@ Toda la documentación del proyecto se encuentra dentro de la carpeta `docs`. En
 
 - Lista de todos los endpoints presentes hasta el momento: `endpoints.md`
 - Diagramas relacionados con el código del proyecto: `diagramas.md`
+
+## Ejecución con Docker
+
+### Requisitos
+
+- Docker
+- Docker Compose
+
+### Configuración
+
+Crear un archivo `.env` en la raíz tomando como referencia `.env.example`.
+
+Variables requeridas:
+
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET`
+
+Las variables de correo son opcionales para el entorno local.
+
+### Ejecución
+
+Construir y levantar los servicios:
+
+```bash
+docker compose up --build -d
+
+Verificar el estado:
+
+docker compose ps
+
+El backend queda disponible en:
+
+http://localhost:8080/api
+
+PostgreSQL se expone localmente mediante el puerto 5433.
+
+Para detener los servicios:
+
+docker compose down
+```
