@@ -35,8 +35,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ViajeService {
 
-    private static final Duration PLAZO_CONFIRMACION = Duration.ofHours(24);
+    private static final Duration PLAZO_CONFIRMACION = Duration.ofHours(12);
     private static final Duration UMBRAL_RECORDATORIO = Duration.ofHours(20);
+    private static final Duration UMBRAL_CANCELACION_SIN_PENALIDAD = Duration.ofHours(24);
 
     private final ViajeRepository viajeRepository;
     private final RutaRepository rutaRepository;
@@ -125,6 +126,37 @@ public class ViajeService {
         Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
         if (hastaSalida.isNegative()) {
             throw new BusinessException("El viaje ya ocurrió; no se puede confirmar");
+        }
+
+        if (hastaSalida.compareTo(PLAZO_CONFIRMACION) < 0) {
+            viaje.setEstado(EstadoViaje.VENCIDO);
+
+            Viaje vencido = viajeRepository.save(viaje);
+
+            penalidadRepository.save(Penalidad.builder()
+                    .usuario(conductor)
+                    .viaje(viaje)
+                    .tipo(TipoPenalidad.LEVE)
+                    .motivo("No confirmó el viaje con al menos 12 horas de anticipación")
+                    .build());
+
+            notificacionService.notificar(
+                    conductor,
+                    TipoNotificacion.ERROR,
+                    "Confirmación vencida",
+                    "No confirmaste a tiempo el viaje del "
+                            + viaje.getDia() + " "
+                            + viaje.getFecha()
+                            + " a las "
+                            + viaje.getHora()
+                            + ". El viaje quedó VENCIDO y se registró una penalidad leve."
+            );
+
+            return viajeMapper.toViajeRespuesta(
+                    vencido,
+                    "El plazo de confirmación de 12 horas venció; "
+                            + "el viaje quedó VENCIDO y se registró una penalidad leve"
+            );
         }
 
         viaje.setConfirmado(true);
@@ -340,7 +372,9 @@ public class ViajeService {
                 continue;
             }
             Duration faltan = Duration.between(ahora, horaSalida(viaje));
-            if (faltan.isNegative() || faltan.compareTo(UMBRAL_RECORDATORIO) > 0) {
+            if (faltan.isNegative()
+                    || faltan.compareTo(UMBRAL_RECORDATORIO) > 0
+                    || faltan.compareTo(PLAZO_CONFIRMACION) < 0) {
                 continue;
             }
             viaje.setRecordatorioEnviado(true);
@@ -354,12 +388,14 @@ public class ViajeService {
     }
 
     private TipoPenalidad clasificarPenalidad(Duration hastaSalida) {
-        if (hastaSalida.compareTo(PLAZO_CONFIRMACION) > 0) {
+        if (hastaSalida.compareTo(UMBRAL_CANCELACION_SIN_PENALIDAD) > 0) {
             return null;
         }
+
         if (hastaSalida.compareTo(Duration.ofHours(4)) < 0) {
             return TipoPenalidad.GRAVE;
         }
+
         return TipoPenalidad.LEVE;
     }
 

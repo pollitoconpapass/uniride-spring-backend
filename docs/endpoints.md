@@ -491,16 +491,19 @@ Lista las solicitudes recibidas de un viaje propio, con el perfil del pasajero (
 **Respuestas:** `200` ✅ `Page<SolicitudRespuesta>` (incluye `pasajeroCarrera`, `pasajeroDistrito`, `metodoCompensacion*`) · `404` viaje inexistente o ajeno · `400` enum inválido · `403` sin token
 
 #### `PUT /api/viajes/{id}/confirmar`
-Confirma un viaje al menos 24 horas antes de la salida (US17).
+Confirma un viaje con al menos 12 horas de anticipación respecto a la salida (US17).
 
 | Path | Tipo |
 |---|---|
 | `id` | long |
 
 **Respuestas**
-- `200` ✅ viaje confirmado (notifica a los pasajeros aceptados); si ya estaba confirmado responde `200` con `mensaje: "El viaje ya estaba confirmado"`
-- `409` si el plazo de 24 h ya venció: el viaje pasa a `VENCIDO` y se registra una `Penalidad LEVE` (esta es la única respuesta `409` con cuerpo `ViajeRespuesta`)
-- `409` viaje no `PROGRAMADO` o ya ocurrió · `404` viaje inexistente o ajeno
+- `200` ✅ viaje confirmado y pasajeros aceptados notificados; si ya estaba confirmado, responde `200` indicando que el viaje ya había sido confirmado.
+- `409` si quedan menos de 12 horas para la salida y el viaje continúa sin confirmar: el viaje pasa a `VENCIDO` y se registra una penalidad `LEVE`.
+- `409` viaje no `PROGRAMADO` o viaje ya ocurrido.
+- `404` viaje inexistente o ajeno.
+
+> Si el viaje continúa sin confirmar cuando faltan aproximadamente 20 horas para la salida, el sistema genera un recordatorio para el conductor.
 
 #### `PUT /api/viajes/{id}/iniciar`
 Pasa el viaje a `EN_PROGRESO` (ciclo de vida: `PROGRAMADO → EN_PROGRESO`).
