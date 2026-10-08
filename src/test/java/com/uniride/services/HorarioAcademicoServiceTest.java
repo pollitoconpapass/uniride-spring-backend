@@ -24,6 +24,7 @@ import com.uniride.repositories.HorarioAcademicoRepository;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Optional;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -184,6 +185,58 @@ class HorarioAcademicoServiceTest {
         assertThat(resultado.cursosImportados()).isEqualTo(1);
         assertThat(resultado.cursosOmitidos()).isZero();
         assertThat(resultado.nombreArchivo()).isEqualTo("horario.pdf");
+
+        verify(cursoRepository).saveAll(anyList());
+    }
+
+    @Test
+    void us23DebeImportarCursosDesdeTxt() {
+
+        String contenidoHorario = """
+            Lunes 5
+            Ingeniería de Software - 1ACC0236
+            08:00 - 10:00
+            """;
+
+        MockMultipartFile archivo = new MockMultipartFile(
+                "archivo",
+                "horario.txt",
+                "text/plain",
+                contenidoHorario.getBytes(StandardCharsets.UTF_8)
+        );
+
+        when(usuarioService.usuarioActual())
+                .thenReturn(usuario);
+
+        when(horarioAcademicoRepository.findByUsuarioId(1L))
+                .thenReturn(Optional.of(horario));
+
+        when(cursoRepository
+                .existsByHorarioAcademicoIdAndNombreAndDiaAndHoraInicio(
+                        anyLong(),
+                        anyString(),
+                        anyString(),
+                        any(LocalTime.class)))
+                .thenReturn(false);
+
+        when(cursoRepository.buscarConflictos(
+                anyLong(),
+                anyString(),
+                any(LocalTime.class),
+                any(LocalTime.class)))
+                .thenReturn(List.of());
+
+        ArchivoRespuesta resultado =
+                horarioAcademicoService.subirArchivo(archivo);
+
+        assertThat(resultado.cursosImportados())
+                .isEqualTo(1);
+
+        assertThat(resultado.cursosOmitidos())
+                .isZero();
+
+        assertThat(resultado.nombreArchivo())
+                .isEqualTo("horario.txt");
 
         verify(cursoRepository).saveAll(anyList());
     }
