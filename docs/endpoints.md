@@ -257,16 +257,16 @@ Elimina un curso (US24).
 **Respuestas:** `204` ✅ · `404` curso no encontrado · `403` sin token
 
 #### `POST /api/perfil/horarios/archivo`
-Sube masivamente cursos y horarios desde un archivo (US23).
+Sube masivamente cursos y horarios desde un archivo PDF o TXT (US23).
 
 **Body:** `multipart/form-data` con el campo `archivo`
 
 | Regla | Detalle |
 |---|---|
-| Formatos | Solo `.pdf` |
+| Formatos | `.pdf` o `.txt` |
 | Tamaño máx. | 1 MB |
 
-**Respuestas:** `201` ✅ `{mensaje, cursosImportados, nombreArchivo}` · `400` sin archivo, formato no permitido o tamaño mayor a 1 MB · `403` sin token
+**Respuestas:** `201` ✅ `{mensaje, cursosImportados, cursosOmitidos, nombreArchivo}` · `400` sin archivo, formato no permitido o tamaño mayor a 1 MB · `403` sin token
 
 ---
 
