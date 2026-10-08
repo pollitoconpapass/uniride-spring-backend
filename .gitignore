@@ -30,7 +30,7 @@ build/
 !**/src/test/**/build/
 
 ### Maven ###
-.mvn/
+.mvn/wrapper/maven-wrapper.jar
 target/
 
 ### VS Code ###
