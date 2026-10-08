@@ -64,4 +64,14 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
     List<Viaje> buscarPendientesDeConfirmacion(@Param("conductorId") Long conductorId,
             @Param("estado") EstadoViaje estado, @Param("desde") LocalDate desde,
             @Param("hasta") LocalDate hasta);
+
+    @Query("SELECT v FROM Viaje v "
+            + "WHERE v.confirmado = false "
+            + "AND v.recordatorioEnviado = false "
+            + "AND v.estado = :estado "
+            + "AND v.fecha BETWEEN :desde AND :hasta")
+    List<Viaje> buscarPendientesDeConfirmacionAutomaticos(
+            @Param("estado") EstadoViaje estado,
+            @Param("desde") LocalDate desde,
+            @Param("hasta") LocalDate hasta);
 }
