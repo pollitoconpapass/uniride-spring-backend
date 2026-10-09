@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Completa POSTGRES_PASSWORD en .env}
 
     ports:
-      - "127.0.0.1:5433:5432"
+      - "5433:5432"
 
     volumes:
       - uniride_postgres_data:/var/lib/postgresql/data
@@ -43,7 +43,7 @@ services:
       TZ: America/Lima
 
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
 
     depends_on:
       postgres:
