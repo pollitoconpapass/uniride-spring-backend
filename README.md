@@ -24,12 +24,58 @@ Toda la documentación del proyecto se encuentra dentro de la carpeta `docs`. En
 
 Crear un archivo `.env` en la raíz tomando como referencia `.env.example`.
 
+PoweShell:
+Copy-Item .env.example .env
+
 Variables requeridas:
 
 - `POSTGRES_PASSWORD`
 - `JWT_SECRET`
 
 Las variables de correo son opcionales para el entorno local.
+
+
+
+
+
+Después de crear `.env`, ejecutar este bloque en PowerShell desde la raíz del proyecto:
+
+```powershell
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+
+$dbBytes = New-Object byte[] 32
+$jwtBytes = New-Object byte[] 64
+
+$rng.GetBytes($dbBytes)
+$rng.GetBytes($jwtBytes)
+$rng.Dispose()
+
+$contenido = Get-Content .env -Raw
+
+$contenido = $contenido -replace '(?m)^POSTGRES_PASSWORD=.*$', (
+    'POSTGRES_PASSWORD=' + [Convert]::ToBase64String($dbBytes)
+)
+
+$contenido = $contenido -replace '(?m)^JWT_SECRET=.*$', (
+    'JWT_SECRET=' + [Convert]::ToBase64String($jwtBytes)
+)
+
+$rutaEnv = Join-Path (Get-Location).Path '.env'
+
+[IO.File]::WriteAllText(
+    $rutaEnv,
+    $contenido,
+    [Text.UTF8Encoding]::new($false)
+)
+```
+
+Este comando genera una contraseña aleatoria y una clave JWT de 64 bytes en Base64. Guarda ambos valores directamente en `.env`, sin imprimirlos.
+
+
+
+
+
+
 
 ### Ejecución
 
@@ -68,3 +114,33 @@ La especificación OpenAPI en formato JSON está disponible en:
 
 Los endpoints protegidos utilizan autenticación Bearer mediante JWT.
 El token puede configurarse desde el botón `Authorize` de Swagger UI.
+
+
+
+### Cambiar la contraseña de una base existente
+
+Si el volumen de PostgreSQL ya fue inicializado, cambiar `POSTGRES_PASSWORD` en `.env` no modifica automáticamente la contraseña almacenada en la base.
+
+Con PostgreSQL en ejecución, abrir:
+
+```bash
+docker compose exec postgres psql -U postgres -d uniride
+```
+
+Dentro de PostgreSQL, ejecutar:
+
+```text
+\password postgres
+```
+
+Introducir la nueva contraseña que se guardó en `.env` y salir:
+
+```text
+\q
+```
+
+Aplicar la configuración actualizada del backend:
+
+```bash
+docker compose up -d
+```
