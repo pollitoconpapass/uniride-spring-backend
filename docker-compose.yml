@@ -1,13 +1,13 @@
 services:
-
   postgres:
     image: postgres:16-alpine
     container_name: uniride-postgres
+    restart: unless-stopped
 
     environment:
       POSTGRES_DB: uniride
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Completa POSTGRES_PASSWORD en .env}
 
     ports:
       - "5433:5432"
@@ -21,26 +21,25 @@ services:
       timeout: 5s
       retries: 10
 
-
   backend:
     build:
       context: .
       dockerfile: Dockerfile
 
     container_name: uniride-backend
+    restart: unless-stopped
 
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/uniride
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-
-      UNIRIDE_JWT_SECRET: ${JWT_SECRET}
+      DB_URL: jdbc:postgresql://postgres:5432/uniride
+      DB_USERNAME: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Completa POSTGRES_PASSWORD en .env}
+      JWT_SECRET: ${JWT_SECRET:?Completa JWT_SECRET en .env}
 
       EMAIL_ADDRESS: ${EMAIL_ADDRESS:-}
       EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
 
       UNIRIDE_OCR_TESSDATA: /usr/share/tesseract-ocr/5/tessdata
-
+      PORT: "8080"
       TZ: America/Lima
 
     ports:
@@ -49,7 +48,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-
 
 volumes:
   uniride_postgres_data:
