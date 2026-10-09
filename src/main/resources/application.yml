@@ -3,14 +3,14 @@ spring:
     name: uniride
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/uniride
-    username: postgres
-    password: adminadmin
-
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/uniride}
+    username: ${DB_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD}
+    
   jpa:
     hibernate:
       ddl-auto: update # -> ddl: Sentencias de definicion de datos (Definition Data Language)
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
@@ -35,14 +35,16 @@ spring:
 
 uniride:
   jwt:
-    secret: qlINUWVDUUnHDEaKxOC9NhklhoMxIjKSveeUaLsp59k=
+    secret: ${JWT_SECRET}
     expiracion-ms: 86400000
   ocr:
     idioma: spa+eng
     tessdata:
 
 server:
-  port: 8080
+  address: 0.0.0.0
+  port: ${PORT:8080}
+  forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:none}
   servlet:
     context-path: /api
 

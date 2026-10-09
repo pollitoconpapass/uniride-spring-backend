@@ -24,12 +24,32 @@ Toda la documentación del proyecto se encuentra dentro de la carpeta `docs`. En
 
 Crear un archivo `.env` en la raíz tomando como referencia `.env.example`.
 
-Variables requeridas:
+En PowerShell:
 
-- `POSTGRES_PASSWORD`
-- `JWT_SECRET`
+```powershell
+Copy-Item .env.example .env
+```
 
-Las variables de correo son opcionales para el entorno local.
+Configurar las siguientes variables:
+
+- `POSTGRES_PASSWORD`: contraseña del usuario PostgreSQL utilizado en el entorno local.
+- `JWT_SECRET`: clave Base64 utilizada para firmar los tokens JWT.
+- `EMAIL_ADDRESS`: opcional para el entorno local.
+- `EMAIL_PASSWORD`: opcional para el entorno local.
+
+Para generar una clave JWT segura desde PowerShell:
+
+```powershell
+$bytes = New-Object byte[] 64
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[Convert]::ToBase64String($bytes)
+```
+
+El valor generado debe almacenarse únicamente en `.env`.
+
+El archivo `.env` está excluido del repositorio mediante `.gitignore`
+y no debe contenerse en commits ni Pull Requests.
+
 
 ### Ejecución
 
@@ -68,6 +88,34 @@ La especificación OpenAPI en formato JSON está disponible en:
 
 Los endpoints protegidos utilizan autenticación Bearer mediante JWT.
 El token puede configurarse desde el botón `Authorize` de Swagger UI.
+
+### Cambiar la contraseña de una base existente
+
+Si el volumen de PostgreSQL ya fue inicializado, cambiar `POSTGRES_PASSWORD` en `.env` no modifica automáticamente la contraseña almacenada en la base.
+
+Con PostgreSQL en ejecución, abrir:
+
+```bash
+docker compose exec postgres psql -U postgres -d uniride
+```
+
+Dentro de PostgreSQL, ejecutar:
+
+```text
+\password postgres
+```
+
+Introducir la nueva contraseña que se guardó en `.env` y salir:
+
+```text
+\q
+```
+
+Aplicar la configuración actualizada del backend:
+
+```bash
+docker compose up -d
+```
 
 ---
 ## Internacionalización (i18n)
