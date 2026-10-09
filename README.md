@@ -24,57 +24,31 @@ Toda la documentación del proyecto se encuentra dentro de la carpeta `docs`. En
 
 Crear un archivo `.env` en la raíz tomando como referencia `.env.example`.
 
-PoweShell:
-Copy-Item .env.example .env
-
-Variables requeridas:
-
-- `POSTGRES_PASSWORD`
-- `JWT_SECRET`
-
-Las variables de correo son opcionales para el entorno local.
-
-
-
-
-
-Después de crear `.env`, ejecutar este bloque en PowerShell desde la raíz del proyecto:
+En PowerShell:
 
 ```powershell
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-
-$dbBytes = New-Object byte[] 32
-$jwtBytes = New-Object byte[] 64
-
-$rng.GetBytes($dbBytes)
-$rng.GetBytes($jwtBytes)
-$rng.Dispose()
-
-$contenido = Get-Content .env -Raw
-
-$contenido = $contenido -replace '(?m)^POSTGRES_PASSWORD=.*$', (
-    'POSTGRES_PASSWORD=' + [Convert]::ToBase64String($dbBytes)
-)
-
-$contenido = $contenido -replace '(?m)^JWT_SECRET=.*$', (
-    'JWT_SECRET=' + [Convert]::ToBase64String($jwtBytes)
-)
-
-$rutaEnv = Join-Path (Get-Location).Path '.env'
-
-[IO.File]::WriteAllText(
-    $rutaEnv,
-    $contenido,
-    [Text.UTF8Encoding]::new($false)
-)
+Copy-Item .env.example .env
 ```
 
-Este comando genera una contraseña aleatoria y una clave JWT de 64 bytes en Base64. Guarda ambos valores directamente en `.env`, sin imprimirlos.
+Configurar las siguientes variables:
 
+- `POSTGRES_PASSWORD`: contraseña del usuario PostgreSQL utilizado en el entorno local.
+- `JWT_SECRET`: clave Base64 utilizada para firmar los tokens JWT.
+- `EMAIL_ADDRESS`: opcional para el entorno local.
+- `EMAIL_PASSWORD`: opcional para el entorno local.
 
+Para generar una clave JWT segura desde PowerShell:
 
+```powershell
+$bytes = New-Object byte[] 64
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[Convert]::ToBase64String($bytes)
+```
 
+El valor generado debe almacenarse únicamente en `.env`.
 
+El archivo `.env` está excluido del repositorio mediante `.gitignore`
+y no debe contenerse en commits ni Pull Requests.
 
 
 ### Ejecución
