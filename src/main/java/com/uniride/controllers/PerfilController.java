@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/perfil")
@@ -28,6 +29,7 @@ public class PerfilController {
         return ResponseEntity.ok(perfilService.obtenerPerfil());
     }
 
+    @PreAuthorize("hasRole('CONDUCTOR')")
     @GetMapping("/usuario/{usuarioId}")
     public ResponseEntity<PerfilRespuesta> perfilDeUsuario(@PathVariable Long usuarioId) {
         return ResponseEntity.ok(perfilService.perfilDeUsuario(usuarioId));

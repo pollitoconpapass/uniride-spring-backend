@@ -34,29 +34,33 @@ public class AuthService {
     private final JwtService jwtService;
     private final NotificacionService notificacionService;
     private final UsuarioMapper usuarioMapper;
+    private final MensajeService mensajeService;
     private final SecureRandom random = new SecureRandom();
 
     public AuthService(UsuarioRepository usuarioRepository, PasswordEncoder passwordEncoder,
-            JwtService jwtService, NotificacionService notificacionService, UsuarioMapper usuarioMapper) {
+            JwtService jwtService, NotificacionService notificacionService, UsuarioMapper usuarioMapper,
+            MensajeService mensajeService) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.notificacionService = notificacionService;
         this.usuarioMapper = usuarioMapper;
+        this.mensajeService = mensajeService;
     }
 
     @Transactional
     public AuthRespuesta registrar(RegistroRequest request) {
         if (usuarioRepository.existsByCorreoInstitucional(request.correo())) {
             Usuario existente = usuarioRepository.findByCorreoInstitucional(request.correo())
-                    .orElseThrow(() -> new BusinessException("El correo ingresado ya se encuentra registrado"));
-            notificacionService.notificar(existente, TipoNotificacion.ERROR, "Registro duplicado",
-                    "Intentaste registrarte nuevamente, pero el correo ingresado ya se encuentra registrado.");
-            throw new BusinessException("El correo ingresado ya se encuentra registrado");
+                    .orElseThrow(() -> new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado")));
+            notificacionService.notificar(existente, TipoNotificacion.ERROR,
+                    mensajeService.obtenerMensaje("auth.notif.registro_duplicado.titulo"),
+                    mensajeService.obtenerMensaje("auth.notif.registro_duplicado.mensaje"));
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado"));
         }
 
         if (usuarioRepository.existsByTelefono(request.telefono())) {
-            throw new BusinessException("El teléfono ingresado ya se encuentra registrado");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.telefono_registrado"));
         }
 
         String codigo = generarCodigo();
@@ -76,12 +80,13 @@ public class AuthService {
 
         Usuario guardado = usuarioRepository.save(usuario);
 
-        notificacionService.notificar(guardado, TipoNotificacion.EXITO, "Código de verificación UniRide",
-                "Hola " + guardado.getNombre() + ", tu código de verificación es: " + codigo
-                        + ". El código vence en " + MINUTOS_EXPIRACION_CODIGO + " minutos.");
+        notificacionService.notificar(guardado, TipoNotificacion.EXITO,
+                mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.titulo"),
+                mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.mensaje",
+                        guardado.getNombre(), codigo, MINUTOS_EXPIRACION_CODIGO));
 
         return new AuthRespuesta(null,
-                "Cuenta creada correctamente. Se envió un código de verificación a tu correo.",
+                mensajeService.obtenerMensaje("auth.registro_exitoso"),
                 usuarioMapper.toUsuarioRespuesta(guardado));
     }
 
@@ -89,50 +94,51 @@ public class AuthService {
     public AuthRespuesta iniciarSesion(LoginRequest request) {
         Optional<Usuario> opcional = usuarioRepository.findByCorreoInstitucional(request.correo());
         if (opcional.isEmpty()) {
-            throw new NoAutorizadoException("Correo o contraseña incorrectos");
+            throw new NoAutorizadoException(mensajeService.obtenerMensaje("auth.error.credenciales_incorrectas"));
         }
 
         Usuario usuario = opcional.get();
 
         if (!passwordEncoder.matches(request.contrasena(), usuario.getContrasenaHash())) {
-            notificacionService.notificar(usuario, TipoNotificacion.ERROR, "Inicio de sesión fallido",
-                    "Se intentó iniciar sesión en tu cuenta con credenciales incorrectas.");
-            throw new NoAutorizadoException("Correo o contraseña incorrectos");
+            notificacionService.notificar(usuario, TipoNotificacion.ERROR,
+                    mensajeService.obtenerMensaje("auth.notif.login_fallido.titulo"),
+                    mensajeService.obtenerMensaje("auth.notif.login_fallido.mensaje"));
+            throw new NoAutorizadoException(mensajeService.obtenerMensaje("auth.error.credenciales_incorrectas"));
         }
 
         if (!usuario.isCuentaVerificada()) {
-            throw new BusinessException(
-                    "Tu cuenta no ha sido verificada. Revisa tu correo para obtener el código de verificación.");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_no_verificada"));
         }
 
         if (usuario.getRolPrincipal() == null) {
-            throw new BusinessException("Debes seleccionar tu rol principal para ingresar al dashboard.");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.rol_no_seleccionado"));
         }
 
         String token = jwtService.generarToken(usuario.getCorreoInstitucional());
 
-        return new AuthRespuesta(token, "Inicio de sesión exitoso",
+        return new AuthRespuesta(token,
+                mensajeService.obtenerMensaje("auth.login_exitoso"),
                 usuarioMapper.toUsuarioRespuesta(usuario));
     }
 
     @Transactional
     public AuthRespuesta verificarCodigo(VerificarCodigoRequest request) {
         Usuario usuario = usuarioRepository.findByCorreoInstitucional(request.correo())
-                .orElseThrow(() -> new ResourceNotFoundException("No existe ninguna cuenta con ese correo"));
+                .orElseThrow(() -> new ResourceNotFoundException(mensajeService.obtenerMensaje("auth.error.cuenta_no_encontrada")));
 
         if (usuario.isCuentaVerificada()) {
             notificacionService.notificar(usuario, TipoNotificacion.ADVERTENCIA, "Cuenta ya verificada",
                     "La acción ya estaba completada: tu cuenta ya había sido verificada.");
-            throw new BusinessException("Tu cuenta ya había sido verificada");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_ya_verificada"));
         }
 
         if (usuario.getCodigoVerificacion() == null || usuario.getCodigoVerificacionExpiracion() == null
                 || usuario.getCodigoVerificacionExpiracion().isBefore(LocalDateTime.now(ZoneId.systemDefault()))) {
-            throw new BusinessException("El código de verificación ha expirado. Solicita un nuevo código.");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.codigo_expirado"));
         }
 
         if (!usuario.getCodigoVerificacion().equals(request.codigo())) {
-            throw new CamposInvalidosException("El código de verificación es incorrecto");
+            throw new CamposInvalidosException(mensajeService.obtenerMensaje("auth.error.codigo_incorrecto"));
         }
 
         usuario.setCuentaVerificada(true);
@@ -140,21 +146,22 @@ public class AuthService {
         usuario.setCodigoVerificacionExpiracion(null);
         usuarioRepository.save(usuario);
 
-        notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Cuenta verificada",
-                "Tu cuenta fue verificada correctamente. Ya puedes iniciar sesión en UniRide.");
+        notificacionService.notificar(usuario, TipoNotificacion.EXITO,
+                mensajeService.obtenerMensaje("auth.notif.cuenta_verificada.titulo"),
+                mensajeService.obtenerMensaje("auth.notif.cuenta_verificada.mensaje"));
 
         return new AuthRespuesta(null,
-                "Cuenta verificada correctamente. Ya puedes iniciar sesión.",
+                mensajeService.obtenerMensaje("auth.verificar_exitoso"),
                 usuarioMapper.toUsuarioRespuesta(usuario));
     }
 
     @Transactional
     public AuthRespuesta reenviarCodigo(ReenviarCodigoRequest request) {
         Usuario usuario = usuarioRepository.findByCorreoInstitucional(request.correo())
-                .orElseThrow(() -> new ResourceNotFoundException("No existe ninguna cuenta con ese correo"));
+                .orElseThrow(() -> new ResourceNotFoundException(mensajeService.obtenerMensaje("auth.error.cuenta_no_encontrada")));
 
         if (usuario.isCuentaVerificada()) {
-            throw new BusinessException("Tu cuenta ya había sido verificada");
+            throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_ya_verificada"));
         }
 
         String codigo = generarCodigo();
@@ -162,12 +169,13 @@ public class AuthService {
         usuario.setCodigoVerificacionExpiracion(LocalDateTime.now(ZoneId.systemDefault()).plusMinutes(MINUTOS_EXPIRACION_CODIGO));
         usuarioRepository.save(usuario);
 
-        notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Nuevo código de verificación UniRide",
-                "Hola " + usuario.getNombre() + ", tu nuevo código de verificación es: " + codigo
-                        + ". El código vence en " + MINUTOS_EXPIRACION_CODIGO + " minutos.");
+        notificacionService.notificar(usuario, TipoNotificacion.EXITO,
+                mensajeService.obtenerMensaje("auth.notif.nuevo_codigo.titulo"),
+                mensajeService.obtenerMensaje("auth.notif.nuevo_codigo.mensaje",
+                        usuario.getNombre(), codigo, MINUTOS_EXPIRACION_CODIGO));
 
         return new AuthRespuesta(null,
-                "Se envió un nuevo código de verificación a tu correo.",
+                mensajeService.obtenerMensaje("auth.reenviar_exitoso"),
                 usuarioMapper.toUsuarioRespuesta(usuario));
     }
 

@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 
 import com.uniride.entities.Penalidad;
 import com.uniride.entities.Ruta;
@@ -20,6 +23,7 @@ import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.time.LocalDate;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -141,5 +145,73 @@ class ViajeServiceTest {
                 .isEqualTo(TipoPenalidad.LEVE);
         assertThat(captor.getValue().getUsuario())
                 .isEqualTo(conductor);
+    }
+
+    @Test
+    void us17DebeEnviarRecordatorioAutomaticoEntre20Y12Horas() {
+
+        LocalDateTime salida =
+                LocalDateTime.now().plusHours(18);
+
+        viaje.setFecha(salida.toLocalDate());
+        viaje.setHora(salida.toLocalTime());
+        viaje.setRecordatorioEnviado(false);
+
+        when(viajeRepository
+                .buscarPendientesDeConfirmacionAutomaticos(
+                        eq(EstadoViaje.PROGRAMADO),
+                        any(LocalDate.class),
+                        any(LocalDate.class)))
+                .thenReturn(List.of(viaje));
+
+        when(viajeRepository.save(any(Viaje.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
+
+        viajeService.enviarRecordatoriosAutomaticos();
+
+        assertThat(viaje.isRecordatorioEnviado())
+                .isTrue();
+
+        verify(viajeRepository).save(viaje);
+
+        verify(notificacionService).notificar(
+                eq(conductor),
+                eq(com.uniride.enums.TipoNotificacion.RECORDATORIO),
+                anyString(),
+                anyString());
+    }
+
+    @Test
+    void us17NoDebeEnviarRecordatorioSiFaltanMasDe20Horas() {
+
+        LocalDateTime salida =
+                LocalDateTime.now().plusHours(22);
+
+        viaje.setFecha(salida.toLocalDate());
+        viaje.setHora(salida.toLocalTime());
+        viaje.setRecordatorioEnviado(false);
+
+        when(viajeRepository
+                .buscarPendientesDeConfirmacionAutomaticos(
+                        eq(EstadoViaje.PROGRAMADO),
+                        any(LocalDate.class),
+                        any(LocalDate.class)))
+                .thenReturn(List.of(viaje));
+
+        viajeService.enviarRecordatoriosAutomaticos();
+
+        assertThat(viaje.isRecordatorioEnviado())
+                .isFalse();
+
+        verify(viajeRepository, never())
+                .save(any(Viaje.class));
+
+        verify(notificacionService, never())
+                .notificar(
+                        any(),
+                        any(),
+                        anyString(),
+                        anyString());
     }
 }

@@ -15,6 +15,7 @@ import com.uniride.mappers.CursoMapper;
 import com.uniride.repositories.ArchivoCargaRepository;
 import com.uniride.repositories.CursoRepository;
 import com.uniride.repositories.HorarioAcademicoRepository;
+import java.nio.charset.StandardCharsets;
 import java.io.File;
 import java.io.IOException;
 import java.awt.image.BufferedImage;
@@ -146,8 +147,9 @@ public class HorarioAcademicoService {
         String nombreArchivo = archivo.getOriginalFilename() == null ? "" : archivo.getOriginalFilename();
         String formato = extraerFormato(nombreArchivo);
 
-        if (!"pdf".equals(formato)) {
-            throw new CamposInvalidosException("Solo se permiten archivos en formato .pdf");
+        if (!List.of("pdf", "txt").contains(formato)) {
+            throw new CamposInvalidosException(
+                    "Solo se permiten archivos en formato .pdf o .txt");
         }
 
         if (archivo.getSize() > TAMANO_MAXIMO_BYTES) {
@@ -157,7 +159,13 @@ public class HorarioAcademicoService {
         Usuario usuario = usuarioService.usuarioActual();
         HorarioAcademico horario = obtenerOCrearHorario(usuario);
 
-        ImportacionPdf importacion = importarCursosDesdePdf(archivo, horario);
+        ImportacionArchivo importacion;
+
+        if ("pdf".equals(formato)) {
+            importacion = importarCursosDesdePdf(archivo, horario);
+        } else {
+            importacion = importarCursosDesdeTxt(archivo, horario);
+        }
 
         archivoCargaRepository.save(ArchivoCarga.builder()
                 .horarioAcademico(horario)
@@ -182,16 +190,16 @@ public class HorarioAcademicoService {
                 nombreArchivo);
     }
 
-    private String mensajeImportacion(ImportacionPdf importacion) {
+    private String mensajeImportacion(ImportacionArchivo importacion) {
         List<String> conflictos = importacion.conflictos();
         String mensaje;
         if (importacion.importados() > 0) {
             mensaje = "Archivo subido correctamente. Se importaron "
                     + importacion.importados() + " cursos.";
         } else if (conflictos.isEmpty()) {
-            mensaje = "Archivo subido correctamente. No se detectaron cursos en el PDF.";
+            mensaje = "Archivo subido correctamente. No se detectaron cursos en el archivo.";
         } else {
-            mensaje = "Archivo subido correctamente. Ningún curso del PDF pudo importarse.";
+            mensaje = "Archivo subido correctamente. Ningún curso del archivo pudo importarse.";
         }
         if (!conflictos.isEmpty()) {
             mensaje += " " + conflictos.size() + " omitidos por conflicto de horario: "
@@ -236,29 +244,77 @@ public class HorarioAcademicoService {
         return "";
     }
 
-    private ImportacionPdf importarCursosDesdePdf(MultipartFile archivo, HorarioAcademico horario) {
+    private ImportacionArchivo importarCursosDesdePdf(
+            MultipartFile archivo,
+            HorarioAcademico horario) {
+
         String texto;
+
         try {
             texto = extraerTexto(archivo.getBytes());
         } catch (IOException e) {
-            throw new BusinessException("No se pudo leer el archivo PDF adjuntado");
+            throw new BusinessException(
+                    "No se pudo leer el archivo PDF adjuntado");
         }
+
         if (texto.isBlank()) {
             throw new BusinessException(
-                    "No se pudo leer el PDF: no contiene texto extraíble ni texto reconocible por OCR");
+                    "No se pudo leer el PDF: no contiene texto extraíble "
+                            + "ni texto reconocible por OCR");
         }
+
+        return importarCursosDesdeTexto(texto, horario);
+    }
+
+    private ImportacionArchivo importarCursosDesdeTxt(
+            MultipartFile archivo,
+            HorarioAcademico horario) {
+
+        String texto;
+
+        try {
+            texto = new String(
+                    archivo.getBytes(),
+                    StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new BusinessException(
+                    "No se pudo leer el archivo TXT adjuntado");
+        }
+
+        if (texto.isBlank()) {
+            throw new BusinessException(
+                    "El archivo TXT está vacío");
+        }
+
+        return importarCursosDesdeTexto(texto, horario);
+    }
+
+    private ImportacionArchivo importarCursosDesdeTexto(
+            String texto,
+            HorarioAcademico horario) {
 
         List<Curso> cursos = new ArrayList<>();
         List<String> conflictos = new ArrayList<>();
         Set<String> clavesVistas = new HashSet<>();
 
         for (CursoParseado parseado : parsearCursos(texto)) {
-            String clave = parseado.nombre() + "|" + parseado.dia() + "|" + parseado.horaInicio();
+
+            String clave = parseado.nombre()
+                    + "|"
+                    + parseado.dia()
+                    + "|"
+                    + parseado.horaInicio();
+
             if (!clavesVistas.add(clave)) {
                 continue;
             }
-            if (cursoRepository.existsByHorarioAcademicoIdAndNombreAndDiaAndHoraInicio(
-                    horario.getId(), parseado.nombre(), parseado.dia(), parseado.horaInicio())) {
+
+            if (cursoRepository
+                    .existsByHorarioAcademicoIdAndNombreAndDiaAndHoraInicio(
+                            horario.getId(),
+                            parseado.nombre(),
+                            parseado.dia(),
+                            parseado.horaInicio())) {
                 continue;
             }
 
@@ -270,18 +326,24 @@ public class HorarioAcademicoService {
                     .horaFin(parseado.horaFin())
                     .build();
 
-            Curso enConflicto = buscarConflicto(horario, curso, cursos);
+            Curso enConflicto =
+                    buscarConflicto(horario, curso, cursos);
+
             if (enConflicto != null) {
                 conflictos.add(describirCurso(curso));
                 continue;
             }
+
             cursos.add(curso);
         }
 
         if (!cursos.isEmpty()) {
             cursoRepository.saveAll(cursos);
         }
-        return new ImportacionPdf(cursos.size(), conflictos);
+
+        return new ImportacionArchivo(
+                cursos.size(),
+                conflictos);
     }
 
     private Curso buscarConflicto(HorarioAcademico horario, Curso curso, List<Curso> pendientes) {
@@ -312,7 +374,9 @@ public class HorarioAcademicoService {
                 + curso.getHoraInicio() + " a " + curso.getHoraFin() + ")";
     }
 
-    record ImportacionPdf(int importados, List<String> conflictos) {
+    record ImportacionArchivo(
+            int importados,
+            List<String> conflictos) {
     }
 
     String extraerTexto(byte[] bytes) {
@@ -444,7 +508,9 @@ public class HorarioAcademicoService {
     }
 
     private String normalizarLinea(String linea) {
-        return linea.replace('\u00A0', ' ')
+        return linea
+                .replace("\uFEFF", "")
+                .replace('\u00A0', ' ')
                 .replaceAll("[\u2010-\u2015\u2212]", "-")
                 .trim();
     }

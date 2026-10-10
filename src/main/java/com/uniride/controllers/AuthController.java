@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import io.swagger.v3.oas.annotations.Operation;
 
 @RestController
 @RequestMapping("/auth")
@@ -24,21 +25,25 @@ public class AuthController {
         this.authService = authService;
     }
 
+    @Operation(security = {})
     @PostMapping("/registro")
     public ResponseEntity<AuthRespuesta> registrar(@Valid @RequestBody RegistroRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED).body(authService.registrar(request));
     }
 
+    @Operation(security = {})
     @PostMapping("/login")
     public ResponseEntity<AuthRespuesta> iniciarSesion(@Valid @RequestBody LoginRequest request) {
         return ResponseEntity.ok(authService.iniciarSesion(request));
     }
 
+    @Operation(security = {})
     @PostMapping("/verificar")
     public ResponseEntity<AuthRespuesta> verificar(@Valid @RequestBody VerificarCodigoRequest request) {
         return ResponseEntity.ok(authService.verificarCodigo(request));
     }
 
+    @Operation(security = {})
     @PostMapping("/reenviar-codigo")
     public ResponseEntity<AuthRespuesta> reenviar(@Valid @RequestBody ReenviarCodigoRequest request) {
         return ResponseEntity.ok(authService.reenviarCodigo(request));

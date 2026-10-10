@@ -47,6 +47,36 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 
 ## Módulo 1 — Usuarios, sesión, perfil y horarios
 
+### Autorización por rol
+
+UniRide utiliza una única cuenta por usuario con un rol activo que puede
+alternarse entre `CONDUCTOR` y `PASAJERO`.
+
+El cambio de rol no crea una segunda cuenta ni elimina rutas, solicitudes
+o historial anteriores.
+
+El rol activo puede modificarse mediante:
+
+`PUT /api/usuarios/rol`
+
+#### CONDUCTOR
+
+Puede gestionar rutas y viajes propios, revisar solicitudes recibidas,
+confirmar, iniciar y completar viajes.
+
+#### PASAJERO
+
+Puede buscar viajes disponibles, crear y gestionar solicitudes y consultar
+sugerencias de contribución.
+
+#### Funcionalidades compartidas
+
+Perfil, horarios académicos, métodos de compensación, historial,
+estadísticas generales y cancelación de viajes según participación.
+
+Los endpoints restringidos responden `403 Forbidden` cuando el usuario
+autenticado no posee el rol requerido.
+
 ### Autenticación (público)
 
 #### `POST /api/auth/registro`
@@ -130,11 +160,16 @@ Devuelve el usuario autenticado (US03).
 **Respuestas:** `200` ✅ `{id, correo, nombre, apellidos, telefono, rol, cuentaVerificada}` · `403` sin token
 
 #### `PUT /api/usuarios/rol`
-Cambia el rol principal del usuario (US03, escenario alternativo).
 
-**Body (JSON)**
+Cambia el rol activo de la cuenta entre `CONDUCTOR` y `PASAJERO`
+sin crear una cuenta adicional.
+
+**Body**
+
 ```json
-{ "rol": "PASAJERO" }
+{
+  "rol": "PASAJERO"
+}
 ```
 
 | Campo | Tipo | Obligatorio |
@@ -257,16 +292,16 @@ Elimina un curso (US24).
 **Respuestas:** `204` ✅ · `404` curso no encontrado · `403` sin token
 
 #### `POST /api/perfil/horarios/archivo`
-Sube masivamente cursos y horarios desde un archivo (US23).
+Sube masivamente cursos y horarios desde un archivo PDF o TXT (US23).
 
 **Body:** `multipart/form-data` con el campo `archivo`
 
 | Regla | Detalle |
 |---|---|
-| Formatos | Solo `.pdf` |
+| Formatos | `.pdf` o `.txt` |
 | Tamaño máx. | 1 MB |
 
-**Respuestas:** `201` ✅ `{mensaje, cursosImportados, nombreArchivo}` · `400` sin archivo, formato no permitido o tamaño mayor a 1 MB · `403` sin token
+**Respuestas:** `201` ✅ `{mensaje, cursosImportados, cursosOmitidos, nombreArchivo}` · `400` sin archivo, formato no permitido o tamaño mayor a 1 MB · `403` sin token
 
 ---
 
@@ -503,7 +538,11 @@ Confirma un viaje con al menos 12 horas de anticipación respecto a la salida (U
 - `409` viaje no `PROGRAMADO` o viaje ya ocurrido.
 - `404` viaje inexistente o ajeno.
 
-> Si el viaje continúa sin confirmar cuando faltan aproximadamente 20 horas para la salida, el sistema genera un recordatorio para el conductor.
+> El backend ejecuta automáticamente una revisión periódica de los
+> viajes pendientes de confirmación. Cuando un viaje se encuentra
+> entre 12 y 20 horas de su salida y aún no ha sido confirmado,
+> el sistema genera una única notificación de recordatorio para
+> el conductor.
 
 #### `PUT /api/viajes/{id}/iniciar`
 Pasa el viaje a `EN_PROGRESO` (ciclo de vida: `PROGRAMADO → EN_PROGRESO`).
