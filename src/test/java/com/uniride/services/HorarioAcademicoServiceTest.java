@@ -449,8 +449,8 @@ class HorarioAcademicoServiceTest {
     }
 
     @Test
-    @DisplayName("US23: Debe lanzar excepción si el formato del archivo no es PDF")
-    void us23DebeLanzarExcepcionCuandoFormatoNoEsPdf() {
+    @DisplayName("US23: Debe lanzar excepción si el formato no es PDF ni TXT")
+    void us23DebeLanzarExcepcionCuandoFormatoNoEsPdfNiTxt() {
         MockMultipartFile docx = new MockMultipartFile(
                 "archivo",
                 "horario.docx",
@@ -460,7 +460,7 @@ class HorarioAcademicoServiceTest {
 
         assertThatThrownBy(() -> horarioAcademicoService.subirArchivo(docx))
                 .isInstanceOf(CamposInvalidosException.class)
-                .hasMessage("Solo se permiten archivos en formato .pdf");
+                .hasMessage("Solo se permiten archivos en formato .pdf o .txt");
     }
 
     @Test
