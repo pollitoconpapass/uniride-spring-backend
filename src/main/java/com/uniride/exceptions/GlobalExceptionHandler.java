@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -80,6 +81,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorRespuesta> accesoDenegado(AccessDeniedException e) {
         String mensaje = mensajeService.obtenerMensaje("error.acceso_denegado");
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new ErrorRespuesta(mensaje, null));
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorRespuesta> jsonInvalido(HttpMessageNotReadableException e) {
+        String mensaje = mensajeService.obtenerMensaje("error.json_invalido");
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorRespuesta(mensaje, null));
     }
 

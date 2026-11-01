@@ -7,6 +7,7 @@ import com.uniride.entities.Ruta;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
+import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoNotificacion;
@@ -65,6 +66,9 @@ public class ViajeService {
     public ViajeRespuesta crear(Long rutaId, ViajeRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
         Ruta ruta = buscarRutaPropia(rutaId, conductor);
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se pueden crear viajes en una ruta eliminada");
+        }
 
         if (request.fecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new CamposInvalidosException("La fecha del viaje no puede ser en el pasado");
