@@ -20,6 +20,8 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     boolean existsByRutaId(Long rutaId);
 
+    List<Viaje> findByRutaId(Long rutaId);
+
     long countByRutaConductorIdAndEstado(Long conductorId, EstadoViaje estado);
 
     @Query("SELECT v.dia, COUNT(v) FROM Viaje v "

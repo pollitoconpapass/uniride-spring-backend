@@ -35,7 +35,7 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 | Enum | Valores |
 |---|---|
 | `Rol` | `CONDUCTOR`, `PASAJERO` |
-| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA` |
+| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA` |
 | `EstadoSolicitud` | `PENDIENTE`, `ACEPTADA`, `RECHAZADA`, `CANCELADA` |
 | `EstadoViaje` | `PROGRAMADO`, `EN_PROGRESO`, `COMPLETADO`, `CANCELADO`, `VENCIDO` |
 | `TipoCompensacion` | `DINERO`, `GASOLINA`, `FAVOR` |
@@ -336,9 +336,11 @@ Lista **mis rutas** publicadas con filtros (US09).
 
 | Query | Tipo | Defecto | Detalle |
 |---|---|---|---|
-| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`) |
+| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA`) |
 | `page` | int | `0` | |
 | `size` | int | `10` | |
+
+Sin filtro se excluyen las rutas eliminadas.
 
 **Respuestas:** `200` ✅ `Page<RutaRespuesta>` (vacío si no hay rutas) · `400` enum inválido · `403` sin token
 

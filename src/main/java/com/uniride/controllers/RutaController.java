@@ -50,8 +50,9 @@ public class RutaController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> eliminarRuta(@PathVariable Long id) {
-        rutaService.eliminar(id);
+    public ResponseEntity<Void> eliminarRuta(@PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean confirmar) {
+        rutaService.eliminar(id, confirmar);
         return ResponseEntity.noContent().build();
     }
 }
