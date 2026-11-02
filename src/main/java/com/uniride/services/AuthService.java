@@ -35,17 +35,19 @@ public class AuthService {
     private final NotificacionService notificacionService;
     private final UsuarioMapper usuarioMapper;
     private final MensajeService mensajeService;
+    private final PerfilRolService perfilRolService;
     private final SecureRandom random = new SecureRandom();
 
     public AuthService(UsuarioRepository usuarioRepository, PasswordEncoder passwordEncoder,
             JwtService jwtService, NotificacionService notificacionService, UsuarioMapper usuarioMapper,
-            MensajeService mensajeService) {
+            MensajeService mensajeService, PerfilRolService perfilRolService) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.notificacionService = notificacionService;
         this.usuarioMapper = usuarioMapper;
         this.mensajeService = mensajeService;
+        this.perfilRolService = perfilRolService;
     }
 
     @Transactional
@@ -79,6 +81,7 @@ public class AuthService {
                 .build();
 
         Usuario guardado = usuarioRepository.save(usuario);
+        perfilRolService.asegurarPerfil(guardado, guardado.getRolPrincipal());
 
         notificacionService.notificar(guardado, TipoNotificacion.EXITO,
                 mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.titulo"),
