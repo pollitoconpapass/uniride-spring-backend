@@ -210,6 +210,9 @@ public class HorarioAcademicoService {
     }
 
     private void validarCurso(CursoRequest request) {
+        if (request == null) {
+            throw new CamposInvalidosException("Debes ingresar los datos del curso; no se permiten elementos nulos");
+        }
         if (request.nombre() == null || request.nombre().isBlank()) {
             throw new CamposInvalidosException("Falta ingresar el nombre de un curso");
         }

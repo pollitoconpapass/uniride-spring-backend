@@ -99,4 +99,27 @@ class InternacionalizacionTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.mensaje").value("Incorrect email or password"));
     }
+
+    @Test
+    @DisplayName("JSON inválido debe responder 400 y respetar el idioma solicitado")
+    void jsonInvalidoDebeResponderBadRequestEnAmbosIdiomas() throws Exception {
+
+        String jsonInvalido = "{correo:\"noexiste@upc.edu.pe\"}";
+
+        mockMvc.perform(post("/auth/login")
+                        .header("Accept-Language", "es-419")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonInvalido))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje")
+                        .value("El cuerpo de la solicitud contiene un JSON inválido"));
+
+        mockMvc.perform(post("/auth/login")
+                        .header("Accept-Language", "en-US")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonInvalido))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.mensaje")
+                        .value("The request body contains invalid JSON"));
+    }
 }
