@@ -45,15 +45,13 @@ public class RutaController {
 
     @PutMapping("/{id}")
     public ResponseEntity<RutaRespuesta> editarRuta(@PathVariable Long id,
-            @Valid @RequestBody RutaRequest request,
-            @RequestParam(defaultValue = "false") boolean confirmarImpacto) {
-        return ResponseEntity.ok(rutaService.actualizar(id, request, confirmarImpacto));
+            @Valid @RequestBody RutaRequest request) {
+        return ResponseEntity.ok(rutaService.actualizar(id, request));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> eliminarRuta(@PathVariable Long id,
-            @RequestParam(defaultValue = "false") boolean confirmar) {
-        rutaService.eliminar(id, confirmar);
+    public ResponseEntity<Void> eliminarRuta(@PathVariable Long id) {
+        rutaService.eliminar(id);
         return ResponseEntity.noContent().build();
     }
 }

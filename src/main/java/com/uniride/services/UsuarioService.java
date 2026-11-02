@@ -17,13 +17,10 @@ public class UsuarioService {
 
     private final UsuarioRepository usuarioRepository;
     private final UsuarioMapper usuarioMapper;
-    private final PerfilRolService perfilRolService;
 
-    public UsuarioService(UsuarioRepository usuarioRepository, UsuarioMapper usuarioMapper,
-            PerfilRolService perfilRolService) {
+    public UsuarioService(UsuarioRepository usuarioRepository, UsuarioMapper usuarioMapper) {
         this.usuarioRepository = usuarioRepository;
         this.usuarioMapper = usuarioMapper;
-        this.perfilRolService = perfilRolService;
     }
 
     public Usuario usuarioActual() {
@@ -45,7 +42,6 @@ public class UsuarioService {
         Usuario usuario = usuarioActual();
         usuario.setRolPrincipal(request.rol());
         usuarioRepository.save(usuario);
-        perfilRolService.asegurarPerfil(usuario, request.rol());
         return usuarioMapper.toUsuarioRespuesta(usuario);
     }
 }

@@ -13,8 +13,6 @@ public interface RutaRepository extends JpaRepository<Ruta, Long> {
 
     Page<Ruta> findByConductorId(Long conductorId, Pageable pageable);
 
-    Page<Ruta> findByConductorIdAndEstadoNot(Long conductorId, EstadoRuta estado, Pageable pageable);
-
     Optional<Ruta> findByIdAndConductorId(Long id, Long conductorId);
 
     boolean existsByConductorId(Long conductorId);

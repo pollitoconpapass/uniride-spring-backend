@@ -45,14 +45,6 @@ public class ViajeController {
     }
 
     @PreAuthorize("hasRole('CONDUCTOR')")
-    @PutMapping("/viajes/{id}")
-    public ResponseEntity<ViajeRespuesta> editarHorarioViaje(@PathVariable Long id,
-            @Valid @RequestBody ViajeRequest request,
-            @RequestParam(defaultValue = "false") boolean confirmarImpacto) {
-        return ResponseEntity.ok(viajeService.actualizar(id, request, confirmarImpacto));
-    }
-
-    @PreAuthorize("hasRole('CONDUCTOR')")
     @GetMapping("/rutas/{rutaId}/viajes")
     public ResponseEntity<Page<ViajeRespuesta>> listarViajes(@PathVariable Long rutaId,
             @RequestParam(defaultValue = "0") int page,

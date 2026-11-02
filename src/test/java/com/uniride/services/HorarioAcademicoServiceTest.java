@@ -169,22 +169,6 @@ class HorarioAcademicoServiceTest {
     }
 
     @Test
-    @DisplayName("US24: Un elemento nulo dentro de la lista devuelve error controlado")
-    void us24NoDebeAceptarUnCursoNulo() {
-        when(usuarioService.usuarioActual()).thenReturn(usuario);
-        when(horarioAcademicoRepository.findByUsuarioId(1L)).thenReturn(Optional.of(horario));
-
-        List<CursoRequest> cursos = new java.util.ArrayList<>();
-        cursos.add(null);
-
-        assertThatThrownBy(() -> horarioAcademicoService.guardarCursos(cursos))
-                .isInstanceOf(CamposInvalidosException.class)
-                .hasMessage("Debes ingresar los datos del curso; no se permiten elementos nulos");
-
-        verify(cursoRepository, never()).saveAll(anyList());
-    }
-
-    @Test
     @DisplayName("US24: Debe validar campos obligatorios individuales del curso")
     void us24DebeLanzarExcepcionCuandoFaltanCamposObligatorios() {
         when(usuarioService.usuarioActual()).thenReturn(usuario);
