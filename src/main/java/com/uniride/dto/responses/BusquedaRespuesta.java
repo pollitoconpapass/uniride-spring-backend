@@ -16,5 +16,6 @@ public record BusquedaRespuesta(
         String notaContribucion,
         int capacidadMaxima,
         Long conductorId,
-        String conductorNombre) {
+        String conductorNombre,
+        SugerenciaContribucionRespuesta contribucionSugerida) {
 }
