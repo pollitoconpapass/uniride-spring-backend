@@ -6,13 +6,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
-import org.springframework.http.converter.HttpMessageNotReadableException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -54,6 +55,17 @@ public class GlobalExceptionHandler {
                 .body(new ErrorRespuesta(mensaje, null));
     }
 
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorRespuesta> cuerpoNoLegible(
+            HttpMessageNotReadableException e, HttpServletRequest request) {
+        String mensaje = request.getRequestURI().endsWith("/perfil/cursos")
+                ? "El cuerpo JSON es inválido. Envía una lista de cursos y comprueba "
+                        + "nombre, dia, horaInicio y horaFin; las horas deben tener formato HH:mm o HH:mm:ss."
+                : mensajeService.obtenerMensaje("error.json_invalido");
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ErrorRespuesta(mensaje, null));
+    }
+
     @ExceptionHandler(CamposInvalidosException.class)
     public ResponseEntity<ErrorRespuesta> camposInvalidos(CamposInvalidosException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
@@ -81,14 +93,6 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorRespuesta> accesoDenegado(AccessDeniedException e) {
         String mensaje = mensajeService.obtenerMensaje("error.acceso_denegado");
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(new ErrorRespuesta(mensaje, null));
-    }
-
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ErrorRespuesta> jsonInvalido(HttpMessageNotReadableException e) {
-        String mensaje = mensajeService.obtenerMensaje("error.json_invalido");
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorRespuesta(mensaje, null));
     }
 

@@ -35,7 +35,7 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 | Enum | Valores |
 |---|---|
 | `Rol` | `CONDUCTOR`, `PASAJERO` |
-| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA` |
+| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA` |
 | `EstadoSolicitud` | `PENDIENTE`, `ACEPTADA`, `RECHAZADA`, `CANCELADA` |
 | `EstadoViaje` | `PROGRAMADO`, `EN_PROGRESO`, `COMPLETADO`, `CANCELADO`, `VENCIDO` |
 | `TipoCompensacion` | `DINERO`, `GASOLINA`, `FAVOR` |
@@ -270,7 +270,27 @@ Agrega cursos y horarios manualmente, en lote (US24).
 | `horaInicio` | time (`HH:mm:ss` o `HH:mm`) | ✅ | |
 | `horaFin` | time (`HH:mm:ss` o `HH:mm`) | ✅ | Debe ser posterior a `horaInicio` |
 
-**Respuestas:** `201` ✅ lista de cursos creados · `400` lista vacía o campo de algún curso incompleto/inválido · `403` sin token
+**Respuestas:** `201` ✅ lista de cursos creados y notificación de éxito · `400` lista vacía, curso nulo, campo obligatorio vacío o JSON/hora con formato incorrecto · `409` cruce de horarios · `401` sin autenticación válida.
+
+**US24 — ejemplos de error HTTP 400:**
+
+Si falta el nombre, por ejemplo:
+
+```json
+[
+  { "nombre": "", "dia": "Lunes", "horaInicio": "08:00", "horaFin": "10:00" }
+]
+```
+
+Respuesta de error (se mantiene el contrato `ErrorRespuesta`):
+
+```json
+{ "mensaje": "Falta ingresar el nombre de un curso", "campos": null }
+```
+
+Si `dia`, `horaInicio` o `horaFin` son nulos/faltantes, se devuelve HTTP `400` con el mensaje específico del campo. Si una hora tiene un formato no interpretable (por ejemplo `25:99`) o el JSON es inválido, se devuelve HTTP `400` con una indicación para revisar el formato; no HTTP `500`.
+
+Cuando los cursos son válidos, la operación devuelve `201` con la lista guardada y registra la notificación de éxito `Cursos y horarios guardados`. En caso de cruce de horarios, se devuelve HTTP `409` y no se guardan los cursos del lote.
 
 #### `GET /api/perfil/cursos`
 Lista los cursos del usuario con paginación.
@@ -336,11 +356,9 @@ Lista **mis rutas** publicadas con filtros (US09).
 
 | Query | Tipo | Defecto | Detalle |
 |---|---|---|---|
-| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA`) |
+| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`) |
 | `page` | int | `0` | |
 | `size` | int | `10` | |
-
-Sin filtro se excluyen las rutas eliminadas.
 
 **Respuestas:** `200` ✅ `Page<RutaRespuesta>` (vacío si no hay rutas) · `400` enum inválido · `403` sin token
 
