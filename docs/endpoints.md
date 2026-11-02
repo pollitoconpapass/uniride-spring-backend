@@ -1,6 +1,6 @@
 # UniRide — Referencia de endpoints
 
-Listado completo de los **42 endpoints** REST de la API, con parámetros, bodies y códigos de estado.
+Listado completo de los **43 endpoints** REST de la API, con parámetros, bodies y códigos de estado.
 Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 
 ---
@@ -388,7 +388,18 @@ Edita una ruta propia (US07).
 
 **Body (JSON):** mismo esquema que `POST /api/rutas`.
 
-**Respuestas:** `200` ✅ ruta actualizada · `400` campos inválidos · `404` ruta inexistente o ajena · `403` sin token
+| Query | Tipo | Por defecto |
+|---|---|---|
+| `confirmarImpacto` | boolean | `false` |
+
+Si hay pasajeros aceptados y cambian capacidad, origen o puntos de referencia,
+la API responde **409** pidiendo confirmación con `?confirmarImpacto=true`.
+Aunque se confirme, nunca permite bajar la capacidad por debajo de las solicitudes
+aceptadas de un viaje PROGRAMADO. Se notificará a los pasajeros afectados.
+Las notas de contribución pueden cambiarse sin confirmación.
+El horario no está en la ruta, sino en los viajes: usa `PUT /api/viajes/{id}`.
+
+**Respuestas:** `200` ✅ ruta actualizada · `400` campos inválidos · `409` confirmación necesaria, capacidad insuficiente o viaje en progreso · `404` ruta inexistente o ajena · `403` sin token
 
 #### `DELETE /api/rutas/{id}`
 Elimina una ruta propia (US08).
@@ -416,6 +427,26 @@ Genera un viaje programado a partir de una ruta propia (el día se calcula de la
 | `hora` | time (`HH:mm:ss` o `HH:mm`) | ✅ |
 
 **Respuestas:** `201` ✅ viaje creado en estado `PROGRAMADO` · `400` campos faltantes o fecha en el pasado · `404` ruta inexistente o ajena · `403` sin token
+
+#### `PUT /api/viajes/{id}` (US07)
+Reprograma un viaje PROGRAMADO de una ruta propia. Requiere rol `CONDUCTOR`.
+
+**Body:** el mismo que en `POST /api/rutas/{rutaId}/viajes`, con `fecha` y `hora`.
+
+| Query | Tipo | Por defecto |
+|---|---|---|
+| `confirmarImpacto` | boolean | `false` |
+
+Si hay pasajeros aceptados, devuelve **409** con advertencia hasta que se reintente
+con `?confirmarImpacto=true`. Tras una modificación real notifica a los pasajeros.
+Un viaje previamente confirmado vuelve a quedar **sin confirmar** y reinicia el
+recordatorio, para que el conductor lo reconfirme según US17. En ese caso, la nueva
+salida debe estar al menos a 12 horas. Un viaje finalizado, cancelado o en progreso
+no se puede reprogramar.
+
+**Respuestas:** `200` ✅ cambio guardado · `400` fecha/hora ausentes o pasadas ·
+`409` confirmación de impacto, plazo de confirmación insuficiente o estado no editable ·
+`404` viaje inexistente/ajeno · `403` rol no permitido.
 
 #### `GET /api/rutas/{rutaId}/viajes`
 Lista los viajes de una ruta propia.
@@ -786,3 +817,4 @@ Sugerencia de contribución estimada para un viaje (US29).
 | 40 | PUT | `/api/metodos-compensacion/{id}` | 7 |
 | 41 | DELETE | `/api/metodos-compensacion/{id}` | 7 |
 | 42 | GET | `/api/viajes/{id}/sugerencia-contribucion` | 7 |
+| 43 | PUT | `/api/viajes/{id}` | 2 (US07) |

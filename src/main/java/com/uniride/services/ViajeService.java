@@ -88,6 +88,70 @@ public class ViajeService {
         return viajeMapper.toViajeRespuesta(guardado);
     }
 
+    /** US07: reprogramar fecha/hora de un viaje sin borrar solicitudes ni historial. */
+    @Transactional
+    public ViajeRespuesta actualizar(Long id, ViajeRequest request, boolean confirmarImpacto) {
+        Usuario conductor = usuarioService.usuarioActual();
+        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
+        }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
+        }
+        if (request == null || request.fecha() == null || request.hora() == null) {
+            throw new CamposInvalidosException("La fecha y la hora son obligatorias");
+        }
+        LocalDateTime nuevaSalida = LocalDateTime.of(request.fecha(), request.hora());
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        if (!nuevaSalida.isAfter(ahora)) {
+            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
+        }
+        if (viaje.getFecha().equals(request.fecha()) && viaje.getHora().equals(request.hora())) {
+            return viajeMapper.toViajeRespuesta(viaje, "El horario no cambió");
+        }
+        // Un viaje confirmado deberá confirmarse nuevamente según US17.
+        // Nunca permitir dejarlo sin posibilidad de confirmar 12 h antes.
+        if (viaje.isConfirmado()
+                && Duration.between(ahora, nuevaSalida).compareTo(PLAZO_CONFIRMACION) < 0) {
+            throw new BusinessException("Un viaje confirmado solo puede reprogramarse a una "
+                    + "salida con al menos 12 horas de anticipación para volver a confirmarlo");
+        }
+
+        List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
+                id, List.of(EstadoSolicitud.ACEPTADA));
+        if (!aceptadas.isEmpty() && !confirmarImpacto) {
+            throw new BusinessException("ADVERTENCIA: el cambio de horario afecta a "
+                    + aceptadas.size() + " pasajero(s) aceptado(s). "
+                    + "Confirma usando ?confirmarImpacto=true.");
+        }
+
+        viaje.setFecha(request.fecha());
+        viaje.setHora(request.hora());
+        viaje.setDia(diaDeLaSemana(request.fecha()));
+        if (viaje.isConfirmado()) {
+            viaje.setConfirmado(false);
+            viaje.setFechaConfirmacion(null);
+        }
+        viaje.setRecordatorioEnviado(false);
+        Viaje actualizado = viajeRepository.save(viaje);
+
+        for (Solicitud solicitud : aceptadas) {
+            notificacionService.notificar(solicitud.getPasajero(), TipoNotificacion.ADVERTENCIA,
+                    "Horario de viaje modificado",
+                    "El conductor reprogramó tu viaje para el " + actualizado.getFecha()
+                            + " a las " + actualizado.getHora()
+                            + ". Revisa el nuevo horario en UniRide.");
+        }
+        notificacionService.notificar(conductor, TipoNotificacion.EXITO,
+                "Viaje reprogramado", "Actualizaste la salida del viaje al "
+                        + actualizado.getFecha() + " a las " + actualizado.getHora()
+                        + ". Si estaba confirmado, debes confirmarlo nuevamente.");
+        return viajeMapper.toViajeRespuesta(actualizado, "Horario del viaje actualizado");
+    }
+
     @Transactional
     public Page<ViajeRespuesta> listarPorRuta(Long rutaId, int page, int size) {
         Usuario conductor = usuarioService.usuarioActual();
