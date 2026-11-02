@@ -373,11 +373,32 @@ Lista **mis rutas** publicadas con filtros (US09).
 
 | Query | Tipo | Defecto | Detalle |
 |---|---|---|---|
-| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`) |
+| `estado` | enum `EstadoRuta` | – | Filtro opcional (`ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA`) |
 | `page` | int | `0` | |
 | `size` | int | `10` | |
 
-**Respuestas:** `200` ✅ `Page<RutaRespuesta>` (vacío si no hay rutas) · `400` enum inválido · `403` sin token
+**US09:** cada consulta sincroniza el estado de las rutas del conductor a partir de sus viajes:
+`ACTIVA` si no tiene viajes o existe al menos un viaje PROGRAMADO futuro con cupo;
+`LLENA` si todos los viajes PROGRAMADO futuros están completos;
+`VENCIDA` cuando tiene viajes pero ninguno PROGRAMADO futuro;
+`ELIMINADA` se conserva sin alterar (US08). El estado actualizado se guarda en `rutas.estado`.
+
+**Respuestas:** `200` ✅ `Page<RutaRespuesta>`; si no hay rutas, cabecera HTTP
+`X-UniRide-Mensaje` con una orientación. · `400` enum inválido · `403` sin token.
+
+#### `GET /api/rutas/resumen`
+Nueva variante no disruptiva para US09 que devuelve paginación, filtro y mensaje en el JSON:
+
+```json
+{
+  "rutas": { "content": [], "totalElements": 0, "totalPages": 0 },
+  "mensaje": "Aun no tienes rutas visibles. Publica una ruta o revisa tus rutas eliminadas."
+}
+```
+
+Acepta los mismos parámetros `estado`, `page` y `size` que `GET /api/rutas`.
+Cuando hay resultados, `mensaje` es `null`. Conserva el endpoint anterior para
+no romper el frontend existente.
 
 #### `PUT /api/rutas/{id}`
 Edita una ruta propia (US07).

@@ -2,6 +2,7 @@ package com.uniride.controllers;
 
 import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.responses.RutaRespuesta;
+import com.uniride.dto.responses.MisRutasResumenRespuesta;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.services.RutaService;
 import jakarta.validation.Valid;
@@ -40,7 +41,33 @@ public class RutaController {
             @RequestParam(required = false) EstadoRuta estado,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
-        return ResponseEntity.ok(rutaService.listarMisRutas(estado, page, size));
+        Page<RutaRespuesta> rutas = rutaService.listarMisRutas(estado, page, size);
+        if (rutas.isEmpty()) {
+            // Mantener el contrato Page existente y anexar mensaje orientativo.
+            return ResponseEntity.ok()
+                    .header("X-UniRide-Mensaje", mensajeVacio(estado))
+                    .body(rutas);
+        }
+        return ResponseEntity.ok(rutas);
+    }
+
+    /** US09: variante que incluye el mensaje dentro del JSON para el frontend. */
+    @GetMapping("/resumen")
+    public ResponseEntity<MisRutasResumenRespuesta> resumenMisRutas(
+            @RequestParam(required = false) EstadoRuta estado,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Page<RutaRespuesta> rutas = rutaService.listarMisRutas(estado, page, size);
+        return ResponseEntity.ok(new MisRutasResumenRespuesta(
+                rutas, rutas.isEmpty() ? mensajeVacio(estado) : null));
+    }
+
+    private String mensajeVacio(EstadoRuta estado) {
+        if (estado == null) {
+            return "Aun no tienes rutas visibles. Publica una ruta o revisa tus rutas eliminadas.";
+        }
+        return "No tienes rutas con estado " + estado
+                + ". Prueba otro filtro o publica una nueva ruta.";
     }
 
     @PutMapping("/{id}")

@@ -22,6 +22,10 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     List<Viaje> findByRutaId(Long rutaId);
 
+    // US09: una sola consulta para calcular el estado de las rutas del conductor.
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId")
+    List<Viaje> buscarTodosPorConductor(@Param("conductorId") Long conductorId);
+
     long countByRutaConductorIdAndEstado(Long conductorId, EstadoViaje estado);
 
     @Query("SELECT v.dia, COUNT(v) FROM Viaje v "

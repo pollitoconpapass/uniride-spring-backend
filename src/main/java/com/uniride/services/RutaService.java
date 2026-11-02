@@ -25,6 +25,8 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.stream.Collectors;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -79,25 +81,93 @@ public class RutaService {
         return rutaMapper.toRutaRespuesta(guardada);
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * US09: sincroniza estados persistidos antes de aplicar los filtros y la paginacion.
+     * La escritura es intencional; por eso esta transaccion NO es readOnly.
+     */
+    @Transactional
     public Page<RutaRespuesta> listarMisRutas(EstadoRuta estado, int page, int size) {
         Usuario conductor = usuarioService.usuarioActual();
         PageRequest pageable = PageRequest.of(
                 page, size, Sort.by("fechaCreacion").descending());
 
-        Page<Ruta> rutas;
+        sincronizarEstadosRutas(conductor.getId());
 
+        Page<Ruta> rutas;
         if (estado == null) {
-            // Por defecto, ocultar las rutas eliminadas.
+            // US08: por defecto nunca mostrar rutas ELIMINADA.
             rutas = rutaRepository.findByConductorIdAndEstadoNot(
                     conductor.getId(), EstadoRuta.ELIMINADA, pageable);
         } else {
-            // Permitir consultar cualquier estado, incluso ELIMINADA.
+            // Incluye el filtro explicito ELIMINADA para consultar historial.
             rutas = rutaRepository.buscarPorConductorYEstado(
                     conductor.getId(), estado, pageable);
         }
-
         return rutas.map(rutaMapper::toRutaRespuesta);
+    }
+
+    /**
+     * Estado de la ruta, derivado de los viajes existentes (sin alterar sus estados):
+     * - sin viajes: ACTIVA; se puede programar el primero.
+     * - algun viaje PROGRAMADO futuro con cupos: ACTIVA.
+     * - viajes PROGRAMADO futuros pero todos llenos: LLENA.
+     * - con historial pero sin viajes programados futuros: VENCIDA.
+     * - ELIMINADA: no se recalcula, conservando la eliminacion logica US08.
+     *
+     * La consulta de viajes es unica para todas las rutas del conductor.
+     */
+    private void sincronizarEstadosRutas(Long conductorId) {
+        List<Ruta> rutas = rutaRepository.findByConductorId(conductorId);
+        if (rutas.isEmpty()) {
+            return;
+        }
+
+        Map<Long, List<Viaje>> viajesPorRuta = viajeRepository
+                .buscarTodosPorConductor(conductorId).stream()
+                .collect(Collectors.groupingBy(viaje -> viaje.getRuta().getId()));
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        List<Ruta> modificadas = new ArrayList<>();
+
+        for (Ruta ruta : rutas) {
+            if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
+                continue;
+            }
+
+            List<Viaje> viajes = viajesPorRuta.getOrDefault(ruta.getId(), List.of());
+            boolean tieneProgramadosFuturos = false;
+            boolean tieneCuposFuturos = false;
+            for (Viaje viaje : viajes) {
+                if (viaje.getEstado() != EstadoViaje.PROGRAMADO
+                        || viaje.getFecha() == null || viaje.getHora() == null
+                        || !LocalDateTime.of(viaje.getFecha(), viaje.getHora()).isAfter(ahora)) {
+                    continue;
+                }
+                tieneProgramadosFuturos = true;
+                if (viaje.getPasajeros() < ruta.getCapacidadMaxima()) {
+                    tieneCuposFuturos = true;
+                    break;
+                }
+            }
+
+            EstadoRuta nuevoEstado;
+            if (viajes.isEmpty() || tieneCuposFuturos) {
+                nuevoEstado = EstadoRuta.ACTIVA;
+            } else if (tieneProgramadosFuturos) {
+                nuevoEstado = EstadoRuta.LLENA;
+            } else {
+                nuevoEstado = EstadoRuta.VENCIDA;
+            }
+
+            if (ruta.getEstado() != nuevoEstado) {
+                ruta.setEstado(nuevoEstado);
+                modificadas.add(ruta);
+            }
+        }
+
+        if (!modificadas.isEmpty()) {
+            // Flush antes del SELECT paginado para que los filtros reflejen los estados nuevos.
+            rutaRepository.saveAllAndFlush(modificadas);
+        }
     }
 
     @Transactional
