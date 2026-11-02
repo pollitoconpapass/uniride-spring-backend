@@ -4,6 +4,7 @@ import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Ruta;
+import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoRuta;
@@ -24,6 +25,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -97,7 +101,7 @@ public class RutaService {
     }
 
     @Transactional
-    public RutaRespuesta actualizar(Long id, RutaRequest request) {
+    public RutaRespuesta actualizar(Long id, RutaRequest request, boolean confirmarImpacto) {
         Usuario conductor = usuarioService.usuarioActual();
         Ruta ruta = rutaRepository.findByIdAndConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
@@ -105,13 +109,57 @@ public class RutaService {
         if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
             throw new BusinessException("No se puede editar una ruta eliminada");
         }
+        if (request == null || request.origen() == null || request.origen().isBlank()
+                || request.puntosReferencia() == null || request.puntosReferencia().isBlank()
+                || request.capacidadMaxima() == null || request.capacidadMaxima() < 1) {
+            throw new CamposInvalidosException("Completa origen, puntos de referencia y capacidad mayor a cero");
+        }
+
+        boolean cambioRelevante = ruta.getCapacidadMaxima() != request.capacidadMaxima()
+                || !Objects.equals(ruta.getOrigen(), request.origen())
+                || !Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia())
+                || !Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada());
+
+        Map<Long, Usuario> pasajerosAfectados = new LinkedHashMap<>();
+        if (cambioRelevante) {
+            for (Viaje viaje : viajeRepository.findByRutaId(id)) {
+                if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
+                    throw new BusinessException("No puedes cambiar detalles de una ruta con viajes en progreso");
+                }
+                if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+                    continue; // No modificar reglas sobre viajes históricos.
+                }
+                List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
+                        viaje.getId(), List.of(EstadoSolicitud.ACEPTADA));
+                if (aceptadas.size() > request.capacidadMaxima()) {
+                    throw new BusinessException("La capacidad no puede ser inferior a los "
+                            + aceptadas.size() + " pasajeros aceptados de un viaje");
+                }
+                for (Solicitud solicitud : aceptadas) {
+                    pasajerosAfectados.put(solicitud.getPasajero().getId(), solicitud.getPasajero());
+                }
+            }
+            if (!pasajerosAfectados.isEmpty() && !confirmarImpacto) {
+                throw new BusinessException("ADVERTENCIA: la edición de la ruta afecta a "
+                        + pasajerosAfectados.size() + " pasajero(s) aceptado(s). "
+                        + "Confirma usando ?confirmarImpacto=true.");
+            }
+        }
+
         rutaMapper.actualizarRuta(request, ruta);
         ruta.setDestino(universidadDelConductor(conductor));
         Ruta guardada = rutaRepository.save(ruta);
 
+        for (Usuario pasajero : pasajerosAfectados.values()) {
+            notificacionService.notificar(pasajero, TipoNotificacion.ADVERTENCIA,
+                    "Ruta modificada",
+                    "El conductor actualizó detalles de tu ruta " + ruta.getOrigen()
+                            + " → " + ruta.getDestino()
+                            + ". Revisa el origen, los puntos de referencia y la capacidad.");
+        }
         notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Ruta actualizada",
-                "Tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino() + " fue actualizada correctamente.");
-
+                "Tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino()
+                        + " fue actualizada correctamente.");
         return rutaMapper.toRutaRespuesta(guardada);
     }
 

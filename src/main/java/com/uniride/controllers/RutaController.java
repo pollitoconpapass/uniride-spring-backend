@@ -45,8 +45,9 @@ public class RutaController {
 
     @PutMapping("/{id}")
     public ResponseEntity<RutaRespuesta> editarRuta(@PathVariable Long id,
-            @Valid @RequestBody RutaRequest request) {
-        return ResponseEntity.ok(rutaService.actualizar(id, request));
+            @Valid @RequestBody RutaRequest request,
+            @RequestParam(defaultValue = "false") boolean confirmarImpacto) {
+        return ResponseEntity.ok(rutaService.actualizar(id, request, confirmarImpacto));
     }
 
     @DeleteMapping("/{id}")
