@@ -231,9 +231,12 @@ Guarda los datos personales del perfil (US04).
 **Respuestas:** `200` ✅ perfil actualizado · `400` campos faltantes o método favorito ausente en conductor · `403` sin token
 
 #### `PUT /api/perfil/info-adicional`
-Guarda gustos, hobbies y datos curiosos (US05).
+Guarda y edita gustos, hobbies y datos curiosos (US05).
 
-**Body (JSON)**
+**Primera carga:** se requieren los tres campos con texto no vacío. El servicio devuelve
+`400` indicando los nombres de los campos que faltan. El perfil personal debe existir previamente.
+
+**Body inicial (JSON)**
 ```json
 {
   "gustos": "Música rock, series de ciencia ficción",
@@ -242,13 +245,27 @@ Guarda gustos, hobbies y datos curiosos (US05).
 }
 ```
 
-| Campo | Tipo | Obligatorio |
-|---|---|---|
-| `gustos` | string | ❌ |
-| `hobbies` | string | ❌ |
-| `datosCuriosos` | string | ❌ |
+**Edición parcial:** en una actualización posterior se pueden omitir campos (o enviarlos como `null`)
+para conservar sus valores actuales; se debe enviar al menos un campo no nulo. Enviar una
+cadena vacía o solo espacios en un campo obligatorio provoca `400`, sin borrar su valor anterior.
 
-**Respuestas:** `200` ✅ perfil actualizado · `404` "Primero completa tu perfil personal" · `403` sin token
+```json
+{
+  "hobbies": "Ciclismo y fotografía"
+}
+```
+
+| Campo | Tipo | Al completar inicialmente | En edición posterior |
+|---|---|---|---|
+| `gustos` | string | Obligatorio, no vacío | Opcional; si se omite, se conserva |
+| `hobbies` | string | Obligatorio, no vacío | Opcional; si se omite, se conserva |
+| `datosCuriosos` | string | Obligatorio, no vacío | Opcional; si se omite, se conserva |
+
+**Respuestas:** `200` perfil actualizado y notificación de éxito · `400` campos
+obligatorios faltantes, valores en blanco o solicitud sin cambios · `404` perfil personal aún no registrado ·
+`401` sin autenticación válida (según configuración de seguridad).
+
+**Nota:** no se modifican las tablas `perfiles`, `usuarios`, `conductores` ni `pasajeros`.
 
 ### Cursos y horarios
 
