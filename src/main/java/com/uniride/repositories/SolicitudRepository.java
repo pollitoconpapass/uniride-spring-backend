@@ -28,6 +28,14 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     Optional<Solicitud> findByIdAndViajeRutaConductorId(Long id, Long conductorId);
 
+    // 11.2: obtener solo el ID evita cargar una entidad Viaje obsoleta antes del bloqueo.
+    // El filtro de conductor evita exponer solicitudes ajenas.
+    @Query("SELECT s.viaje.id FROM Solicitud s "
+            + "WHERE s.id = :solicitudId AND s.viaje.ruta.conductor.id = :conductorId")
+    Optional<Long> buscarViajeIdParaAceptar(
+            @Param("solicitudId") Long solicitudId,
+            @Param("conductorId") Long conductorId);
+
     // US14: solicitudes por ruta. El conductor se valida primero a nivel de ruta.
     List<Solicitud> findByViajeRutaIdOrderByFechaCreacionDesc(Long rutaId);
 
