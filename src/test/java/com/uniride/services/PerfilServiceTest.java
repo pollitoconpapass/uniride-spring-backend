@@ -15,6 +15,7 @@ import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.PerfilMapper;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.SolicitudRepository;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,7 +35,8 @@ class PerfilServiceTest {
         perfilMapper = mock(PerfilMapper.class);
         usuarioService = mock(UsuarioService.class);
         notificacionService = mock(NotificacionService.class);
-        service = new PerfilService(perfilRepository, perfilMapper, usuarioService, notificacionService);
+        service = new PerfilService(perfilRepository, perfilMapper, usuarioService, notificacionService,
+                mock(SolicitudRepository.class));
         Usuario usuario = Usuario.builder().id(7L).build();
         perfil = Perfil.builder().id(3L).usuario(usuario).build();
         when(usuarioService.usuarioActual()).thenReturn(usuario);

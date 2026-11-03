@@ -2,6 +2,8 @@ package com.uniride.exceptions;
 
 import com.uniride.dto.responses.ErrorRespuesta;
 import com.uniride.services.MensajeService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -16,6 +18,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
 
     private final MensajeService mensajeService;
@@ -96,9 +99,21 @@ public class GlobalExceptionHandler {
                 .body(new ErrorRespuesta(mensaje, null));
     }
 
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorRespuesta> conflictoIntegridad(DataIntegrityViolationException e) {
+        log.warn("Operación rechazada por integridad referencial", e);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorRespuesta(
+                        "No se pudo completar la operación porque existen datos relacionados "
+                                + "o ya registrados.", null));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorRespuesta> inesperada(Exception e) {
-        String mensaje = mensajeService.obtenerMensaje("error.inesperado", e.getMessage());
+        // El cliente no debe recibir consultas SQL, nombres de tablas o detalles internos.
+        log.error("Error interno no controlado", e);
+        String mensaje = mensajeService.obtenerMensaje("error.inesperado",
+                "Intenta nuevamente o contacta con soporte");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorRespuesta(mensaje, null));
     }

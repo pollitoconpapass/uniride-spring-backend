@@ -11,6 +11,7 @@ import com.uniride.entities.Usuario;
 import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.mappers.PerfilMapper;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.SolicitudRepository;
 import com.uniride.services.MensajeService;
 import com.uniride.services.NotificacionService;
 import com.uniride.services.PerfilService;
@@ -50,7 +51,9 @@ class PerfilControllerHttpTest {
                     p.getDatosCuriosos(), p.getFechaActualizacion());
         });
 
-        PerfilService service = new PerfilService(repository, mapper, usuarioService, notificacionService);
+        SolicitudRepository solicitudRepository = mock(SolicitudRepository.class);
+        PerfilService service = new PerfilService(repository, mapper, usuarioService,
+                notificacionService, solicitudRepository);
         mvc = MockMvcBuilders.standaloneSetup(new PerfilController(service))
                 .setControllerAdvice(new GlobalExceptionHandler(new MensajeService(new StaticMessageSource())))
                 .build();
