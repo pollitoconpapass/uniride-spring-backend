@@ -249,6 +249,17 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta aceptar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
+
+        // 11.2: consultar inicialmente solo el ID del viaje, NO la entidad completa.
+        // Si se carga Viaje antes del lock, el contexto JPA podría conservar un
+        // contador de pasajeros obsoleto mientras otra aceptación está en curso.
+        Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        Viaje viaje = viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        // Releer la solicitud después de adquirir el bloqueo. Esto impide que
+        // dos peticiones que aceptan el mismo ID creen acuerdos/cupos duplicados.
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
         if (solicitud.getEstado() == EstadoSolicitud.ACEPTADA) {
@@ -258,7 +269,8 @@ public class SolicitudService {
         }
         validarSolicitudProcesable(solicitud);
 
-        Viaje viaje = solicitud.getViaje();
+        // Al estar dentro del mismo @Transactional, el bloqueo y el incremento
+        // se liberan juntos al commit. La siguiente solicitud lee el cupo nuevo.
         if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
             throw new BusinessException("La ruta ya no tiene cupos disponibles");
         }

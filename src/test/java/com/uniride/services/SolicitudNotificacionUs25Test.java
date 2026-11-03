@@ -89,6 +89,8 @@ class SolicitudNotificacionUs25Test {
         Solicitud solicitud = Solicitud.builder().id(55L).estado(EstadoSolicitud.ACEPTADA)
                 .pasajero(pasajero).viaje(viaje).build();
         when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(solicitudes.buscarViajeIdParaAceptar(55L, 1L)).thenReturn(Optional.of(20L));
+        when(viajes.bloquearParaAceptar(20L)).thenReturn(Optional.of(viaje));
         when(solicitudes.findByIdAndViajeRutaConductorId(55L, 1L))
                 .thenReturn(Optional.of(solicitud));
         assertThatThrownBy(() -> servicio.aceptar(55L))
