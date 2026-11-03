@@ -1,6 +1,7 @@
 package com.uniride.repositories;
 
 import com.uniride.entities.Viaje;
+import jakarta.persistence.LockModeType;
 import com.uniride.enums.EstadoViaje;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -9,6 +10,7 @@ import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -101,6 +103,9 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("estado") EstadoViaje estado, @Param("desde") LocalDate desde,
             @Param("hasta") LocalDate hasta);
 
+    // Bloqueo de filas durante el ciclo de recordatorios para impedir dos envios
+    // simultaneos en distintas ejecuciones del scheduler.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT v FROM Viaje v "
             + "WHERE v.confirmado = false "
             + "AND v.recordatorioEnviado = false "

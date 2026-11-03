@@ -94,6 +94,11 @@ public class SolicitudService {
         }
         if (solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
                 viajeId, pasajero.getId(), ESTADOS_BLOQUEANTES)) {
+            notificacionService.notificarAccionYaRealizada(pasajero,
+                    "Solicitud ya registrada",
+                    "Ya habias enviado una solicitud para el viaje del "
+                            + viaje.getFecha() + " a las " + viaje.getHora()
+                            + ". No se creo una solicitud duplicada.");
             throw new BusinessException("Ya enviaste una solicitud para este viaje");
         }
 
@@ -192,6 +197,11 @@ public class SolicitudService {
         Solicitud solicitud = solicitudRepository.findByIdAndPasajeroId(id, pasajero.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
 
+        if (solicitud.getEstado() == EstadoSolicitud.CANCELADA) {
+            notificacionService.notificarAccionYaRealizada(pasajero,
+                    "Solicitud ya cancelada",
+                    "La solicitud " + id + " ya estaba cancelada. No se registro otra cancelacion.");
+        }
         if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
             throw new BusinessException(mensajeEstadoActual(solicitud));
         }
@@ -241,6 +251,11 @@ public class SolicitudService {
         Usuario conductor = usuarioService.usuarioActual();
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        if (solicitud.getEstado() == EstadoSolicitud.ACEPTADA) {
+            notificacionService.notificarAccionYaRealizada(conductor,
+                    "Solicitud ya aceptada",
+                    "La solicitud " + id + " ya estaba aceptada. No se duplicaron los cupos ni el acuerdo.");
+        }
         validarSolicitudProcesable(solicitud);
 
         Viaje viaje = solicitud.getViaje();
@@ -277,6 +292,11 @@ public class SolicitudService {
         Usuario conductor = usuarioService.usuarioActual();
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        if (solicitud.getEstado() == EstadoSolicitud.RECHAZADA) {
+            notificacionService.notificarAccionYaRealizada(conductor,
+                    "Solicitud ya rechazada",
+                    "La solicitud " + id + " ya estaba rechazada. No se duplico el rechazo.");
+        }
         validarSolicitudProcesable(solicitud);
 
         return rechazarInterna(solicitud, request == null ? null : request.motivo(), conductor);

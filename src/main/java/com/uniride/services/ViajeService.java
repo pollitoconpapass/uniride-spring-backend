@@ -451,6 +451,13 @@ public class ViajeService {
 
         for (Viaje viaje : candidatos) {
 
+            // Defensa adicional: la consulta ya filtra esta marca, pero un mismo
+            // objeto puede ser reusado en invocaciones de prueba o repetidas.
+            if (viaje.isRecordatorioEnviado() || viaje.isConfirmado()
+                    || viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+                continue;
+            }
+
             Duration faltan =
                     Duration.between(
                             ahora,
