@@ -58,7 +58,7 @@ class ViajeEdicionServiceTest {
         viaje = Viaje.builder().id(20L).ruta(ruta).fecha(fecha).hora(LocalTime.of(8, 0))
                 .dia("Viernes").estado(EstadoViaje.PROGRAMADO).build();
         lenient().when(usuarioService.usuarioActual()).thenReturn(conductor);
-        lenient().when(viajeRepository.findByIdAndRutaConductorId(20L, 10L))
+        lenient().when(viajeRepository.bloquearParaConductor(20L, 10L))
                 .thenReturn(Optional.of(viaje));
     }
 
@@ -155,7 +155,7 @@ class ViajeEdicionServiceTest {
 
     @Test
     void viajeAjenoNoSeEdita() {
-        when(viajeRepository.findByIdAndRutaConductorId(99L, 10L)).thenReturn(Optional.empty());
+        when(viajeRepository.bloquearParaConductor(99L, 10L)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> servicio.actualizar(99L, horarioNuevo(), true))
                 .isInstanceOf(ResourceNotFoundException.class);
     }

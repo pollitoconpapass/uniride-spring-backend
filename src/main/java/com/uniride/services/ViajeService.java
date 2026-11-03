@@ -92,7 +92,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta actualizar(Long id, ViajeRequest request, boolean confirmarImpacto) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
@@ -172,7 +172,7 @@ public class ViajeService {
     @Transactional
     public void eliminar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO || viaje.isConfirmado()) {
@@ -201,7 +201,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta confirmar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.isConfirmado()) {
@@ -277,7 +277,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta iniciar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
@@ -323,7 +323,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta completar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getEstado() == EstadoViaje.COMPLETADO) {
@@ -361,7 +361,9 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta cancelar(Long id) {
         Usuario usuario = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findById(id)
+        // Bloquear la misma fila que usa la aceptacion: evita carreras entre
+        // aceptar una solicitud, cancelar un viaje e iniciar un viaje.
+        Viaje viaje = viajeRepository.bloquearParaAceptar(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         boolean esConductor = viaje.getRuta().getConductor().getId().equals(usuario.getId());

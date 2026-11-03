@@ -102,7 +102,7 @@ class ViajeServiceTest {
         viaje.setHora(salida.toLocalTime());
 
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        when(viajeRepository.findByIdAndRutaConductorId(20L, 1L))
+        when(viajeRepository.bloquearParaConductor(20L, 1L))
                 .thenReturn(Optional.of(viaje));
         when(viajeRepository.save(any(Viaje.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -126,7 +126,7 @@ class ViajeServiceTest {
         viaje.setHora(salida.toLocalTime());
 
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        when(viajeRepository.findByIdAndRutaConductorId(20L, 1L))
+        when(viajeRepository.bloquearParaConductor(20L, 1L))
                 .thenReturn(Optional.of(viaje));
         when(viajeRepository.save(any(Viaje.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));

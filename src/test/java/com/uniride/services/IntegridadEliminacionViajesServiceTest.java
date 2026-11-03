@@ -52,7 +52,7 @@ class IntegridadEliminacionViajesServiceTest {
 
     private void prepararBusqueda() {
         when(usuarios.usuarioActual()).thenReturn(conductor);
-        when(viajes.findByIdAndRutaConductorId(40L, 20L))
+        when(viajes.bloquearParaConductor(40L, 20L))
                 .thenReturn(Optional.of(viaje));
     }
 
@@ -137,7 +137,7 @@ class IntegridadEliminacionViajesServiceTest {
     @Test
     void noPermiteEliminarViajeDeOtroConductor() {
         when(usuarios.usuarioActual()).thenReturn(conductor);
-        when(viajes.findByIdAndRutaConductorId(40L, 20L))
+        when(viajes.bloquearParaConductor(40L, 20L))
                 .thenReturn(Optional.empty());
         assertThatThrownBy(() -> servicio.eliminar(40L))
                 .isInstanceOf(ResourceNotFoundException.class);
