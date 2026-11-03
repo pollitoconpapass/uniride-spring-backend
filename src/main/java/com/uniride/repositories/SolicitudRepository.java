@@ -3,6 +3,8 @@ package com.uniride.repositories;
 import com.uniride.entities.Solicitud;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -28,6 +30,25 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
     Page<Solicitud> findByViajeIdOrderByFechaCreacionDesc(Long viajeId, Pageable pageable);
 
     List<Solicitud> findByViajeIdAndEstadoIn(Long viajeId, Collection<EstadoSolicitud> estados);
+
+    /**
+     * US13: los elementos historicos se filtran en BD ANTES de paginar.
+     * Incluye solicitudes finalizadas y las ligadas a salidas anteriores a ahora.
+     * El usuario solo puede consultar las solicitudes propias.
+     */
+    @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId "
+            + "AND (s.viaje.fecha < :hoy "
+            + "OR (s.viaje.fecha = :hoy AND s.viaje.hora < :horaActual) "
+            + "OR s.viaje.estado IN :estadosViajeFinal "
+            + "OR s.estado IN :estadosSolicitudFinal) "
+            + "ORDER BY s.fechaCreacion DESC, s.id DESC")
+    Page<Solicitud> buscarHistorialUS13(
+            @Param("pasajeroId") Long pasajeroId,
+            @Param("hoy") LocalDate hoy,
+            @Param("horaActual") LocalTime horaActual,
+            @Param("estadosViajeFinal") Collection<EstadoViaje> estadosViajeFinal,
+            @Param("estadosSolicitudFinal") Collection<EstadoSolicitud> estadosSolicitudFinal,
+            Pageable pageable);
 
     @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId AND s.estado = :estado "
             + "ORDER BY s.fechaCreacion DESC")
