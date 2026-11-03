@@ -13,6 +13,9 @@ public interface PenalidadRepository extends JpaRepository<Penalidad, Long> {
 
     boolean existsByViajeIdAndUsuarioId(Long viajeId, Long usuarioId);
 
+    // Cierre transversal: impedir el borrado fisico de viajes con sanciones.
+    boolean existsByViajeId(Long viajeId);
+
     List<Penalidad> findByViajeId(Long viajeId);
 
     List<Penalidad> findByUsuarioId(Long usuarioId);

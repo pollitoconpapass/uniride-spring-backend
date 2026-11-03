@@ -18,6 +18,9 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     long countByViajeIdAndEstado(Long viajeId, EstadoSolicitud estado);
 
+    // Cierre transversal: protege el historial antes de eliminar un viaje sin actividad.
+    boolean existsByViajeId(Long viajeId);
+
     boolean existsByViajeIdAndPasajeroIdAndEstadoIn(Long viajeId, Long pasajeroId,
             Collection<EstadoSolicitud> estados);
 
