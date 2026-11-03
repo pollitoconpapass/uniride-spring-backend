@@ -164,13 +164,34 @@ public class ViajeService {
                 .map(viajeMapper::toViajeRespuesta);
     }
 
+    /**
+     * Cierre transversal: la eliminacion fisica solo corresponde a viajes sin actividad.
+     * Conservar solicitudes, acuerdos, penalidades e historial en los demas casos.
+     * Las cancelaciones de viajes con participantes mantienen el flujo US18.
+     */
     @Transactional
     public void eliminar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
         Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO || viaje.isConfirmado()) {
+            throw new BusinessException("No se puede eliminar un viaje confirmado o historico. "
+                    + "El historial se conserva; si corresponde, usa la cancelacion del viaje.");
+        }
+        if (solicitudRepository.existsByViajeId(id)) {
+            throw new BusinessException("No se puede eliminar un viaje con solicitudes registradas. "
+                    + "Cancela el viaje mediante PUT /viajes/" + id + "/cancelar "
+                    + "para conservar las solicitudes y avisar a los involucrados.");
+        }
+        if (penalidadRepository.existsByViajeId(id)) {
+            throw new BusinessException("No se puede eliminar un viaje con penalidades asociadas. "
+                    + "El historial de sanciones debe conservarse.");
+        }
+
         viajeRepository.delete(viaje);
+        // Detectar errores de integridad antes de registrar el aviso de exito.
+        viajeRepository.flush();
 
         notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Viaje eliminado",
                 "Se eliminó el viaje del " + viaje.getDia() + " " + viaje.getFecha()
