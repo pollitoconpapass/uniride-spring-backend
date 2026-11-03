@@ -4,6 +4,8 @@ import com.uniride.dto.requests.RechazarMultipleRequest;
 import com.uniride.dto.requests.RechazarRequest;
 import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.responses.SolicitudRespuesta;
+import com.uniride.dto.responses.SolicitudesResumenRespuesta;
+import com.uniride.dto.responses.SolicitudesHistorialResumenRespuesta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.services.SolicitudService;
 import jakarta.validation.Valid;
@@ -44,7 +46,44 @@ public class SolicitudController {
             @RequestParam(required = false) EstadoSolicitud estado,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
-        return ResponseEntity.ok(solicitudService.listarMisSolicitudes(estado, page, size));
+        Page<SolicitudRespuesta> solicitudes = solicitudService.listarMisSolicitudes(estado, page, size);
+        if (solicitudes.isEmpty()) {
+            return ResponseEntity.ok()
+                    .header("X-UniRide-Mensaje", mensajeVacio(solicitudes, estado))
+                    .body(solicitudes);
+        }
+        return ResponseEntity.ok(solicitudes);
+    }
+
+    /** US13: mensaje dentro del JSON para el frontend sin cambiar el contrato anterior. */
+    @PreAuthorize("hasRole('PASAJERO')")
+    @GetMapping("/resumen")
+    public ResponseEntity<SolicitudesResumenRespuesta> resumenMisSolicitudes(
+            @RequestParam(required = false) EstadoSolicitud estado,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Page<SolicitudRespuesta> solicitudes = solicitudService.listarMisSolicitudes(estado, page, size);
+        return ResponseEntity.ok(new SolicitudesResumenRespuesta(
+                solicitudes, solicitudes.isEmpty() ? mensajeVacio(solicitudes, estado) : null));
+    }
+
+    /** US13: historial del pasajero, con penalidades propias del viaje si las hubiera. */
+    @PreAuthorize("hasRole('PASAJERO')")
+    @GetMapping("/historial")
+    public ResponseEntity<SolicitudesHistorialResumenRespuesta> historialMisSolicitudes(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return ResponseEntity.ok(solicitudService.historialMisSolicitudes(page, size));
+    }
+
+    private String mensajeVacio(Page<SolicitudRespuesta> solicitudes, EstadoSolicitud estado) {
+        if (solicitudes.getTotalElements() > 0) {
+            return "No hay solicitudes en esta pagina. Prueba una pagina anterior.";
+        }
+        if (estado != null) {
+            return "No tienes solicitudes con estado " + estado + ". Prueba otro filtro.";
+        }
+        return "Aun no tienes solicitudes registradas. Busca un viaje y envia tu primera solicitud.";
     }
 
     @PreAuthorize("hasRole('PASAJERO')")

@@ -4,8 +4,12 @@ import com.uniride.dto.requests.RechazarMultipleRequest;
 import com.uniride.dto.requests.RechazarRequest;
 import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.responses.SolicitudRespuesta;
+import com.uniride.dto.responses.PenalidadHistorialRespuesta;
+import com.uniride.dto.responses.SolicitudHistorialRespuesta;
+import com.uniride.dto.responses.SolicitudesHistorialResumenRespuesta;
 import com.uniride.entities.AcuerdoCompensacion;
 import com.uniride.entities.MetodoCompensacion;
+import com.uniride.entities.Penalidad;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
@@ -15,17 +19,23 @@ import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoNotificacion;
 import com.uniride.exceptions.BusinessException;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.SolicitudMapper;
 import com.uniride.repositories.AcuerdoCompensacionRepository;
 import com.uniride.repositories.MetodoCompensacionRepository;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.PenalidadRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -40,6 +50,7 @@ public class SolicitudService {
             List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA);
 
     private final SolicitudRepository solicitudRepository;
+    private final PenalidadRepository penalidadRepository;
     private final ViajeRepository viajeRepository;
     private final PerfilRepository perfilRepository;
     private final AcuerdoCompensacionRepository acuerdoCompensacionRepository;
@@ -52,8 +63,9 @@ public class SolicitudService {
             PerfilRepository perfilRepository, AcuerdoCompensacionRepository acuerdoCompensacionRepository,
             MetodoCompensacionRepository metodoCompensacionRepository,
             SolicitudMapper solicitudMapper, UsuarioService usuarioService,
-            NotificacionService notificacionService) {
+            NotificacionService notificacionService, PenalidadRepository penalidadRepository) {
         this.solicitudRepository = solicitudRepository;
+        this.penalidadRepository = penalidadRepository;
         this.viajeRepository = viajeRepository;
         this.perfilRepository = perfilRepository;
         this.acuerdoCompensacionRepository = acuerdoCompensacionRepository;
@@ -108,6 +120,7 @@ public class SolicitudService {
 
     @Transactional(readOnly = true)
     public Page<SolicitudRespuesta> listarMisSolicitudes(EstadoSolicitud estado, int page, int size) {
+        validarPaginacion(page, size);
         Usuario pasajero = usuarioService.usuarioActual();
         PageRequest pageable = PageRequest.of(page, size, Sort.by("fechaCreacion").descending());
 
@@ -116,6 +129,61 @@ public class SolicitudService {
                 : solicitudRepository.buscarPorPasajeroYEstado(pasajero.getId(), estado, pageable);
 
         return solicitudes.map(solicitudMapper::toSolicitudRespuesta);
+    }
+
+    /**
+     * US13: historial solo lectura de solicitudes propias, incluyendo viajes pasados,
+     * cancelados, completados o vencidos, ademas de solicitudes rechazadas/canceladas.
+     * No modifica las solicitudes ni muestra penalidades del conductor u otros usuarios.
+     */
+    @Transactional(readOnly = true)
+    public SolicitudesHistorialResumenRespuesta historialMisSolicitudes(int page, int size) {
+        validarPaginacion(page, size);
+        Usuario pasajero = usuarioService.usuarioActual();
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        Page<Solicitud> pagina = solicitudRepository.buscarHistorialUS13(
+                pasajero.getId(), ahora.toLocalDate(), ahora.toLocalTime(),
+                List.of(EstadoViaje.CANCELADO, EstadoViaje.COMPLETADO, EstadoViaje.VENCIDO),
+                List.of(EstadoSolicitud.RECHAZADA, EstadoSolicitud.CANCELADA),
+                PageRequest.of(page, size));
+
+        // Cargar penalidades por usuario y por los viajes presentes en la pagina.
+        // Evitar N+1, evitar consultar con lista IN vacia y evitar filtrar por viaje solamente.
+        List<Long> idsViaje = pagina.getContent().stream()
+                .map(s -> s.getViaje().getId())
+                .distinct().toList();
+        Map<Long, List<PenalidadHistorialRespuesta>> penalidadesPorViaje = new HashMap<>();
+        if (!idsViaje.isEmpty()) {
+            List<Penalidad> penalidades = penalidadRepository.findByUsuarioIdAndViajeIdIn(
+                    pasajero.getId(), idsViaje);
+            penalidadesPorViaje = penalidades.stream().collect(Collectors.groupingBy(
+                    p -> p.getViaje().getId(),
+                    Collectors.mapping(
+                            p -> new PenalidadHistorialRespuesta(
+                                    p.getId(), p.getTipo(), p.getMotivo(), p.getFecha()),
+                            Collectors.toList())));
+        }
+        Map<Long, List<PenalidadHistorialRespuesta>> porViaje = penalidadesPorViaje;
+        Page<SolicitudHistorialRespuesta> resultado = pagina.map(s ->
+                new SolicitudHistorialRespuesta(
+                        solicitudMapper.toSolicitudRespuesta(s),
+                        s.getViaje().getEstado(),
+                        true,
+                        List.copyOf(porViaje.getOrDefault(s.getViaje().getId(), List.of()))));
+        String mensaje = null;
+        if (resultado.isEmpty()) {
+            mensaje = resultado.getTotalElements() > 0
+                    ? "No hay solicitudes historicas en esta pagina. Prueba una pagina anterior."
+                    : "Aun no tienes solicitudes en tu historial.";
+        }
+        return new SolicitudesHistorialResumenRespuesta(resultado, mensaje);
+    }
+
+    private void validarPaginacion(int page, int size) {
+        if (page < 0 || size < 1 || size > 100) {
+            throw new CamposInvalidosException(
+                    "La pagina debe ser >= 0 y el tamaño debe estar entre 1 y 100");
+        }
     }
 
     @Transactional
