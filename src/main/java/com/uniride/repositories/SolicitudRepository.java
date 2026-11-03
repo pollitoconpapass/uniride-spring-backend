@@ -25,6 +25,12 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     Optional<Solicitud> findByIdAndViajeRutaConductorId(Long id, Long conductorId);
 
+    // US14: solicitudes por ruta. El conductor se valida primero a nivel de ruta.
+    List<Solicitud> findByViajeRutaIdOrderByFechaCreacionDesc(Long rutaId);
+
+    List<Solicitud> findByViajeRutaIdAndEstadoOrderByFechaCreacionDesc(
+            Long rutaId, EstadoSolicitud estado);
+
     Page<Solicitud> findByPasajeroId(Long pasajeroId, Pageable pageable);
 
     Page<Solicitud> findByViajeIdOrderByFechaCreacionDesc(Long viajeId, Pageable pageable);
