@@ -68,7 +68,7 @@ class ViajeNotificacionUs25Test {
     void confirmacionRepetidaAvisaSinCambiarViaje() {
         viaje.setConfirmado(true);
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        when(viajes.findByIdAndRutaConductorId(13L, 11L)).thenReturn(Optional.of(viaje));
+        when(viajes.bloquearParaConductor(13L, 11L)).thenReturn(Optional.of(viaje));
         servicio.confirmar(13L);
         verify(notificaciones).notificar(eq(conductor), eq(TipoNotificacion.EXITO),
                 eq("Viaje ya confirmado"), anyString());

@@ -2,7 +2,6 @@ package com.uniride.repositories;
 
 import com.uniride.entities.Viaje;
 import jakarta.persistence.LockModeType;
-import jakarta.persistence.LockModeType;
 import com.uniride.enums.EstadoViaje;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -12,7 +11,6 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
-import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -21,6 +19,13 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
     Page<Viaje> findByRutaIdOrderByFechaAscHoraAsc(Long rutaId, Pageable pageable);
 
     Optional<Viaje> findByIdAndRutaConductorId(Long id, Long conductorId);
+
+    // Cierre 11.3: los cambios de estado se serializan con la aceptacion de cupos.
+    // La consulta de solo lectura findByIdAndRutaConductorId NO se bloquea.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM Viaje v WHERE v.id = :id AND v.ruta.conductor.id = :conductorId")
+    Optional<Viaje> bloquearParaConductor(@Param("id") Long id,
+            @Param("conductorId") Long conductorId);
 
     // 11.2: bloquear la fila del viaje (SELECT ... FOR UPDATE en PostgreSQL)
     // para serializar las aceptaciones que compiten por los mismos cupos.

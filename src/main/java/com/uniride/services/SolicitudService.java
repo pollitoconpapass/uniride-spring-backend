@@ -15,6 +15,7 @@ import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoAcuerdo;
+import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoNotificacion;
@@ -30,8 +31,11 @@ import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.HashMap;
@@ -78,15 +82,18 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta crear(Long viajeId, SolicitudRequest request) {
         Usuario pasajero = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findById(viajeId)
+        // 11.3: serializar con aceptar/cancelar/eliminar/iniciar un viaje.
+        // Evita dos solicitudes pendientes duplicadas simultaneas.
+        Viaje viaje = viajeRepository.bloquearParaAceptar(viajeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         Usuario conductor = viaje.getRuta().getConductor();
         if (conductor.getId().equals(pasajero.getId())) {
             throw new BusinessException("No puedes solicitar un viaje de tu propia ruta");
         }
-        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
-            throw new BusinessException("El viaje ya ocurrió");
+        validarSalidaFutura(viaje);
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No puedes solicitar viajes de una ruta eliminada");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
             throw new BusinessException(
@@ -194,6 +201,10 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta cancelar(Long id) {
         Usuario pasajero = usuarioService.usuarioActual();
+        Long viajeId = solicitudRepository.buscarViajeIdParaCancelar(id, pasajero.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
         Solicitud solicitud = solicitudRepository.findByIdAndPasajeroId(id, pasajero.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
 
@@ -210,9 +221,7 @@ public class SolicitudService {
                     "El viaje ya no está activo; estado actual: "
                             + solicitud.getViaje().getEstado());
         }
-        if (solicitud.getViaje().getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
-            throw new BusinessException("El viaje ya ocurrió; no puedes cancelar la solicitud");
-        }
+        validarSalidaFutura(solicitud.getViaje());
 
         solicitud.setEstado(EstadoSolicitud.CANCELADA);
         Solicitud cancelada = solicitudRepository.save(solicitud);
@@ -302,6 +311,10 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta rechazar(Long id, RechazarRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
+        Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
         if (solicitud.getEstado() == EstadoSolicitud.RECHAZADA) {
@@ -318,8 +331,19 @@ public class SolicitudService {
     public List<SolicitudRespuesta> rechazarMultiple(RechazarMultipleRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
         List<SolicitudRespuesta> resultados = new ArrayList<>();
-
-        for (Long id : new LinkedHashSet<>(request.ids())) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>(request.ids());
+        Map<Long, Long> viajesPorSolicitud = new HashMap<>();
+        for (Long id : ids) {
+            Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada: " + id));
+            viajesPorSolicitud.put(id, viajeId);
+        }
+        // Orden global evita interbloqueos entre rechazos masivos de viajes distintos.
+        for (Long viajeId : viajesPorSolicitud.values().stream().distinct().sorted().toList()) {
+            viajeRepository.bloquearParaAceptar(viajeId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+        }
+        for (Long id : ids) {
             Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                     .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada: " + id));
             validarSolicitudProcesable(solicitud);
@@ -356,7 +380,12 @@ public class SolicitudService {
             throw new BusinessException(
                     "El viaje ya no está activo; estado actual: " + viaje.getEstado());
         }
-        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
+        validarSalidaFutura(viaje);
+    }
+
+    private void validarSalidaFutura(Viaje viaje) {
+        LocalDateTime salida = LocalDateTime.of(viaje.getFecha(), viaje.getHora());
+        if (!salida.isAfter(LocalDateTime.now(ZoneId.systemDefault()))) {
             throw new BusinessException("El viaje ya ocurrió");
         }
     }

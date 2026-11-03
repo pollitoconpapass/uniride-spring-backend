@@ -26,6 +26,12 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     Optional<Solicitud> findByIdAndPasajeroId(Long id, Long pasajeroId);
 
+    // 11.3: consultar solo el ID, bloquear el viaje y despues releer la solicitud.
+    @Query("SELECT s.viaje.id FROM Solicitud s "
+            + "WHERE s.id = :solicitudId AND s.pasajero.id = :pasajeroId")
+    Optional<Long> buscarViajeIdParaCancelar(@Param("solicitudId") Long solicitudId,
+            @Param("pasajeroId") Long pasajeroId);
+
     Optional<Solicitud> findByIdAndViajeRutaConductorId(Long id, Long conductorId);
 
     // 11.2: obtener solo el ID evita cargar una entidad Viaje obsoleta antes del bloqueo.

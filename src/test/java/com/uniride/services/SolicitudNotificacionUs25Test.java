@@ -60,7 +60,7 @@ class SolicitudNotificacionUs25Test {
     @Test
     void solicitudDuplicadaNoCreaOtraYNotificaAlPasajero() {
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
-        when(viajes.findById(20L)).thenReturn(Optional.of(viaje));
+        when(viajes.bloquearParaAceptar(20L)).thenReturn(Optional.of(viaje));
         when(solicitudes.existsByViajeIdAndPasajeroIdAndEstadoIn(eq(20L), eq(2L), any()))
                 .thenReturn(true);
         assertThatThrownBy(() -> servicio.crear(20L, null))
@@ -76,6 +76,8 @@ class SolicitudNotificacionUs25Test {
         Solicitud solicitud = Solicitud.builder().id(55L).estado(EstadoSolicitud.CANCELADA)
                 .pasajero(pasajero).viaje(viaje).build();
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
+        when(solicitudes.buscarViajeIdParaCancelar(55L, 2L)).thenReturn(Optional.of(20L));
+        when(viajes.bloquearParaAceptar(20L)).thenReturn(Optional.of(viaje));
         when(solicitudes.findByIdAndPasajeroId(55L, 2L)).thenReturn(Optional.of(solicitud));
         assertThatThrownBy(() -> servicio.cancelar(55L))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("ya fue cancelada");
@@ -106,6 +108,8 @@ class SolicitudNotificacionUs25Test {
         Solicitud solicitud = Solicitud.builder().id(55L).estado(EstadoSolicitud.RECHAZADA)
                 .pasajero(pasajero).viaje(viaje).build();
         when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(solicitudes.buscarViajeIdParaAceptar(55L, 1L)).thenReturn(Optional.of(20L));
+        when(viajes.bloquearParaAceptar(20L)).thenReturn(Optional.of(viaje));
         when(solicitudes.findByIdAndViajeRutaConductorId(55L, 1L))
                 .thenReturn(Optional.of(solicitud));
         assertThatThrownBy(() -> servicio.rechazar(55L, null))
