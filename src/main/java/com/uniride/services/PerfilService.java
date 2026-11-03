@@ -11,6 +11,7 @@ import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.PerfilMapper;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.SolicitudRepository;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -23,13 +24,16 @@ public class PerfilService {
     private final PerfilMapper perfilMapper;
     private final UsuarioService usuarioService;
     private final NotificacionService notificacionService;
+    private final SolicitudRepository solicitudRepository;
 
     public PerfilService(PerfilRepository perfilRepository, PerfilMapper perfilMapper,
-            UsuarioService usuarioService, NotificacionService notificacionService) {
+            UsuarioService usuarioService, NotificacionService notificacionService,
+            SolicitudRepository solicitudRepository) {
         this.perfilRepository = perfilRepository;
         this.perfilMapper = perfilMapper;
         this.usuarioService = usuarioService;
         this.notificacionService = notificacionService;
+        this.solicitudRepository = solicitudRepository;
     }
 
     @Transactional(readOnly = true)
@@ -42,6 +46,13 @@ public class PerfilService {
 
     @Transactional(readOnly = true)
     public PerfilRespuesta perfilDeUsuario(Long usuarioId) {
+        Usuario conductor = usuarioService.usuarioActual();
+        if (!conductor.getId().equals(usuarioId)
+                && !solicitudRepository.existeSolicitudPasajeroParaConductor(
+                        usuarioId, conductor.getId())) {
+            // No distinguir entre perfil inexistente y perfil ajeno.
+            throw new ResourceNotFoundException("Perfil no encontrado");
+        }
         Perfil perfil = perfilRepository.findByUsuarioId(usuarioId)
                 .orElseThrow(() -> new ResourceNotFoundException("Perfil no encontrado"));
         return perfilMapper.toPerfilRespuesta(perfil);

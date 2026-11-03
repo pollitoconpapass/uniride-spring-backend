@@ -42,10 +42,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String correo = jwtService.extraerCorreo(token);
             if (correo != null && SecurityContextHolder.getContext().getAuthentication() == null) {
                 UserDetails detalles = usuarioDetailsService.loadUserByUsername(correo);
-                UsernamePasswordAuthenticationToken autenticacion =
-                        new UsernamePasswordAuthenticationToken(detalles, null, detalles.getAuthorities());
-                autenticacion.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(autenticacion);
+                // Los JWT de cuentas no verificadas no otorgan acceso a /api.
+                if (detalles.isEnabled()) {
+                    UsernamePasswordAuthenticationToken autenticacion =
+                            new UsernamePasswordAuthenticationToken(detalles, null, detalles.getAuthorities());
+                    autenticacion.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    SecurityContextHolder.getContext().setAuthentication(autenticacion);
+                }
             }
         } catch (Exception e) {
             SecurityContextHolder.clearContext();

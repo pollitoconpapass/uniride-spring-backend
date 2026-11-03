@@ -64,6 +64,13 @@ public class NotificacionService {
         return notificar(usuario, TipoNotificacion.ADVERTENCIA, asunto, mensaje);
     }
 
+    /** Auditoria 11.4: un error de autenticacion debe avisarse incluso si la
+     * transaccion del login/registro se revierte al retornar 401/409. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Notificacion notificarErrorAutenticacion(Usuario usuario, String asunto, String mensaje) {
+        return notificar(usuario, TipoNotificacion.ERROR, asunto, mensaje);
+    }
+
     private void enviarCorreo(String destino, String asunto, String mensaje) {
         if (remitente == null || remitente.isBlank()) {
             log.warn("Correo no configurado: establece EMAIL_ADDRESS y EMAIL_PASSWORD. "

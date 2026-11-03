@@ -18,6 +18,14 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     long countByViajeIdAndEstado(Long viajeId, EstadoSolicitud estado);
 
+    // 11.4: acceso a perfiles solo con relacion real entre conductor y pasajero.
+    @Query("SELECT COUNT(s) > 0 FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId "
+            + "AND s.viaje.ruta.conductor.id = :conductorId")
+    boolean existeSolicitudPasajeroParaConductor(
+            @Param("pasajeroId") Long pasajeroId,
+            @Param("conductorId") Long conductorId);
+
     // Cierre transversal: protege el historial antes de eliminar un viaje sin actividad.
     boolean existsByViajeId(Long viajeId);
 
