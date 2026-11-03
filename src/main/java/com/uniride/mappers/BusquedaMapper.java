@@ -18,5 +18,6 @@ public interface BusquedaMapper {
     @Mapping(source = "ruta.capacidadMaxima", target = "capacidadMaxima")
     @Mapping(source = "ruta.conductor.id", target = "conductorId")
     @Mapping(source = "ruta.conductor.nombre", target = "conductorNombre")
+    @Mapping(target = "contribucionSugerida", expression = "java(com.uniride.services.ContribucionService.referenciaBusqueda(viaje))")
     BusquedaRespuesta toBusquedaRespuesta(Viaje viaje);
 }

@@ -4,7 +4,6 @@ import com.uniride.dto.responses.ArchivoRespuesta;
 import com.uniride.dto.requests.CursoRequest;
 import com.uniride.dto.responses.CursoRespuesta;
 import com.uniride.services.HorarioAcademicoService;
-import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -33,7 +32,7 @@ public class HorarioAcademicoController {
 
     @PostMapping("/cursos")
     public ResponseEntity<List<CursoRespuesta>> guardarCursos(
-            @Valid @RequestBody List<CursoRequest> requests) {
+            @RequestBody List<CursoRequest> requests) {
         return ResponseEntity.status(HttpStatus.CREATED).body(horarioAcademicoService.guardarCursos(requests));
     }
 

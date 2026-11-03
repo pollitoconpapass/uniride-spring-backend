@@ -7,6 +7,7 @@ import com.uniride.entities.Ruta;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
+import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoNotificacion;
@@ -65,6 +66,9 @@ public class ViajeService {
     public ViajeRespuesta crear(Long rutaId, ViajeRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
         Ruta ruta = buscarRutaPropia(rutaId, conductor);
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se pueden crear viajes en una ruta eliminada");
+        }
 
         if (request.fecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
             throw new CamposInvalidosException("La fecha del viaje no puede ser en el pasado");
@@ -84,6 +88,70 @@ public class ViajeService {
         return viajeMapper.toViajeRespuesta(guardado);
     }
 
+    /** US07: reprogramar fecha/hora de un viaje sin borrar solicitudes ni historial. */
+    @Transactional
+    public ViajeRespuesta actualizar(Long id, ViajeRequest request, boolean confirmarImpacto) {
+        Usuario conductor = usuarioService.usuarioActual();
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
+        }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
+        }
+        if (request == null || request.fecha() == null || request.hora() == null) {
+            throw new CamposInvalidosException("La fecha y la hora son obligatorias");
+        }
+        LocalDateTime nuevaSalida = LocalDateTime.of(request.fecha(), request.hora());
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        if (!nuevaSalida.isAfter(ahora)) {
+            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
+        }
+        if (viaje.getFecha().equals(request.fecha()) && viaje.getHora().equals(request.hora())) {
+            return viajeMapper.toViajeRespuesta(viaje, "El horario no cambió");
+        }
+        // Un viaje confirmado deberá confirmarse nuevamente según US17.
+        // Nunca permitir dejarlo sin posibilidad de confirmar 12 h antes.
+        if (viaje.isConfirmado()
+                && Duration.between(ahora, nuevaSalida).compareTo(PLAZO_CONFIRMACION) < 0) {
+            throw new BusinessException("Un viaje confirmado solo puede reprogramarse a una "
+                    + "salida con al menos 12 horas de anticipación para volver a confirmarlo");
+        }
+
+        List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
+                id, List.of(EstadoSolicitud.ACEPTADA));
+        if (!aceptadas.isEmpty() && !confirmarImpacto) {
+            throw new BusinessException("ADVERTENCIA: el cambio de horario afecta a "
+                    + aceptadas.size() + " pasajero(s) aceptado(s). "
+                    + "Confirma usando ?confirmarImpacto=true.");
+        }
+
+        viaje.setFecha(request.fecha());
+        viaje.setHora(request.hora());
+        viaje.setDia(diaDeLaSemana(request.fecha()));
+        if (viaje.isConfirmado()) {
+            viaje.setConfirmado(false);
+            viaje.setFechaConfirmacion(null);
+        }
+        viaje.setRecordatorioEnviado(false);
+        Viaje actualizado = viajeRepository.save(viaje);
+
+        for (Solicitud solicitud : aceptadas) {
+            notificacionService.notificar(solicitud.getPasajero(), TipoNotificacion.ADVERTENCIA,
+                    "Horario de viaje modificado",
+                    "El conductor reprogramó tu viaje para el " + actualizado.getFecha()
+                            + " a las " + actualizado.getHora()
+                            + ". Revisa el nuevo horario en UniRide.");
+        }
+        notificacionService.notificar(conductor, TipoNotificacion.EXITO,
+                "Viaje reprogramado", "Actualizaste la salida del viaje al "
+                        + actualizado.getFecha() + " a las " + actualizado.getHora()
+                        + ". Si estaba confirmado, debes confirmarlo nuevamente.");
+        return viajeMapper.toViajeRespuesta(actualizado, "Horario del viaje actualizado");
+    }
+
     @Transactional
     public Page<ViajeRespuesta> listarPorRuta(Long rutaId, int page, int size) {
         Usuario conductor = usuarioService.usuarioActual();
@@ -96,13 +164,34 @@ public class ViajeService {
                 .map(viajeMapper::toViajeRespuesta);
     }
 
+    /**
+     * Cierre transversal: la eliminacion fisica solo corresponde a viajes sin actividad.
+     * Conservar solicitudes, acuerdos, penalidades e historial en los demas casos.
+     * Las cancelaciones de viajes con participantes mantienen el flujo US18.
+     */
     @Transactional
     public void eliminar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO || viaje.isConfirmado()) {
+            throw new BusinessException("No se puede eliminar un viaje confirmado o historico. "
+                    + "El historial se conserva; si corresponde, usa la cancelacion del viaje.");
+        }
+        if (solicitudRepository.existsByViajeId(id)) {
+            throw new BusinessException("No se puede eliminar un viaje con solicitudes registradas. "
+                    + "Cancela el viaje mediante PUT /viajes/" + id + "/cancelar "
+                    + "para conservar las solicitudes y avisar a los involucrados.");
+        }
+        if (penalidadRepository.existsByViajeId(id)) {
+            throw new BusinessException("No se puede eliminar un viaje con penalidades asociadas. "
+                    + "El historial de sanciones debe conservarse.");
+        }
+
         viajeRepository.delete(viaje);
+        // Detectar errores de integridad antes de registrar el aviso de exito.
+        viajeRepository.flush();
 
         notificacionService.notificar(conductor, TipoNotificacion.EXITO, "Viaje eliminado",
                 "Se eliminó el viaje del " + viaje.getDia() + " " + viaje.getFecha()
@@ -112,7 +201,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta confirmar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.isConfirmado()) {
@@ -188,7 +277,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta iniciar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
@@ -234,7 +323,7 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta completar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(id, conductor.getId())
+        Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         if (viaje.getEstado() == EstadoViaje.COMPLETADO) {
@@ -272,7 +361,9 @@ public class ViajeService {
     @Transactional
     public ViajeRespuesta cancelar(Long id) {
         Usuario usuario = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findById(id)
+        // Bloquear la misma fila que usa la aceptacion: evita carreras entre
+        // aceptar una solicitud, cancelar un viaje e iniciar un viaje.
+        Viaje viaje = viajeRepository.bloquearParaAceptar(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         boolean esConductor = viaje.getRuta().getConductor().getId().equals(usuario.getId());
@@ -382,6 +473,13 @@ public class ViajeService {
                         hoy.plusDays(2));
 
         for (Viaje viaje : candidatos) {
+
+            // Defensa adicional: la consulta ya filtra esta marca, pero un mismo
+            // objeto puede ser reusado en invocaciones de prueba o repetidas.
+            if (viaje.isRecordatorioEnviado() || viaje.isConfirmado()
+                    || viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+                continue;
+            }
 
             Duration faltan =
                     Duration.between(

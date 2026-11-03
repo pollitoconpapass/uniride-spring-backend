@@ -2,10 +2,14 @@ package com.uniride.exceptions;
 
 import com.uniride.dto.responses.ErrorRespuesta;
 import com.uniride.services.MensajeService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -14,6 +18,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
 
     private final MensajeService mensajeService;
@@ -53,6 +58,17 @@ public class GlobalExceptionHandler {
                 .body(new ErrorRespuesta(mensaje, null));
     }
 
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorRespuesta> cuerpoNoLegible(
+            HttpMessageNotReadableException e, HttpServletRequest request) {
+        String mensaje = request.getRequestURI().endsWith("/perfil/cursos")
+                ? "El cuerpo JSON es inválido. Envía una lista de cursos y comprueba "
+                        + "nombre, dia, horaInicio y horaFin; las horas deben tener formato HH:mm o HH:mm:ss."
+                : mensajeService.obtenerMensaje("error.json_invalido");
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ErrorRespuesta(mensaje, null));
+    }
+
     @ExceptionHandler(CamposInvalidosException.class)
     public ResponseEntity<ErrorRespuesta> camposInvalidos(CamposInvalidosException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
@@ -83,9 +99,21 @@ public class GlobalExceptionHandler {
                 .body(new ErrorRespuesta(mensaje, null));
     }
 
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorRespuesta> conflictoIntegridad(DataIntegrityViolationException e) {
+        log.warn("Operación rechazada por integridad referencial", e);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorRespuesta(
+                        "No se pudo completar la operación porque existen datos relacionados "
+                                + "o ya registrados.", null));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorRespuesta> inesperada(Exception e) {
-        String mensaje = mensajeService.obtenerMensaje("error.inesperado", e.getMessage());
+        // El cliente no debe recibir consultas SQL, nombres de tablas o detalles internos.
+        log.error("Error interno no controlado", e);
+        String mensaje = mensajeService.obtenerMensaje("error.inesperado",
+                "Intenta nuevamente o contacta con soporte");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorRespuesta(mensaje, null));
     }

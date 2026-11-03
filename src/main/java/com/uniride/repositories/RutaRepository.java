@@ -2,6 +2,7 @@ package com.uniride.repositories;
 
 import com.uniride.entities.Ruta;
 import com.uniride.enums.EstadoRuta;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -12,6 +13,11 @@ import org.springframework.data.repository.query.Param;
 public interface RutaRepository extends JpaRepository<Ruta, Long> {
 
     Page<Ruta> findByConductorId(Long conductorId, Pageable pageable);
+
+    // US09: obtener todas las rutas del conductor para recalcular estados antes de filtrar.
+    List<Ruta> findByConductorId(Long conductorId);
+
+    Page<Ruta> findByConductorIdAndEstadoNot(Long conductorId, EstadoRuta estado, Pageable pageable);
 
     Optional<Ruta> findByIdAndConductorId(Long id, Long conductorId);
 

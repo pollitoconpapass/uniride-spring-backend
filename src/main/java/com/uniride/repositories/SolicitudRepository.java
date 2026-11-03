@@ -3,6 +3,8 @@ package com.uniride.repositories;
 import com.uniride.entities.Solicitud;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -16,18 +18,68 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     long countByViajeIdAndEstado(Long viajeId, EstadoSolicitud estado);
 
+    // 11.4: acceso a perfiles solo con relacion real entre conductor y pasajero.
+    @Query("SELECT COUNT(s) > 0 FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId "
+            + "AND s.viaje.ruta.conductor.id = :conductorId")
+    boolean existeSolicitudPasajeroParaConductor(
+            @Param("pasajeroId") Long pasajeroId,
+            @Param("conductorId") Long conductorId);
+
+    // Cierre transversal: protege el historial antes de eliminar un viaje sin actividad.
+    boolean existsByViajeId(Long viajeId);
+
     boolean existsByViajeIdAndPasajeroIdAndEstadoIn(Long viajeId, Long pasajeroId,
             Collection<EstadoSolicitud> estados);
 
     Optional<Solicitud> findByIdAndPasajeroId(Long id, Long pasajeroId);
 
+    // 11.3: consultar solo el ID, bloquear el viaje y despues releer la solicitud.
+    @Query("SELECT s.viaje.id FROM Solicitud s "
+            + "WHERE s.id = :solicitudId AND s.pasajero.id = :pasajeroId")
+    Optional<Long> buscarViajeIdParaCancelar(@Param("solicitudId") Long solicitudId,
+            @Param("pasajeroId") Long pasajeroId);
+
     Optional<Solicitud> findByIdAndViajeRutaConductorId(Long id, Long conductorId);
+
+    // 11.2: obtener solo el ID evita cargar una entidad Viaje obsoleta antes del bloqueo.
+    // El filtro de conductor evita exponer solicitudes ajenas.
+    @Query("SELECT s.viaje.id FROM Solicitud s "
+            + "WHERE s.id = :solicitudId AND s.viaje.ruta.conductor.id = :conductorId")
+    Optional<Long> buscarViajeIdParaAceptar(
+            @Param("solicitudId") Long solicitudId,
+            @Param("conductorId") Long conductorId);
+
+    // US14: solicitudes por ruta. El conductor se valida primero a nivel de ruta.
+    List<Solicitud> findByViajeRutaIdOrderByFechaCreacionDesc(Long rutaId);
+
+    List<Solicitud> findByViajeRutaIdAndEstadoOrderByFechaCreacionDesc(
+            Long rutaId, EstadoSolicitud estado);
 
     Page<Solicitud> findByPasajeroId(Long pasajeroId, Pageable pageable);
 
     Page<Solicitud> findByViajeIdOrderByFechaCreacionDesc(Long viajeId, Pageable pageable);
 
     List<Solicitud> findByViajeIdAndEstadoIn(Long viajeId, Collection<EstadoSolicitud> estados);
+
+    /**
+     * US13: los elementos historicos se filtran en BD ANTES de paginar.
+     * Incluye solicitudes finalizadas y las ligadas a salidas anteriores a ahora.
+     * El usuario solo puede consultar las solicitudes propias.
+     */
+    @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId "
+            + "AND (s.viaje.fecha < :hoy "
+            + "OR (s.viaje.fecha = :hoy AND s.viaje.hora < :horaActual) "
+            + "OR s.viaje.estado IN :estadosViajeFinal "
+            + "OR s.estado IN :estadosSolicitudFinal) "
+            + "ORDER BY s.fechaCreacion DESC, s.id DESC")
+    Page<Solicitud> buscarHistorialUS13(
+            @Param("pasajeroId") Long pasajeroId,
+            @Param("hoy") LocalDate hoy,
+            @Param("horaActual") LocalTime horaActual,
+            @Param("estadosViajeFinal") Collection<EstadoViaje> estadosViajeFinal,
+            @Param("estadosSolicitudFinal") Collection<EstadoSolicitud> estadosSolicitudFinal,
+            Pageable pageable);
 
     @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId AND s.estado = :estado "
             + "ORDER BY s.fechaCreacion DESC")

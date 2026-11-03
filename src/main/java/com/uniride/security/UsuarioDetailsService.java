@@ -28,6 +28,7 @@ public class UsuarioDetailsService implements UserDetailsService {
         return User.withUsername(usuario.getCorreoInstitucional())
                 .password(usuario.getContrasenaHash())
                 .roles(rol)
+                .disabled(!usuario.isCuentaVerificada())
                 .build();
     }
 }

@@ -21,6 +21,9 @@ public interface MetodoCompensacionRepository extends JpaRepository<MetodoCompen
     boolean existsByUsuarioIdAndTipoAndDescripcionIgnoreCaseAndIdNot(
             Long usuarioId, TipoCompensacion tipo, String descripcion, Long id);
 
+    @Query("SELECT COUNT(s) > 0 FROM Solicitud s WHERE s.metodoCompensacion.id = :metodoId")
+    boolean estaAsociadoACualquierSolicitud(@Param("metodoId") Long metodoId);
+
     @Query("SELECT COUNT(s) > 0 FROM Solicitud s "
             + "WHERE s.metodoCompensacion.id = :metodoId "
             + "AND s.estado = :estado AND s.viaje.confirmado = true")

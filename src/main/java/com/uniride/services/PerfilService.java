@@ -11,6 +11,9 @@ import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.PerfilMapper;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.SolicitudRepository;
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,13 +24,16 @@ public class PerfilService {
     private final PerfilMapper perfilMapper;
     private final UsuarioService usuarioService;
     private final NotificacionService notificacionService;
+    private final SolicitudRepository solicitudRepository;
 
     public PerfilService(PerfilRepository perfilRepository, PerfilMapper perfilMapper,
-            UsuarioService usuarioService, NotificacionService notificacionService) {
+            UsuarioService usuarioService, NotificacionService notificacionService,
+            SolicitudRepository solicitudRepository) {
         this.perfilRepository = perfilRepository;
         this.perfilMapper = perfilMapper;
         this.usuarioService = usuarioService;
         this.notificacionService = notificacionService;
+        this.solicitudRepository = solicitudRepository;
     }
 
     @Transactional(readOnly = true)
@@ -40,6 +46,13 @@ public class PerfilService {
 
     @Transactional(readOnly = true)
     public PerfilRespuesta perfilDeUsuario(Long usuarioId) {
+        Usuario conductor = usuarioService.usuarioActual();
+        if (!conductor.getId().equals(usuarioId)
+                && !solicitudRepository.existeSolicitudPasajeroParaConductor(
+                        usuarioId, conductor.getId())) {
+            // No distinguir entre perfil inexistente y perfil ajeno.
+            throw new ResourceNotFoundException("Perfil no encontrado");
+        }
         Perfil perfil = perfilRepository.findByUsuarioId(usuarioId)
                 .orElseThrow(() -> new ResourceNotFoundException("Perfil no encontrado"));
         return perfilMapper.toPerfilRespuesta(perfil);
@@ -76,16 +89,53 @@ public class PerfilService {
 
     @Transactional
     public PerfilRespuesta guardarInfoAdicional(InfoAdicionalRequest request) {
+        if (request == null) {
+            throw new CamposInvalidosException("Debes ingresar información adicional");
+        }
+
         Usuario usuario = usuarioService.usuarioActual();
         Perfil perfil = perfilRepository.findByUsuarioId(usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Primero completa tu perfil personal"));
 
-        perfilMapper.actualizarInfoAdicional(request, perfil);
+        // Al editar, un campo omitido (null) conserva su valor. Una cadena vacía
+        // enviada explícitamente no elimina silenciosamente un dato obligatorio.
+        String gustos = valorResultante(request.gustos(), perfil.getGustos());
+        String hobbies = valorResultante(request.hobbies(), perfil.getHobbies());
+        String datosCuriosos = valorResultante(request.datosCuriosos(), perfil.getDatosCuriosos());
+
+        List<String> faltantes = new ArrayList<>();
+        if (gustos == null || gustos.isBlank()) {
+            faltantes.add("gustos");
+        }
+        if (hobbies == null || hobbies.isBlank()) {
+            faltantes.add("hobbies");
+        }
+        if (datosCuriosos == null || datosCuriosos.isBlank()) {
+            faltantes.add("datosCuriosos");
+        }
+        if (!faltantes.isEmpty()) {
+            throw new CamposInvalidosException(
+                    "Completa los campos obligatorios: " + String.join(", ", faltantes));
+        }
+
+        if (request.gustos() == null && request.hobbies() == null
+                && request.datosCuriosos() == null) {
+            throw new CamposInvalidosException("Debes indicar al menos un campo para actualizar");
+        }
+
+        perfil.setGustos(gustos);
+        perfil.setHobbies(hobbies);
+        perfil.setDatosCuriosos(datosCuriosos);
         Perfil guardado = perfilRepository.save(perfil);
 
         notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Información adicional actualizada",
                 "Tus gustos, hobbies y datos curiosos se guardaron correctamente.");
 
         return perfilMapper.toPerfilRespuesta(guardado);
+    }
+
+    private String valorResultante(String valorNuevo, String valorActual) {
+        String valor = valorNuevo != null ? valorNuevo : valorActual;
+        return valor == null ? null : valor.trim();
     }
 }

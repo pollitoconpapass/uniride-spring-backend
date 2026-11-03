@@ -4,7 +4,6 @@ import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.entities.MetodoCompensacion;
 import com.uniride.entities.Usuario;
-import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.TipoNotificacion;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.ResourceNotFoundException;
@@ -97,9 +96,10 @@ public class MetodoCompensacionService {
                 .findByIdAndUsuarioId(id, usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Método de compensación no encontrado"));
 
-        if (metodoCompensacionRepository.estaAsociadoAViajeConfirmado(id, EstadoSolicitud.ACEPTADA)) {
+        if (metodoCompensacionRepository.estaAsociadoACualquierSolicitud(id)) {
             throw new BusinessException(
-                    "No puedes eliminar este método: está asociado a un viaje confirmado");
+                    "No puedes eliminar este método porque tiene solicitudes asociadas. "
+                            + "Puedes desactivarlo para conservar el historial.");
         }
         metodoCompensacionRepository.delete(metodo);
 

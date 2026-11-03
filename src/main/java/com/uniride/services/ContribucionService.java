@@ -50,6 +50,21 @@ public class ContribucionService {
             throw new CamposInvalidosException("La cantidad de pasajeros debe ser al menos 1");
         }
 
+        return construirSugerencia(viaje, pasajeros,
+                "Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; "
+                        + "el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros.");
+    }
+
+    /** Referencia visible en cada resultado de US10, incluso sin pasajeros aceptados. */
+    public static SugerenciaContribucionRespuesta referenciaBusqueda(Viaje viaje) {
+        int cantidad = Math.max(1, viaje.getPasajeros());
+        return construirSugerencia(viaje, cantidad,
+                "Estimación referencial (se asume 1 pasajero si aún no hay aceptados). "
+                        + "El monto final depende del acuerdo y la cantidad real de pasajeros.");
+    }
+
+    private static SugerenciaContribucionRespuesta construirSugerencia(
+            Viaje viaje, int pasajeros, String nota) {
         boolean esHoraPico = esHoraPico(viaje.getHora());
         double costoTotal = redondear(TARIFA_BASE * (esHoraPico ? RECARGO_HORA_PICO : 1.0));
         double aporte = redondear(costoTotal / pasajeros);
@@ -68,17 +83,16 @@ public class ContribucionService {
                 aporte,
                 litros,
                 "Un favor acordado con el conductor de valor equivalente al aporte estimado",
-                "Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; "
-                        + "el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros.");
+                nota);
     }
 
-    private boolean esHoraPico(LocalTime hora) {
+    private static boolean esHoraPico(LocalTime hora) {
         boolean manana = !hora.isBefore(INICIO_PICO_MANANA) && hora.isBefore(FIN_PICO_MANANA);
         boolean tarde = !hora.isBefore(INICIO_PICO_TARDE) && hora.isBefore(FIN_PICO_TARDE);
         return manana || tarde;
     }
 
-    private double redondear(double valor) {
+    private static double redondear(double valor) {
         return Math.round(valor * 100.0) / 100.0;
     }
 }

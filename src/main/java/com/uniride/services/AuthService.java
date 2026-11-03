@@ -35,17 +35,19 @@ public class AuthService {
     private final NotificacionService notificacionService;
     private final UsuarioMapper usuarioMapper;
     private final MensajeService mensajeService;
+    private final PerfilRolService perfilRolService;
     private final SecureRandom random = new SecureRandom();
 
     public AuthService(UsuarioRepository usuarioRepository, PasswordEncoder passwordEncoder,
             JwtService jwtService, NotificacionService notificacionService, UsuarioMapper usuarioMapper,
-            MensajeService mensajeService) {
+            MensajeService mensajeService, PerfilRolService perfilRolService) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.notificacionService = notificacionService;
         this.usuarioMapper = usuarioMapper;
         this.mensajeService = mensajeService;
+        this.perfilRolService = perfilRolService;
     }
 
     @Transactional
@@ -53,7 +55,7 @@ public class AuthService {
         if (usuarioRepository.existsByCorreoInstitucional(request.correo())) {
             Usuario existente = usuarioRepository.findByCorreoInstitucional(request.correo())
                     .orElseThrow(() -> new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado")));
-            notificacionService.notificar(existente, TipoNotificacion.ERROR,
+            notificacionService.notificarErrorAutenticacion(existente,
                     mensajeService.obtenerMensaje("auth.notif.registro_duplicado.titulo"),
                     mensajeService.obtenerMensaje("auth.notif.registro_duplicado.mensaje"));
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado"));
@@ -79,6 +81,7 @@ public class AuthService {
                 .build();
 
         Usuario guardado = usuarioRepository.save(usuario);
+        perfilRolService.asegurarPerfil(guardado, guardado.getRolPrincipal());
 
         notificacionService.notificar(guardado, TipoNotificacion.EXITO,
                 mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.titulo"),
@@ -100,7 +103,7 @@ public class AuthService {
         Usuario usuario = opcional.get();
 
         if (!passwordEncoder.matches(request.contrasena(), usuario.getContrasenaHash())) {
-            notificacionService.notificar(usuario, TipoNotificacion.ERROR,
+            notificacionService.notificarErrorAutenticacion(usuario,
                     mensajeService.obtenerMensaje("auth.notif.login_fallido.titulo"),
                     mensajeService.obtenerMensaje("auth.notif.login_fallido.mensaje"));
             throw new NoAutorizadoException(mensajeService.obtenerMensaje("auth.error.credenciales_incorrectas"));
@@ -127,7 +130,7 @@ public class AuthService {
                 .orElseThrow(() -> new ResourceNotFoundException(mensajeService.obtenerMensaje("auth.error.cuenta_no_encontrada")));
 
         if (usuario.isCuentaVerificada()) {
-            notificacionService.notificar(usuario, TipoNotificacion.ADVERTENCIA, "Cuenta ya verificada",
+            notificacionService.notificarAccionYaRealizada(usuario, "Cuenta ya verificada",
                     "La acción ya estaba completada: tu cuenta ya había sido verificada.");
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_ya_verificada"));
         }

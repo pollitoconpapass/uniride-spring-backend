@@ -4,28 +4,42 @@ import com.uniride.dto.requests.RechazarMultipleRequest;
 import com.uniride.dto.requests.RechazarRequest;
 import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.responses.SolicitudRespuesta;
+import com.uniride.dto.responses.PenalidadHistorialRespuesta;
+import com.uniride.dto.responses.SolicitudHistorialRespuesta;
+import com.uniride.dto.responses.SolicitudesHistorialResumenRespuesta;
 import com.uniride.entities.AcuerdoCompensacion;
 import com.uniride.entities.MetodoCompensacion;
+import com.uniride.entities.Penalidad;
 import com.uniride.entities.Perfil;
 import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoAcuerdo;
+import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoNotificacion;
 import com.uniride.exceptions.BusinessException;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.SolicitudMapper;
 import com.uniride.repositories.AcuerdoCompensacionRepository;
 import com.uniride.repositories.MetodoCompensacionRepository;
 import com.uniride.repositories.PerfilRepository;
+import com.uniride.repositories.PenalidadRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -40,6 +54,7 @@ public class SolicitudService {
             List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA);
 
     private final SolicitudRepository solicitudRepository;
+    private final PenalidadRepository penalidadRepository;
     private final ViajeRepository viajeRepository;
     private final PerfilRepository perfilRepository;
     private final AcuerdoCompensacionRepository acuerdoCompensacionRepository;
@@ -52,8 +67,9 @@ public class SolicitudService {
             PerfilRepository perfilRepository, AcuerdoCompensacionRepository acuerdoCompensacionRepository,
             MetodoCompensacionRepository metodoCompensacionRepository,
             SolicitudMapper solicitudMapper, UsuarioService usuarioService,
-            NotificacionService notificacionService) {
+            NotificacionService notificacionService, PenalidadRepository penalidadRepository) {
         this.solicitudRepository = solicitudRepository;
+        this.penalidadRepository = penalidadRepository;
         this.viajeRepository = viajeRepository;
         this.perfilRepository = perfilRepository;
         this.acuerdoCompensacionRepository = acuerdoCompensacionRepository;
@@ -66,15 +82,18 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta crear(Long viajeId, SolicitudRequest request) {
         Usuario pasajero = usuarioService.usuarioActual();
-        Viaje viaje = viajeRepository.findById(viajeId)
+        // 11.3: serializar con aceptar/cancelar/eliminar/iniciar un viaje.
+        // Evita dos solicitudes pendientes duplicadas simultaneas.
+        Viaje viaje = viajeRepository.bloquearParaAceptar(viajeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         Usuario conductor = viaje.getRuta().getConductor();
         if (conductor.getId().equals(pasajero.getId())) {
             throw new BusinessException("No puedes solicitar un viaje de tu propia ruta");
         }
-        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
-            throw new BusinessException("El viaje ya ocurrió");
+        validarSalidaFutura(viaje);
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No puedes solicitar viajes de una ruta eliminada");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
             throw new BusinessException(
@@ -82,6 +101,11 @@ public class SolicitudService {
         }
         if (solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
                 viajeId, pasajero.getId(), ESTADOS_BLOQUEANTES)) {
+            notificacionService.notificarAccionYaRealizada(pasajero,
+                    "Solicitud ya registrada",
+                    "Ya habias enviado una solicitud para el viaje del "
+                            + viaje.getFecha() + " a las " + viaje.getHora()
+                            + ". No se creo una solicitud duplicada.");
             throw new BusinessException("Ya enviaste una solicitud para este viaje");
         }
 
@@ -108,6 +132,7 @@ public class SolicitudService {
 
     @Transactional(readOnly = true)
     public Page<SolicitudRespuesta> listarMisSolicitudes(EstadoSolicitud estado, int page, int size) {
+        validarPaginacion(page, size);
         Usuario pasajero = usuarioService.usuarioActual();
         PageRequest pageable = PageRequest.of(page, size, Sort.by("fechaCreacion").descending());
 
@@ -118,12 +143,76 @@ public class SolicitudService {
         return solicitudes.map(solicitudMapper::toSolicitudRespuesta);
     }
 
+    /**
+     * US13: historial solo lectura de solicitudes propias, incluyendo viajes pasados,
+     * cancelados, completados o vencidos, ademas de solicitudes rechazadas/canceladas.
+     * No modifica las solicitudes ni muestra penalidades del conductor u otros usuarios.
+     */
+    @Transactional(readOnly = true)
+    public SolicitudesHistorialResumenRespuesta historialMisSolicitudes(int page, int size) {
+        validarPaginacion(page, size);
+        Usuario pasajero = usuarioService.usuarioActual();
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        Page<Solicitud> pagina = solicitudRepository.buscarHistorialUS13(
+                pasajero.getId(), ahora.toLocalDate(), ahora.toLocalTime(),
+                List.of(EstadoViaje.CANCELADO, EstadoViaje.COMPLETADO, EstadoViaje.VENCIDO),
+                List.of(EstadoSolicitud.RECHAZADA, EstadoSolicitud.CANCELADA),
+                PageRequest.of(page, size));
+
+        // Cargar penalidades por usuario y por los viajes presentes en la pagina.
+        // Evitar N+1, evitar consultar con lista IN vacia y evitar filtrar por viaje solamente.
+        List<Long> idsViaje = pagina.getContent().stream()
+                .map(s -> s.getViaje().getId())
+                .distinct().toList();
+        Map<Long, List<PenalidadHistorialRespuesta>> penalidadesPorViaje = new HashMap<>();
+        if (!idsViaje.isEmpty()) {
+            List<Penalidad> penalidades = penalidadRepository.findByUsuarioIdAndViajeIdIn(
+                    pasajero.getId(), idsViaje);
+            penalidadesPorViaje = penalidades.stream().collect(Collectors.groupingBy(
+                    p -> p.getViaje().getId(),
+                    Collectors.mapping(
+                            p -> new PenalidadHistorialRespuesta(
+                                    p.getId(), p.getTipo(), p.getMotivo(), p.getFecha()),
+                            Collectors.toList())));
+        }
+        Map<Long, List<PenalidadHistorialRespuesta>> porViaje = penalidadesPorViaje;
+        Page<SolicitudHistorialRespuesta> resultado = pagina.map(s ->
+                new SolicitudHistorialRespuesta(
+                        solicitudMapper.toSolicitudRespuesta(s),
+                        s.getViaje().getEstado(),
+                        true,
+                        List.copyOf(porViaje.getOrDefault(s.getViaje().getId(), List.of()))));
+        String mensaje = null;
+        if (resultado.isEmpty()) {
+            mensaje = resultado.getTotalElements() > 0
+                    ? "No hay solicitudes historicas en esta pagina. Prueba una pagina anterior."
+                    : "Aun no tienes solicitudes en tu historial.";
+        }
+        return new SolicitudesHistorialResumenRespuesta(resultado, mensaje);
+    }
+
+    private void validarPaginacion(int page, int size) {
+        if (page < 0 || size < 1 || size > 100) {
+            throw new CamposInvalidosException(
+                    "La pagina debe ser >= 0 y el tamaño debe estar entre 1 y 100");
+        }
+    }
+
     @Transactional
     public SolicitudRespuesta cancelar(Long id) {
         Usuario pasajero = usuarioService.usuarioActual();
+        Long viajeId = solicitudRepository.buscarViajeIdParaCancelar(id, pasajero.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
         Solicitud solicitud = solicitudRepository.findByIdAndPasajeroId(id, pasajero.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
 
+        if (solicitud.getEstado() == EstadoSolicitud.CANCELADA) {
+            notificacionService.notificarAccionYaRealizada(pasajero,
+                    "Solicitud ya cancelada",
+                    "La solicitud " + id + " ya estaba cancelada. No se registro otra cancelacion.");
+        }
         if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
             throw new BusinessException(mensajeEstadoActual(solicitud));
         }
@@ -132,9 +221,7 @@ public class SolicitudService {
                     "El viaje ya no está activo; estado actual: "
                             + solicitud.getViaje().getEstado());
         }
-        if (solicitud.getViaje().getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
-            throw new BusinessException("El viaje ya ocurrió; no puedes cancelar la solicitud");
-        }
+        validarSalidaFutura(solicitud.getViaje());
 
         solicitud.setEstado(EstadoSolicitud.CANCELADA);
         Solicitud cancelada = solicitudRepository.save(solicitud);
@@ -171,11 +258,28 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta aceptar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
+
+        // 11.2: consultar inicialmente solo el ID del viaje, NO la entidad completa.
+        // Si se carga Viaje antes del lock, el contexto JPA podría conservar un
+        // contador de pasajeros obsoleto mientras otra aceptación está en curso.
+        Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        Viaje viaje = viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+
+        // Releer la solicitud después de adquirir el bloqueo. Esto impide que
+        // dos peticiones que aceptan el mismo ID creen acuerdos/cupos duplicados.
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        if (solicitud.getEstado() == EstadoSolicitud.ACEPTADA) {
+            notificacionService.notificarAccionYaRealizada(conductor,
+                    "Solicitud ya aceptada",
+                    "La solicitud " + id + " ya estaba aceptada. No se duplicaron los cupos ni el acuerdo.");
+        }
         validarSolicitudProcesable(solicitud);
 
-        Viaje viaje = solicitud.getViaje();
+        // Al estar dentro del mismo @Transactional, el bloqueo y el incremento
+        // se liberan juntos al commit. La siguiente solicitud lee el cupo nuevo.
         if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
             throw new BusinessException("La ruta ya no tiene cupos disponibles");
         }
@@ -207,8 +311,17 @@ public class SolicitudService {
     @Transactional
     public SolicitudRespuesta rechazar(Long id, RechazarRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
+        Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        viajeRepository.bloquearParaAceptar(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
         Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+        if (solicitud.getEstado() == EstadoSolicitud.RECHAZADA) {
+            notificacionService.notificarAccionYaRealizada(conductor,
+                    "Solicitud ya rechazada",
+                    "La solicitud " + id + " ya estaba rechazada. No se duplico el rechazo.");
+        }
         validarSolicitudProcesable(solicitud);
 
         return rechazarInterna(solicitud, request == null ? null : request.motivo(), conductor);
@@ -218,8 +331,19 @@ public class SolicitudService {
     public List<SolicitudRespuesta> rechazarMultiple(RechazarMultipleRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
         List<SolicitudRespuesta> resultados = new ArrayList<>();
-
-        for (Long id : new LinkedHashSet<>(request.ids())) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>(request.ids());
+        Map<Long, Long> viajesPorSolicitud = new HashMap<>();
+        for (Long id : ids) {
+            Long viajeId = solicitudRepository.buscarViajeIdParaAceptar(id, conductor.getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada: " + id));
+            viajesPorSolicitud.put(id, viajeId);
+        }
+        // Orden global evita interbloqueos entre rechazos masivos de viajes distintos.
+        for (Long viajeId : viajesPorSolicitud.values().stream().distinct().sorted().toList()) {
+            viajeRepository.bloquearParaAceptar(viajeId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+        }
+        for (Long id : ids) {
             Solicitud solicitud = solicitudRepository.findByIdAndViajeRutaConductorId(id, conductor.getId())
                     .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada: " + id));
             validarSolicitudProcesable(solicitud);
@@ -256,7 +380,12 @@ public class SolicitudService {
             throw new BusinessException(
                     "El viaje ya no está activo; estado actual: " + viaje.getEstado());
         }
-        if (viaje.getFecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
+        validarSalidaFutura(viaje);
+    }
+
+    private void validarSalidaFutura(Viaje viaje) {
+        LocalDateTime salida = LocalDateTime.of(viaje.getFecha(), viaje.getHora());
+        if (!salida.isAfter(LocalDateTime.now(ZoneId.systemDefault()))) {
             throw new BusinessException("El viaje ya ocurrió");
         }
     }
