@@ -1,5 +1,10 @@
 # US10 — Guía de validación manual y endpoints
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Base de trabajo
 
 - Rama base: `development` (PR #41 integrado, SHA `a4d5476`).

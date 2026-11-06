@@ -83,6 +83,24 @@ class ViajeHardeningTest {
         verify(solicitudes, never()).delete(any());
     }
 
+    @ParameterizedTest @CsvSource({"720,PROGRAMADO", "719,VENCIDO"})
+    void confirmarRespetaElLimiteExactoDeDoceHoras(long minutos, EstadoViaje estado) {
+        LocalDateTime salida = ahora.plusMinutes(minutos);
+        viaje.setFecha(salida.toLocalDate()); viaje.setHora(salida.toLocalTime());
+        servicio.confirmar(4L);
+        assertThat(viaje.getEstado()).isEqualTo(estado);
+        assertThat(viaje.isConfirmado()).isEqualTo(estado == EstadoViaje.PROGRAMADO);
+    }
+
+    @ParameterizedTest @CsvSource({"1200,true", "1201,false", "720,true", "719,false"})
+    void recordatorioRespetaVentanaExactaDeVeinteADoceHoras(long minutos, boolean enviado) {
+        LocalDateTime salida = ahora.plusMinutes(minutos);
+        viaje.setFecha(salida.toLocalDate()); viaje.setHora(salida.toLocalTime());
+        when(viajes.buscarPendientesDeConfirmacionAutomaticos(any(),any(),any())).thenReturn(List.of(viaje));
+        servicio.enviarRecordatoriosAutomaticos();
+        assertThat(viaje.isRecordatorioEnviado()).isEqualTo(enviado);
+    }
+
     @Test void pasajeroAutorPuedeReintentarSinAceptadaNiEfectosDuplicados() {
         when(usuarios.usuarioActual()).thenReturn(pasajero);
         when(solicitudes.existsByViajeIdAndPasajeroIdAndEstadoIn(eq(4L), eq(2L), any())).thenReturn(true);

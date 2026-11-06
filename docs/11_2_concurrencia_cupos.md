@@ -1,5 +1,10 @@
 # Cierre 11.2 — Concurrencia de cupos (UniRide)
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Objetivo
 Evitar que dos aceptaciones simultáneas del mismo viaje sobrepasen `ruta.capacidadMaxima`, o que una misma solicitud aceptada dos veces incremente cupos o cree dos acuerdos.
 

@@ -437,6 +437,7 @@ public class HorarioAcademicoService {
             throw new BusinessException("No se pudo procesar el PDF");
         } finally {
             if (proceso != null && proceso.isAlive()) {
+                proceso.descendants().forEach(ProcessHandle::destroyForcibly);
                 proceso.destroyForcibly();
                 try { proceso.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -445,6 +446,8 @@ public class HorarioAcademicoService {
                 try {
                     java.nio.file.Files.deleteIfExists(carpeta.resolve("entrada.pdf"));
                     java.nio.file.Files.deleteIfExists(carpeta.resolve("salida.txt"));
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("pagina.png"));
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("pagina.txt"));
                     java.nio.file.Files.deleteIfExists(carpeta);
                 } catch (IOException e) { /* El SO podrá limpiar temporales tras liberar el proceso. */ }
             }
@@ -520,18 +523,47 @@ public class HorarioAcademicoService {
     }
 
     private String ocrDocumento(PDDocument documento) throws IOException, TesseractException {
-        Tesseract tesseract = crearTesseract();
+        boolean usaCli = java.nio.file.Files.isExecutable(java.nio.file.Path.of("/usr/bin/tesseract"));
+        Tesseract tesseract = usaCli ? null : crearTesseract();
         PDFRenderer renderer = new PDFRenderer(documento);
         StringBuilder texto = new StringBuilder();
         long limite = System.nanoTime() + java.time.Duration.ofSeconds(60).toNanos();
         for (int pagina = 0; pagina < documento.getNumberOfPages(); pagina++) {
             if (System.nanoTime() > limite) throw new CamposInvalidosException("El OCR superó el tiempo permitido");
             BufferedImage imagen = renderer.renderImageWithDPI(pagina, OCR_DPI);
-            try { texto.append(tesseract.doOCR(imagen)).append('\n'); }
+            try { texto.append(usaCli ? ocrConCli(imagen) : tesseract.doOCR(imagen)).append('\n'); }
             finally { imagen.flush(); }
             if (texto.length() > MAX_TEXTO) throw new CamposInvalidosException("El PDF contiene demasiado texto");
         }
         return texto.toString();
+    }
+
+    private String ocrConCli(BufferedImage imagen) throws IOException {
+        // Solo el worker establece este directorio generado por el padre, nunca el usuario.
+        var carpeta = java.nio.file.Path.of(System.getProperty("uniride.ocr.tempdir"));
+        var entrada = carpeta.resolve("pagina.png");
+        var salida = carpeta.resolve("pagina.txt");
+        Process proceso = null;
+        try {
+            javax.imageio.ImageIO.write(imagen, "png", entrada.toFile());
+            proceso = new ProcessBuilder("/usr/bin/tesseract", entrada.toString(), "stdout",
+                    "--tessdata-dir", resolverRutaTessdata(), "-l",
+                    idiomaOcr == null || idiomaOcr.isBlank() ? "spa+eng" : idiomaOcr)
+                    .redirectOutput(salida.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!proceso.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || proceso.exitValue() != 0) {
+                throw new BusinessException("No se pudo reconocer el PDF con OCR");
+            }
+            if (java.nio.file.Files.size(salida) > MAX_TEXTO * 4L) {
+                throw new CamposInvalidosException("El PDF contiene demasiado texto");
+            }
+            return java.nio.file.Files.readString(salida, StandardCharsets.UTF_8);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); throw new BusinessException("OCR interrumpido");
+        } finally {
+            if (proceso != null && proceso.isAlive()) proceso.destroyForcibly();
+            java.nio.file.Files.deleteIfExists(entrada);
+            java.nio.file.Files.deleteIfExists(salida);
+        }
     }
 
     private Tesseract crearTesseract() {

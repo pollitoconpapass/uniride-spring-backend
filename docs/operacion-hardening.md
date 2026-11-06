@@ -15,9 +15,10 @@ Cadena en `src/main/resources/db/migration` y `src/main/java/db/migration`:
 | V3 | Normaliza teléfonos con la misma libphonenumber que registro, incluidos prefijos 00; detecta equivalentes antes de escribir |
 | V4 | Vigencia, identidad del desafío y descarte de correos OTP |
 | V5 | Participación efectiva en cancelación y FK del outbox a notificación |
+| V6 | Repara FK de perfiles de rol omitidas por coincidencia de nombres en otro esquema; comprueba la tabla mediante conrelid, conservando checksums previos |
 
 Base nueva: crear una base PostgreSQL vacía y configurar DB_URL, DB_USERNAME,
-POSTGRES_PASSWORD, JWT_SECRET. Arrancar la aplicación aplica V1..V5 y valida JPA.
+POSTGRES_PASSWORD, JWT_SECRET. Arrancar la aplicación aplica V1..V6 y valida JPA.
 
 Base existente:
 
@@ -31,7 +32,7 @@ Base existente:
    definir FLYWAY_URL, FLYWAY_USER y FLYWAY_PASSWORD **en el entorno**, luego ejecutar
    `flyway -baselineVersion=1 baseline` sobre la copia verificada. No usar una base
    vacía con baseline 1: se omitiría la creación inicial.
-4. Arrancar el nuevo backend contra esa copia para aplicar V2..V5, revisar
+4. Arrancar el nuevo backend contra esa copia para aplicar V2..V6, revisar
    `flyway_schema_history`, ejecutar pruebas funcionales y repetir el procedimiento
    sobre el destino aprobado. Los conflictos detienen la migración transaccional;
    no se borran filas para forzarla. Los scripts de `db/migrations/` quedan como
@@ -110,8 +111,9 @@ mensajes seguros. Temporales se limpian al finalizar; un fallo del SO podría
 requerir limpieza del directorio temporal por el operador.
 
 La extracción no retiene una conexión de BD; la importación posterior es
-transaccional. Tesseract conserva spa+eng y configuración de tessdata. Docker
-instala sus datos, ejecuta como usuario sin privilegios y limita memoria/CPU/pids.
+transaccional. Tesseract conserva spa+eng y configuración de tessdata. Docker usa la imagen Java 21 Noble, con Tesseract 5 y sus datos, ejecuta como usuario sin privilegios y limita memoria/CPU/pids.
+En Linux se invoca /usr/bin/tesseract por argumentos estructurados dentro del worker;
+el timeout termina también los procesos descendientes. Tess4J se conserva como alternativa.
 En Windows se requieren librerías nativas y tessdata configurados para PDF escaneado.
 El límite de heap no limita por sí mismo toda la memoria nativa; usar también los
 límites del contenedor. [Política PDFBox](https://pdfbox.apache.org/security.html).

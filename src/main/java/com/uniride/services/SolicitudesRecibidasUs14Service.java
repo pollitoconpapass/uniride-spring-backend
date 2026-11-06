@@ -52,13 +52,19 @@ public class SolicitudesRecibidasUs14Service {
         Usuario conductor = usuarioService.usuarioActual();
         Page<Ruta> rutas = rutaRepository.findByConductorId(conductor.getId(),
                 PageRequest.of(page, size, Sort.by("fechaCreacion").descending()));
+        List<Long> idsRuta = rutas.getContent().stream().map(Ruta::getId).toList();
+        List<Solicitud> todas = idsRuta.isEmpty() ? List.of() : estado == null
+                ? solicitudRepository.findByViajeRutaIdInOrderByFechaCreacionDesc(idsRuta)
+                : solicitudRepository.findByViajeRutaIdInAndEstadoOrderByFechaCreacionDesc(idsRuta, estado);
+        var porRuta = todas.stream().collect(java.util.stream.Collectors.groupingBy(s -> s.getViaje().getRuta().getId()));
+        List<Long> idsPasajero = todas.stream().map(s -> s.getPasajero().getId()).distinct().toList();
+        var perfiles = idsPasajero.isEmpty() ? java.util.Map.<Long,Perfil>of()
+                : perfilRepository.findByUsuarioIdIn(idsPasajero).stream().collect(
+                        java.util.stream.Collectors.toMap(p -> p.getUsuario().getId(), p -> p));
         Page<RutaSolicitudesUs14Respuesta> contenido = rutas.map(ruta -> {
-            List<Solicitud> solicitudes = estado == null
-                    ? solicitudRepository.findByViajeRutaIdOrderByFechaCreacionDesc(ruta.getId())
-                    : solicitudRepository.findByViajeRutaIdAndEstadoOrderByFechaCreacionDesc(
-                            ruta.getId(), estado);
+            List<Solicitud> solicitudes = porRuta.getOrDefault(ruta.getId(), List.of());
             List<SolicitudRecibidaUs14Respuesta> elementos = solicitudes.stream()
-                    .map(this::resumirSolicitud).toList();
+                    .map(s -> resumirSolicitud(s, perfiles.get(s.getPasajero().getId()))).toList();
             String mensaje = elementos.isEmpty()
                     ? "Aun no hay interesados en esta ruta. Revisa el origen, puntos de referencia "
                             + "y los horarios de tus viajes."
@@ -105,9 +111,8 @@ public class SolicitudesRecibidasUs14Service {
                 perfil == null ? "El pasajero aun no ha completado su perfil." : null);
     }
 
-    private SolicitudRecibidaUs14Respuesta resumirSolicitud(Solicitud solicitud) {
+    private SolicitudRecibidaUs14Respuesta resumirSolicitud(Solicitud solicitud, Perfil perfil) {
         Usuario pasajero = solicitud.getPasajero();
-        Perfil perfil = perfilRepository.findByUsuarioId(pasajero.getId()).orElse(null);
         return new SolicitudRecibidaUs14Respuesta(
                 solicitud.getId(), solicitud.getViaje().getId(),
                 solicitud.getViaje().getFecha(), solicitud.getViaje().getHora(),

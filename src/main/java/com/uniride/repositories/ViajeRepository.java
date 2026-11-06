@@ -109,6 +109,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual,
             Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta"})
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
             + "AND (v.estado <> :programado OR v.fecha <= :hoy) "
             + "ORDER BY v.fecha DESC, v.hora DESC")

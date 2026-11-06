@@ -250,9 +250,14 @@ public class SolicitudService {
                 ? solicitudRepository.findByViajeIdOrderByFechaCreacionDesc(viajeId, pageable)
                 : solicitudRepository.buscarPorViajeYEstado(viajeId, estado, pageable);
 
+        List<Long> idsPasajero = solicitudes.getContent().stream()
+                .map(s -> s.getPasajero().getId()).distinct().toList();
+        var perfiles = idsPasajero.isEmpty() ? Map.<Long,Perfil>of()
+                : perfilRepository.findByUsuarioIdIn(idsPasajero).stream().collect(
+                        Collectors.toMap(p -> p.getUsuario().getId(), p -> p));
+
         return solicitudes.map(solicitud -> {
-            Perfil perfil = perfilRepository.findByUsuarioId(solicitud.getPasajero().getId())
-                    .orElse(null);
+            Perfil perfil = perfiles.get(solicitud.getPasajero().getId());
             return solicitudMapper.toSolicitudRespuesta(solicitud, null,
                     perfil == null ? null : perfil.getCarrera(),
                     perfil == null ? null : perfil.getDistrito());

@@ -32,6 +32,21 @@ jobs:
       - run: chmod +x mvnw
       - run: ./mvnw --batch-mode clean verify
       - run: ./mvnw --batch-mode -Ppostgres-it test
+      - name: Build Docker and verify native OCR
+        run: |
+          docker build -t uniride-ci .
+          docker create --name uniride-ocr-smoke --memory 512m --cpus 1 --pids-limit 64 \
+            --entrypoint java uniride-ci -Xmx256m -Dloader.main=com.uniride.ocr.PdfWorker \
+            -cp /app/app.jar org.springframework.boot.loader.launch.PropertiesLauncher \
+            /tmp/ocr.pdf /tmp/result.txt spa+eng /usr/share/tesseract-ocr/5/tessdata
+          docker cp target/ocr-scanned-smoke.pdf uniride-ocr-smoke:/tmp/ocr.pdf
+          timeout 60s docker start -a uniride-ocr-smoke
+          test "$(docker inspect --format='{{.State.ExitCode}}' uniride-ocr-smoke)" -eq 0
+          docker cp uniride-ocr-smoke:/tmp/result.txt target/ocr-result.txt
+          grep -qi 'Software' target/ocr-result.txt
+      - name: Remove OCR smoke container
+        if: always()
+        run: docker rm -f uniride-ocr-smoke || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

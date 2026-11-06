@@ -10,7 +10,7 @@ COPY src ./src
 RUN mvn clean package
 
 
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:21-jre-noble
 
 WORKDIR /app
 

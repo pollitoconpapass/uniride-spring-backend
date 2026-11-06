@@ -1,5 +1,10 @@
 # US13 — Contratos nuevos (extensión de `docs/endpoints.md`)
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 Se conservan los contratos anteriores; este documento detalla las variantes nuevas sin reemplazar un `docs/endpoints.md` que ya tiene cambios de US08-US10.
 
 ### GET /api/solicitudes

@@ -1,6 +1,6 @@
 # UniRide — Referencia de endpoints
 
-Listado completo de los **43 endpoints** REST de la API, con parámetros, bodies y códigos de estado.
+Inventario completo de los **49 mappings HTTP** REST de la API, con parámetros, bodies y códigos de estado.
 Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 
 ---
@@ -11,10 +11,10 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 |---|---|
 | **URL base** | `http://localhost:8080/api` (context-path de la aplicación) |
 | **Autenticación** | Header `Authorization: Bearer <token>` (JWT, expira en 24 h) |
-| **Público (sin token)** | Solo los 4 endpoints de `/api/auth/**` |
+| **Público (sin token)** | Los 4 endpoints de autenticación y Swagger/OpenAPI (`/api/v3/api-docs/**`, `/api/swagger-ui/**`, `/api/swagger-ui.html`) |
 | **Sin token** | Responde `403 Forbidden` (filtro JWT) |
 | **Formato de error** | `{"mensaje": "...", "campos": {"campo": "detalle"}}` (`campos` solo en errores de validación) |
-| **Paginación** | `page` (base 0, defecto `0`) y `size` (defecto `10`) — los 6 endpoints paginados devuelven `Page<X>` con `content`, `totalPages`, `totalElements`, etc. |
+| **Paginación** | `page >= 0` (defecto `0`) y `size` entre `1..100` (defecto `10`). Hay 11 mappings paginados: 6 devuelven `Page<X>` y 5 un resumen que contiene la página; ver índice y documentación US13/US14. Parámetros inválidos: `400`. |
 
 ### Códigos de estado
 
@@ -28,6 +28,8 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 | `403` | Sin token, o rol insuficiente (`NoPermitidoException`) |
 | `404` | Recurso inexistente o ajeno (`ResourceNotFoundException`) |
 | `409` | Regla de negocio violada (`BusinessException`) |
+| `429` | Límite de autenticación, bloqueo OTP o enfriamiento de reenvío |
+| `405` / `415` | Método HTTP / tipo de contenido no admitido |
 | `500` | Error inesperado |
 
 ### Enums referenciados
@@ -35,7 +37,7 @@ Generado a partir del código fuente (`src/main/java/com/uniride/controllers/`).
 | Enum | Valores |
 |---|---|
 | `Rol` | `CONDUCTOR`, `PASAJERO` |
-| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA` |
+| `EstadoRuta` | `ACTIVA`, `LLENA`, `VENCIDA`, `ELIMINADA` |
 | `EstadoSolicitud` | `PENDIENTE`, `ACEPTADA`, `RECHAZADA`, `CANCELADA` |
 | `EstadoViaje` | `PROGRAMADO`, `EN_PROGRESO`, `COMPLETADO`, `CANCELADO`, `VENCIDO` |
 | `TipoCompensacion` | `DINERO`, `GASOLINA`, `FAVOR` |
@@ -97,11 +99,11 @@ Crea una cuenta nueva y envía el código de verificación por correo (US01).
 
 | Campo | Tipo | Obligatorio | Detalle |
 |---|---|---|---|
-| `correo` | string | ✅ | Debe ser institucional con `.edu` después del `@` |
-| `contrasena` | string | ✅ | Mín. 8 caracteres, una mayúscula, una minúscula y un número o símbolo |
+| `correo` | string | ✅ | Dominio institucional terminado en `.edu` o `.edu.xx`, formato válido y máximo 254 caracteres; se recorta y convierte a minúsculas |
+| `contrasena` | string | ✅ | Mín. 8 caracteres, una mayúscula, una minúscula, un número y un símbolo; máximo 72 bytes UTF-8 |
 | `nombre` | string | ✅ | |
 | `apellidos` | string | ✅ | |
-| `telefono` | string | ✅ | Formato `+`, dígitos, espacios o guiones (6–15 caracteres) |
+| `telefono` | string | ✅ | Número válido según libphonenumber, PE por defecto; admite espacios, paréntesis y guiones, se normaliza a E.164 y detecta duplicados equivalentes |
 | `rol` | enum `Rol` | ✅ | `CONDUCTOR` o `PASAJERO` |
 | `aceptaTerminos` | boolean | ✅ | Debe ser `true` |
 
@@ -431,6 +433,12 @@ Elimina una ruta propia (US08).
 
 **Respuestas:** `204` ✅ · `404` ruta inexistente o ajena · `403` sin token
 
+La eliminación es lógica. `?confirmar=true` reconoce el impacto si hay pasajeros
+aceptados o salidas a menos de 4 h; sin confirmación responde 409. Un viaje en
+progreso impide eliminar la ruta incluso con confirmación. Los futuros PROGRAMADO
+se cancelan con las reglas US18 y se conserva el historial. Repetir la eliminación
+no vuelve a cancelar viajes; conserva el aviso existente «Ruta ya eliminada».
+
 #### `POST /api/rutas/{rutaId}/viajes`
 Genera un viaje programado a partir de una ruta propia (el día se calcula de la fecha).
 
@@ -447,7 +455,9 @@ Genera un viaje programado a partir de una ruta propia (el día se calcula de la
 | `fecha` | date (`yyyy-MM-dd`) | ✅ — no puede ser en el pasado |
 | `hora` | time (`HH:mm:ss` o `HH:mm`) | ✅ |
 
-**Respuestas:** `201` ✅ viaje creado en estado `PROGRAMADO` · `400` campos faltantes o fecha en el pasado · `404` ruta inexistente o ajena · `403` sin token
+La fecha y hora completas deben ser futuras y permitir confirmar con al menos 12 horas de anticipación.
+
+**Respuestas:** `201` ✅ viaje creado en estado `PROGRAMADO` · `400` campos faltantes o salida pasada · `409` anticipación menor a 12 horas o ruta eliminada · `404` ruta inexistente o ajena · `403` sin token o rol insuficiente
 
 #### `PUT /api/viajes/{id}` (US07)
 Reprograma un viaje PROGRAMADO de una ruta propia. Requiere rol `CONDUCTOR`.
@@ -461,8 +471,8 @@ Reprograma un viaje PROGRAMADO de una ruta propia. Requiere rol `CONDUCTOR`.
 Si hay pasajeros aceptados, devuelve **409** con advertencia hasta que se reintente
 con `?confirmarImpacto=true`. Tras una modificación real notifica a los pasajeros.
 Un viaje previamente confirmado vuelve a quedar **sin confirmar** y reinicia el
-recordatorio, para que el conductor lo reconfirme según US17. En ese caso, la nueva
-salida debe estar al menos a 12 horas. Un viaje finalizado, cancelado o en progreso
+recordatorio, para que el conductor lo reconfirme según US17. Toda nueva
+salida debe estar al menos a 12 horas, también si aún no estaba confirmado. Un viaje finalizado, cancelado o en progreso
 no se puede reprogramar.
 
 **Respuestas:** `200` ✅ cambio guardado · `400` fecha/hora ausentes o pasadas ·
@@ -640,7 +650,7 @@ Pasa el viaje a `EN_PROGRESO` (ciclo de vida: `PROGRAMADO → EN_PROGRESO`).
 |---|---|
 | `id` | long |
 
-**Respuestas:** `200` ✅ estado `EN_PROGRESO` (notifica a conductor y pasajeros aceptados); si ya estaba iniciado, `200` con `mensaje` · `409` viaje no `PROGRAMADO` o no confirmado · `404` viaje inexistente o ajeno
+**Respuestas:** `200` ✅ estado `EN_PROGRESO` (notifica a conductor y pasajeros aceptados); si ya estaba iniciado, `200` con `mensaje` · `409` viaje no `PROGRAMADO`, no confirmado o cuya hora de salida aún no llegó · `404` viaje inexistente o ajeno
 
 #### `PUT /api/viajes/{id}/completar`
 Pasa el viaje a `COMPLETADO` (`EN_PROGRESO → COMPLETADO`).
@@ -659,7 +669,7 @@ Cancela un viaje, con penalidad según la anticipación (US18).
 | `id` | long |
 
 **Respuestas**
-- `200` ✅ viaje `CANCELADO` con notificación a todos los involucrados; si ya estaba cancelado, `200` con `mensaje: "El viaje ya estaba cancelado"`
+- `200` ✅ viaje `CANCELADO` con notificación a todos los involucrados; si ya estaba cancelado, el conductor o el mismo autor pueden reintentar con `mensaje: "El viaje ya estaba cancelado"`, sin nuevas penalidades ni avisos
 - `403` si no es el conductor ni un pasajero con solicitud aceptada
 - `409` viaje no `PROGRAMADO` o ya ocurrió · `404` viaje inexistente o ajeno
 
@@ -672,7 +682,7 @@ Elimina un viaje propio.
 |---|---|
 | `id` | long |
 
-**Respuestas:** `204` ✅ (notifica al conductor) · `404` viaje inexistente o ajeno · `403` sin token
+**Respuestas:** `204` ✅ (notifica al conductor) · `409` viaje confirmado, histórico, con cualquier solicitud registrada o con penalidades; conserva actividad según cierre 11.1 · `404` viaje inexistente o ajeno · `403` sin token
 
 ---
 
@@ -708,7 +718,7 @@ Exporta el historial personal de viajes en PDF (US22).
 | `hasta` | date (`yyyy-MM-dd`) | – | Filtro opcional |
 | `tipo` | string | `todos` | `todos` \| `conductor` \| `pasajero` (sin distinción de mayúsculas) |
 
-**Respuestas:** `200` ✅ archivo PDF (`application/pdf`, `Content-Disposition: attachment`) · `400` `desde` posterior a `hasta` · `409` sin historial que exportar o `tipo` inválido · `403` sin token
+**Respuestas:** `200` ✅ archivo PDF (`application/pdf`, `Content-Disposition: attachment`) · `400` `desde` posterior a `hasta` · `400` tipo inválido · `409` sin historial que exportar · `403` sin token
 
 ---
 
@@ -768,7 +778,7 @@ Elimina un método propio (US28).
 **Respuestas**
 - `200` ✅ `{"mensaje": "Método de compensación eliminado correctamente"}` (nota: responde `200` con cuerpo, no `204`)
 - `404` método inexistente o ajeno
-- `409` "No puedes eliminar este método: está asociado a un viaje confirmado" (cuando una solicitud `ACEPTADA` con ese método pertenece a un viaje confirmado)
+- `409` si existe **cualquier solicitud asociada**, independientemente de su estado o de la confirmación del viaje; se preserva la integridad e historial.
 
 #### `GET /api/viajes/{id}/sugerencia-contribucion`
 Sugerencia de contribución estimada para un viaje (US29).
@@ -779,13 +789,13 @@ Sugerencia de contribución estimada para un viaje (US29).
 
 | Query | Tipo | Defecto | Detalle |
 |---|---|---|---|
-| `pasajeros` | int | – | **Obligatorio en la práctica** (mínimo 1) |
+| `pasajeros` | int | – | Se usa el conteo de aceptados si es mayor que cero; solo si no hay aceptados se requiere indicar un valor mínimo de 1 |
 
 **Fórmula:** `total = S/8.00 × 1.5` si es hora pico (06:00–10:00 o 17:00–21:00), si no `× 1.0`; `aporte = total / pasajeros`.
 
 **Respuestas**
 - `200` ✅ `{viajeId, origen, destino, dia, fecha, hora, pasajeros, esHoraPico, costoTotalEstimado, aporteEstimado, litrosGasolinaAprox, sugerenciaFavor, nota}`
-- `400` `pasajeros` ausente ("Debes indicar la cantidad de pasajeros para calcular la sugerencia") o menor a 1
+- `400` `pasajeros` ausente o menor a 1 cuando el viaje aún no tiene aceptados
 - `404` viaje no encontrado
 - `409` viaje no `PROGRAMADO`
 - `403` sin token
@@ -794,48 +804,125 @@ Sugerencia de contribución estimada para un viaje (US29).
 
 ## Índice rápido
 
-| # | Método | Ruta | Módulo |
-|---|---|---|---|
-| 1 | POST | `/api/auth/registro` | 1 |
-| 2 | POST | `/api/auth/login` | 1 |
-| 3 | POST | `/api/auth/verificar` | 1 |
-| 4 | POST | `/api/auth/reenviar-codigo` | 1 |
-| 5 | GET | `/api/usuarios/me` | 1 |
-| 6 | PUT | `/api/usuarios/rol` | 1 |
-| 7 | GET | `/api/perfil` | 1 |
-| 8 | GET | `/api/perfil/usuario/{usuarioId}` | 1 |
-| 9 | PUT | `/api/perfil` | 1 |
-| 10 | PUT | `/api/perfil/info-adicional` | 1 |
-| 11 | POST | `/api/perfil/cursos` | 1 |
-| 12 | GET | `/api/perfil/cursos` | 1 |
-| 13 | DELETE | `/api/perfil/cursos/{id}` | 1 |
-| 14 | POST | `/api/perfil/horarios/archivo` | 1 |
-| 15 | POST | `/api/rutas` | 2 |
-| 16 | GET | `/api/rutas` | 2 |
-| 17 | PUT | `/api/rutas/{id}` | 2 |
-| 18 | DELETE | `/api/rutas/{id}` | 2 |
-| 19 | POST | `/api/rutas/{rutaId}/viajes` | 2 |
-| 20 | GET | `/api/rutas/{rutaId}/viajes` | 2 |
-| 21 | GET | `/api/viajes/buscar` | 3 |
-| 22 | POST | `/api/solicitudes/viajes/{viajeId}` | 3 |
-| 23 | GET | `/api/solicitudes` | 3 |
-| 24 | PUT | `/api/solicitudes/{id}/cancelar` | 3 |
-| 25 | PUT | `/api/solicitudes/{id}/aceptar` | 3 |
-| 26 | PUT | `/api/solicitudes/{id}/rechazar` | 3 |
-| 27 | PUT | `/api/solicitudes/rechazar-multiples` | 3 |
-| 28 | GET | `/api/viajes/{viajeId}/solicitudes` | 4 |
-| 29 | PUT | `/api/viajes/{id}/confirmar` | 4 |
-| 30 | PUT | `/api/viajes/{id}/iniciar` | 4 |
-| 31 | PUT | `/api/viajes/{id}/completar` | 4 |
-| 32 | PUT | `/api/viajes/{id}/cancelar` | 4 |
-| 33 | DELETE | `/api/viajes/{id}` | 4 |
-| 34 | GET | `/api/estadisticas` | 5 |
-| 35 | GET | `/api/estadisticas/semana` | 5 |
-| 36 | GET | `/api/estadisticas/rutas` | 5 |
-| 37 | GET | `/api/historial/pdf` | 5 |
-| 38 | GET | `/api/metodos-compensacion` | 7 |
-| 39 | POST | `/api/metodos-compensacion` | 7 |
-| 40 | PUT | `/api/metodos-compensacion/{id}` | 7 |
-| 41 | DELETE | `/api/metodos-compensacion/{id}` | 7 |
-| 42 | GET | `/api/viajes/{id}/sugerencia-contribucion` | 7 |
-| 43 | PUT | `/api/viajes/{id}` | 2 (US07) |
+Inventario completo de los 49 mappings de controladores propios. No incluye Swagger,
+OpenAPI ni endpoints internos de Spring. Las rutas conservan los contratos Angular.
+
+| # | Método | Ruta | Permiso (además de propiedad/relación) | Controlador |
+|---|---|---|---|---|
+| 1 | POST | `/api/auth/login` | `Público` | AuthController |
+| 2 | POST | `/api/auth/reenviar-codigo` | `Público` | AuthController |
+| 3 | POST | `/api/auth/registro` | `Público` | AuthController |
+| 4 | POST | `/api/auth/verificar` | `Público` | AuthController |
+| 5 | GET | `/api/estadisticas` | `Autenticado` | EstadisticasController |
+| 6 | GET | `/api/estadisticas/rutas` | `hasRole('CONDUCTOR')` | EstadisticasController |
+| 7 | GET | `/api/estadisticas/semana` | `Autenticado` | EstadisticasController |
+| 8 | GET | `/api/historial/pdf` | `Autenticado` | HistorialController |
+| 9 | GET | `/api/metodos-compensacion` | `Autenticado` | MetodoCompensacionController |
+| 10 | POST | `/api/metodos-compensacion` | `Autenticado` | MetodoCompensacionController |
+| 11 | DELETE | `/api/metodos-compensacion/{id}` | `Autenticado` | MetodoCompensacionController |
+| 12 | PUT | `/api/metodos-compensacion/{id}` | `Autenticado` | MetodoCompensacionController |
+| 13 | GET | `/api/perfil` | `Autenticado` | PerfilController |
+| 14 | PUT | `/api/perfil` | `Autenticado` | PerfilController |
+| 15 | GET | `/api/perfil/cursos` | `Autenticado` | HorarioAcademicoController |
+| 16 | POST | `/api/perfil/cursos` | `Autenticado` | HorarioAcademicoController |
+| 17 | DELETE | `/api/perfil/cursos/{id}` | `Autenticado` | HorarioAcademicoController |
+| 18 | POST | `/api/perfil/horarios/archivo` | `Autenticado` | HorarioAcademicoController |
+| 19 | PUT | `/api/perfil/info-adicional` | `Autenticado` | PerfilController |
+| 20 | GET | `/api/perfil/usuario/{usuarioId}` | `hasRole('CONDUCTOR')` | PerfilController |
+| 21 | GET | `/api/rutas` | `hasRole('CONDUCTOR')` | RutaController |
+| 22 | POST | `/api/rutas` | `hasRole('CONDUCTOR')` | RutaController |
+| 23 | GET | `/api/rutas/resumen` | `hasRole('CONDUCTOR')` | RutaController |
+| 24 | DELETE | `/api/rutas/{id}` | `hasRole('CONDUCTOR')` | RutaController |
+| 25 | PUT | `/api/rutas/{id}` | `hasRole('CONDUCTOR')` | RutaController |
+| 26 | GET | `/api/rutas/{rutaId}/viajes` | `hasRole('CONDUCTOR')` | ViajeController |
+| 27 | POST | `/api/rutas/{rutaId}/viajes` | `hasRole('CONDUCTOR')` | ViajeController |
+| 28 | GET | `/api/solicitudes` | `hasRole('PASAJERO')` | SolicitudController |
+| 29 | GET | `/api/solicitudes/historial` | `hasRole('PASAJERO')` | SolicitudController |
+| 30 | PUT | `/api/solicitudes/rechazar-multiples` | `hasRole('CONDUCTOR')` | SolicitudController |
+| 31 | GET | `/api/solicitudes/recibidas/por-ruta` | `hasRole('CONDUCTOR')` | SolicitudesRecibidasUs14Controller |
+| 32 | GET | `/api/solicitudes/recibidas/{solicitudId}/detalle` | `hasRole('CONDUCTOR')` | SolicitudesRecibidasUs14Controller |
+| 33 | GET | `/api/solicitudes/resumen` | `hasRole('PASAJERO')` | SolicitudController |
+| 34 | POST | `/api/solicitudes/viajes/{viajeId}` | `hasRole('PASAJERO')` | SolicitudController |
+| 35 | PUT | `/api/solicitudes/{id}/aceptar` | `hasRole('CONDUCTOR')` | SolicitudController |
+| 36 | PUT | `/api/solicitudes/{id}/cancelar` | `hasRole('PASAJERO')` | SolicitudController |
+| 37 | PUT | `/api/solicitudes/{id}/rechazar` | `hasRole('CONDUCTOR')` | SolicitudController |
+| 38 | GET | `/api/usuarios/me` | `Autenticado` | UsuarioController |
+| 39 | PUT | `/api/usuarios/rol` | `Autenticado` | UsuarioController |
+| 40 | GET | `/api/viajes/buscar` | `hasRole('PASAJERO')` | BusquedaController |
+| 41 | GET | `/api/viajes/buscar/resumen` | `hasRole('PASAJERO')` | BusquedaController |
+| 42 | DELETE | `/api/viajes/{id}` | `hasRole('CONDUCTOR')` | ViajeController |
+| 43 | PUT | `/api/viajes/{id}` | `hasRole('CONDUCTOR')` | ViajeController |
+| 44 | PUT | `/api/viajes/{id}/cancelar` | `hasAnyRole('CONDUCTOR', 'PASAJERO')` | ViajeController |
+| 45 | PUT | `/api/viajes/{id}/completar` | `hasRole('CONDUCTOR')` | ViajeController |
+| 46 | PUT | `/api/viajes/{id}/confirmar` | `hasRole('CONDUCTOR')` | ViajeController |
+| 47 | PUT | `/api/viajes/{id}/iniciar` | `hasRole('CONDUCTOR')` | ViajeController |
+| 48 | GET | `/api/viajes/{id}/sugerencia-contribucion` | `hasRole('PASAJERO')` | ViajeController |
+| 49 | GET | `/api/viajes/{viajeId}/solicitudes` | `hasRole('CONDUCTOR')` | ViajeController |
+
+## Reglas de hardening vigentes
+
+- Creación y reprogramación requieren fecha/hora futuras y salida a >=12 h (409 si
+  falta anticipación; 400 si fecha/hora ya ocurrió). Inicio requiere hora programada.
+- PROGRAMADO sin confirmar vence automáticamente cuando restan <12 h, incluso
+  salidas pasadas: VENCIDO + una penalidad LEVE y avisos a afectados, sin borrar historial.
+- Cancelar conserva >24 h sin penalidad, 4..24 h LEVE, <4 h GRAVE. Se registra autor
+  y fecha. Reintentos del mismo autor/conductor son 200 sin nuevos efectos; terceros 403.
+- US20 es frecuencia histórica por día de semana; no una ventana móvil de siete días.
+  Se requieren cinco viajes completados. Cancelaciones propias/terceros usan autor
+  registrado, nunca penalidades; autor histórico desconocido no se atribuye.
+- US21 cuenta **solo penalidades del conductor**, decisión confirmada por el responsable.
+- PDF excluye PROGRAMADO futuro comparando fecha y hora, también hoy; filtros de
+  fecha inclusivos, rol conductor/pasajero/todos y penalidades propias.
+- Todos los listados paginados exigen page>=0, size 1..100; fuera de rango 400.
+- Perfil actualiza nombre/apellidos en Usuario y Perfil en una transacción. Fechas
+  académicas invertidas responden 400.
+- Auth normaliza correo (trim/minúsculas), teléfonos E.164 (PE por defecto), valida
+  dominios terminados en .edu o .edu.xx. El formato telefónico válido no prueba titularidad.
+- OTP expira a los 15 min exactos, se guarda con BCrypt, permite cinco fallos y luego
+  bloqueo 15 min; reenviar tiene cooldown de 60 s y no omite un bloqueo vigente.
+  Los límites configurables por cuenta/IP responden 429 con Retry-After.
+- Reenvío conserva AuthRespuesta, con `usuario: null` para proteger datos personales.
+  Mantiene 404 cuenta inexistente y 409 cuenta verificada por compatibilidad.
+- Códigos no se almacenan en avisos de plataforma. Correo usa outbox cifrado,
+  entrega posterior al commit y reintento. Ver [operación](operacion-hardening.md).
+- PDF/TXT conservan límite de 1 MiB; PDF comprueba firma, páginas, geometría, texto y
+  streams expandidos, con proceso aislado, 256 MiB de heap y timeout de 60 s.
+  TXT exige UTF-8 sin contenido binario. Los límites/formato son 400; PDF malformado,
+  ilegible o fallo del proceso responde 409; saturación de procesadores responde 429.
+
+## Transiciones y controles
+
+| Recurso | Transición | Condición y autoridad |
+|---|---|---|
+| Viaje | Creación → PROGRAMADO sin confirmar | Conductor dueño de ruta no eliminada; salida futura a >=12 h |
+| Viaje | PROGRAMADO → PROGRAMADO confirmado | Conductor propietario; >=12 h; repetición sin nuevos efectos |
+| Viaje | PROGRAMADO → VENCIDO | Sin confirmar y <12 h, aunque la salida ya pasó; scheduler o confirmación tardía, una penalidad LEVE |
+| Viaje | PROGRAMADO confirmado → EN_PROGRESO | Conductor propietario; hora de salida alcanzada; repetición sin nuevos efectos |
+| Viaje | EN_PROGRESO → COMPLETADO | Conductor propietario; repetición sin nuevos efectos |
+| Viaje | PROGRAMADO → CANCELADO | Conductor o pasajero aceptado, salida no pasada; reintenta solo conductor/autor; penalidad según 4/24 h |
+| Ruta | ACTIVA / LLENA / VENCIDA | US09 calcula disponibilidad desde viajes, cupos y horario; no modifica ELIMINADA |
+| Ruta | Estado vigente → ELIMINADA | Conductor propietario, confirmación de impacto cuando corresponde, ningún viaje EN_PROGRESO |
+| Solicitud | Creación → PENDIENTE | Pasajero, viaje PROGRAMADO no pasado; no duplicar solicitud activa |
+| Solicitud | PENDIENTE → ACEPTADA | Conductor propietario, viaje disponible y cupo; bloquea Viaje, crea un solo acuerdo BORRADOR; reintento 409 sin duplicar cupo/acuerdo |
+| Solicitud | PENDIENTE → RECHAZADA | Conductor propietario, individual o lote; procesada previamente responde 409 |
+| Solicitud | PENDIENTE → CANCELADA | Pasajero propietario; procesada previamente responde 409 |
+| Solicitud | PENDIENTE / ACEPTADA → CANCELADA | Cancelación del viaje, conserva relación y marca participación efectiva |
+| AcuerdoCompensacion | Creación → BORRADOR | Transacción de aceptación; relación única con Solicitud |
+
+CONFIRMADO y RECHAZADO de AcuerdoCompensacion son valores persistibles del modelo,
+pero no tienen transición expuesta por esta API. No se añaden endpoints ni se
+eliminan acuerdos históricos al cancelar. La eliminación física de un viaje exige
+PROGRAMADO sin confirmar, sin solicitudes ni penalidades.
+
+Los reintentos individuales de solicitud ya aceptada/rechazada/cancelada conservan
+el aviso REQUIRES_NEW de «acción ya realizada», agrupado por usuario/asunto durante
+15 minutos; no repiten la transición. Un rechazo múltiple es atómico y valida
+todos los estados dentro de la misma transacción.
+
+La aceptación, cancelación, inicio, finalización, confirmación y vencimiento
+comparten bloqueo de Viaje. Crear/editar/eliminar ruta bloquea Ruta primero y,
+cuando corresponde, sus viajes ordenados por id; ninguna aceptación adquiere Ruta
+después de Viaje. Las escrituras y avisos de plataforma comparten transacción;
+los envíos SMTP ocurren después del commit mediante outbox.
+
+Errores generales: ruta inexistente 404, método no soportado 405, tipo de contenido no soportado 415 y parámetros/archivo multipart faltantes 400. No se convierten en errores internos 500.
