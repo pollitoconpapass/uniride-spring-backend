@@ -18,6 +18,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Slf4j
 public class NotificacionService {
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CorreoOutboxService outbox;
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+    private final java.util.Map<String, java.time.Instant> ultimosAvisos = new java.util.HashMap<>();
+
     private final NotificacionRepository notificacionRepository;
     private final JavaMailSender mailSender;
 
@@ -29,7 +35,19 @@ public class NotificacionService {
         this.mailSender = mailSender;
     }
 
+    @Transactional
     public Notificacion notificar(Usuario usuario, TipoNotificacion tipo, String asunto, String mensaje) {
+        return registrar(usuario, tipo, asunto, mensaje, mensaje, false);
+    }
+
+    @Transactional
+    public Notificacion notificarCodigo(Usuario usuario, String asunto, String mensajeCorreo) {
+        return registrar(usuario, TipoNotificacion.EXITO, asunto,
+                "Se solicitó un código de verificación. Revisa tu correo institucional.", mensajeCorreo, true);
+    }
+
+    private Notificacion registrar(Usuario usuario, TipoNotificacion tipo, String asunto,
+            String mensaje, String mensajeCorreo, boolean codigo) {
         Notificacion notificacion = Notificacion.builder()
                 .usuario(usuario)
                 .tipo(tipo)
@@ -39,18 +57,24 @@ public class NotificacionService {
 
         Notificacion guardada = notificacionRepository.save(notificacion);
         String destino = usuario.getCorreoInstitucional();
+        if (outbox != null) {
+            if (codigo) outbox.encolarOtp(guardada.getId(), usuario, asunto, mensajeCorreo);
+            else outbox.encolar(guardada.getId(), destino, asunto, mensajeCorreo);
+            // El scheduler consume únicamente filas confirmadas; no hay SMTP antes del commit.
+            return guardada;
+        }
         // Nunca enviar un correo por una operacion que posteriormente se revierta.
         if (TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    enviarCorreo(destino, asunto, mensaje);
+                    enviarCorreo(destino, asunto, mensajeCorreo);
                 }
             });
         } else {
             // Invocaciones sin transaccion activa: save() ya termino antes del envio.
-            enviarCorreo(destino, asunto, mensaje);
+            enviarCorreo(destino, asunto, mensajeCorreo);
         }
         return guardada;
     }
@@ -61,6 +85,7 @@ public class NotificacionService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Notificacion notificarAccionYaRealizada(Usuario usuario, String asunto, String mensaje) {
+        if (!admitirAviso(usuario, asunto)) return null;
         return notificar(usuario, TipoNotificacion.ADVERTENCIA, asunto, mensaje);
     }
 
@@ -68,7 +93,19 @@ public class NotificacionService {
      * transaccion del login/registro se revierte al retornar 401/409. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Notificacion notificarErrorAutenticacion(Usuario usuario, String asunto, String mensaje) {
+        if (!admitirAviso(usuario, asunto)) return null;
         return notificar(usuario, TipoNotificacion.ERROR, asunto, mensaje);
+    }
+
+    private boolean admitirAviso(Usuario usuario, String asunto) {
+        synchronized (ultimosAvisos) {
+            java.time.Instant ahora = clock.instant();
+            ultimosAvisos.values().removeIf(fecha -> fecha.plusSeconds(900).isBefore(ahora));
+            String clave = usuario.getId() + ":" + asunto;
+            if (ultimosAvisos.containsKey(clave) || ultimosAvisos.size() >= 10_000) return false;
+            ultimosAvisos.put(clave, ahora);
+            return true;
+        }
     }
 
     private void enviarCorreo(String destino, String asunto, String mensaje) {
@@ -89,7 +126,7 @@ public class NotificacionService {
             correo.setText(mensaje);
             mailSender.send(correo);
         } catch (Exception e) {
-            log.warn("No se pudo enviar el correo a {}: {}", destino, e.getMessage());
+            log.warn("No se pudo enviar el correo: {}", e.getClass().getSimpleName());
         }
     }
 }

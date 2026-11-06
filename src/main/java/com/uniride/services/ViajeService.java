@@ -382,6 +382,7 @@ public class ViajeService {
         List<Solicitud> involucradas = solicitudRepository.findByViajeIdAndEstadoIn(
                 id, List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA));
         for (Solicitud solicitud : involucradas) {
+            solicitud.setAfectadaPorCancelacionViaje(true);
             solicitud.setEstado(EstadoSolicitud.CANCELADA);
         }
         solicitudRepository.saveAll(involucradas);

@@ -194,7 +194,7 @@ public class RutaService {
                 || !Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia())
                 || !Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada());
 
-        // Bloquear antes de contar: aceptaci?n solo toma la fila Viaje.
+        // Bloquear antes de contar: aceptación solo toma la fila Viaje.
         List<Viaje> viajesBloqueados = cambioRelevante ? viajeRepository.findByRutaId(id) : List.of();
         Map<Long, Usuario> pasajerosAfectados = new LinkedHashMap<>();
         if (cambioRelevante) {

@@ -13,4 +13,16 @@ public class TiempoConfig {
     public Clock clock() {
         return Clock.system(LIMA);
     }
+
+    @Bean(name = "taskScheduler")
+    public org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler taskScheduler() {
+        var scheduler = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2); scheduler.setThreadNamePrefix("viajes-"); return scheduler;
+    }
+
+    @Bean(name = "correoScheduler")
+    public org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler correoScheduler() {
+        var scheduler = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1); scheduler.setThreadNamePrefix("correo-"); return scheduler;
+    }
 }

@@ -9,7 +9,8 @@ spring:
     
   jpa:
     hibernate:
-      ddl-auto: update # -> ddl: Sentencias de definicion de datos (Definition Data Language)
+      ddl-auto: validate
+    open-in-view: false
     show-sql: false
     properties:
       hibernate:
@@ -25,8 +26,16 @@ spring:
       mail:
         smtp:
           auth: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
           starttls:
             enable: true
+            required: true
+
+  flyway:
+    baseline-on-migrate: false
+    clean-disabled: true
 
   servlet:
     multipart:

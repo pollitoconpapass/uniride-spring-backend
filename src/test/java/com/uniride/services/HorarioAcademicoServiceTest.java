@@ -506,8 +506,6 @@ class HorarioAcademicoServiceTest {
                 "simulado".getBytes()
         );
 
-        when(usuarioService.usuarioActual()).thenReturn(usuario);
-        when(horarioAcademicoRepository.findByUsuarioId(1L)).thenReturn(Optional.of(horario));
         doReturn("   ").when(servicioSpy).extraerTexto(any(byte[].class));
 
         assertThatThrownBy(() -> servicioSpy.subirArchivo(archivo))

@@ -35,7 +35,7 @@ public class AcuerdoCompensacion {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @jakarta.persistence.OneToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "solicitud_id", nullable = false)
     private Solicitud solicitud;
 

@@ -59,6 +59,9 @@ public class Solicitud {
     @Column(name = "motivo_rechazo")
     private String motivoRechazo;
 
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private boolean afectadaPorCancelacionViaje;
+
     @Column(name = "fecha_creacion", nullable = false)
     private LocalDateTime fechaCreacion;
 

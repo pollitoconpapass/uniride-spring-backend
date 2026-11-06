@@ -284,7 +284,9 @@ class SolicitudRepositoryTest {
         viajeRepository.save(sinMiPenalidad);
         viajeRepository.save(conMiPenalidad);
 
-        solicitudRepository.save(crearSolicitud(sinMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
+        Solicitud afectada = crearSolicitud(sinMiPenalidad, pasajero, EstadoSolicitud.CANCELADA);
+        afectada.setAfectadaPorCancelacionViaje(true);
+        solicitudRepository.save(afectada);
         solicitudRepository.save(crearSolicitud(conMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
         penalidadRepository.save(Penalidad.builder()
                 .usuario(pasajero)

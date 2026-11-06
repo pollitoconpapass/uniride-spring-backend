@@ -56,8 +56,9 @@ public class BusquedaService {
             distrito = normalizar(perfil.getDistrito());
         }
 
-        LocalDate hoy = LocalDate.now(clock);
-        LocalTime horaActual = LocalTime.now(ZoneId.systemDefault());
+        var ahora = java.time.LocalDateTime.now(clock);
+        LocalDate hoy = ahora.toLocalDate();
+        LocalTime horaActual = ahora.toLocalTime();
         return viajeRepository.buscarViajesRelevantes(
                 normalizar(origen), normalizar(destino), normalizar(dia), hora,
                 distrito, EstadoViaje.PROGRAMADO, EstadoRuta.ELIMINADA,

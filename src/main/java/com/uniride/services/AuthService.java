@@ -32,6 +32,15 @@ public class AuthService {
     private static final int CODIGO_MAXIMO = 1_000_000;
     private static final int MINUTOS_EXPIRACION_CODIGO = 15;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.uniride.security.LimiteAutenticacion limite = new com.uniride.security.LimiteAutenticacion();
+    @org.springframework.beans.factory.annotation.Value("${uniride.auth.otp-intentos:5}")
+    private int maxIntentosOtp = 5;
+    @org.springframework.beans.factory.annotation.Value("${uniride.auth.otp-bloqueo-minutos:15}")
+    private int bloqueoMinutos = 15;
+    @org.springframework.beans.factory.annotation.Value("${uniride.auth.otp-reenvio-segundos:60}")
+    private long reenvioSegundos = 60;
+
     private final UsuarioRepository usuarioRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
@@ -55,6 +64,8 @@ public class AuthService {
 
     @Transactional
     public AuthRespuesta registrar(RegistroRequest request) {
+        limite.cuenta(request.correo());
+        validarLongitudContrasena(request.contrasena());
         if (usuarioRepository.existsByCorreoInstitucional(request.correo())) {
             Usuario existente = usuarioRepository.findByCorreoInstitucional(request.correo())
                     .orElseThrow(() -> new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado")));
@@ -64,7 +75,7 @@ public class AuthService {
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.correo_registrado"));
         }
 
-        if (usuarioRepository.existsByTelefono(request.telefono())) {
+        if (usuarioRepository.existsByTelefono(com.uniride.util.ValidacionUtil.normalizarTelefono(request.telefono()))) {
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.telefono_registrado"));
         }
 
@@ -75,18 +86,19 @@ public class AuthService {
                 .contrasenaHash(passwordEncoder.encode(request.contrasena()))
                 .nombre(request.nombre())
                 .apellidos(request.apellidos())
-                .telefono(request.telefono())
+                .telefono(com.uniride.util.ValidacionUtil.normalizarTelefono(request.telefono()))
                 .rolPrincipal(request.rol())
                 .aceptaTerminos(request.aceptaTerminos())
                 .cuentaVerificada(false)
-                .codigoVerificacion(codigo)
+                .codigoVerificacion(passwordEncoder.encode(codigo))
+                .ultimoEnvioOtp(LocalDateTime.now(clock))
                 .codigoVerificacionExpiracion(LocalDateTime.now(clock).plusMinutes(MINUTOS_EXPIRACION_CODIGO))
                 .build();
 
         Usuario guardado = usuarioRepository.save(usuario);
         perfilRolService.asegurarPerfil(guardado, guardado.getRolPrincipal());
 
-        notificacionService.notificar(guardado, TipoNotificacion.EXITO,
+        notificacionService.notificarCodigo(guardado,
                 mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.titulo"),
                 mensajeService.obtenerMensaje("auth.notif.codigo_verificacion.mensaje",
                         guardado.getNombre(), codigo, MINUTOS_EXPIRACION_CODIGO));
@@ -98,6 +110,8 @@ public class AuthService {
 
     @Transactional
     public AuthRespuesta iniciarSesion(LoginRequest request) {
+        limite.cuenta(request.correo());
+        validarLongitudContrasena(request.contrasena());
         Optional<Usuario> opcional = usuarioRepository.findByCorreoInstitucional(request.correo());
         if (opcional.isEmpty()) {
             throw new NoAutorizadoException(mensajeService.obtenerMensaje("auth.error.credenciales_incorrectas"));
@@ -127,26 +141,56 @@ public class AuthService {
                 usuarioMapper.toUsuarioRespuesta(usuario));
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = CamposInvalidosException.class)
     public AuthRespuesta verificarCodigo(VerificarCodigoRequest request) {
-        Usuario usuario = usuarioRepository.findByCorreoInstitucional(request.correo())
+        limite.cuenta(request.correo());
+        Usuario usuario = usuarioRepository.bloquearPorCorreo(request.correo())
                 .orElseThrow(() -> new ResourceNotFoundException(mensajeService.obtenerMensaje("auth.error.cuenta_no_encontrada")));
 
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        if (usuario.getOtpBloqueadoHasta() != null && usuario.getOtpBloqueadoHasta().isAfter(ahora)) {
+            throw new com.uniride.exceptions.DemasiadasSolicitudesException();
+        }
+        if (usuario.getOtpBloqueadoHasta() != null) {
+            usuario.setIntentosOtp(0);
+            usuario.setOtpBloqueadoHasta(null);
+        }
         if (usuario.isCuentaVerificada()) {
-            notificacionService.notificarAccionYaRealizada(usuario, "Cuenta ya verificada",
+            // No insertar en REQUIRES_NEW mientras esta transacción bloquea Usuario:
+            // el FK de Notificacion esperaría la liberación del mismo bloqueo.
+            Runnable aviso = () -> notificacionService.notificarAccionYaRealizada(usuario, "Cuenta ya verificada",
                     "La acción ya estaba completada: tu cuenta ya había sido verificada.");
+            if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                        new org.springframework.transaction.support.TransactionSynchronization() {
+                            @Override public void afterCompletion(int estado) { aviso.run(); }
+                        });
+            } else aviso.run();
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_ya_verificada"));
         }
 
         if (usuario.getCodigoVerificacion() == null || usuario.getCodigoVerificacionExpiracion() == null
-                || usuario.getCodigoVerificacionExpiracion().isBefore(LocalDateTime.now(clock))) {
+                || !usuario.getCodigoVerificacionExpiracion().isAfter(LocalDateTime.now(clock))) {
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.codigo_expirado"));
         }
 
-        if (!usuario.getCodigoVerificacion().equals(request.codigo())) {
+        String almacenado = usuario.getCodigoVerificacion();
+        // Compatibilidad de desafíos previos: código en claro solo hasta expirar (15 min).
+        boolean correcto = almacenado.startsWith("$2")
+                ? passwordEncoder.matches(request.codigo(), almacenado)
+                : java.security.MessageDigest.isEqual(almacenado.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        request.codigo().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (!correcto) {
+            usuario.setIntentosOtp(usuario.getIntentosOtp() + 1);
+            if (usuario.getIntentosOtp() >= maxIntentosOtp) {
+                usuario.setOtpBloqueadoHasta(ahora.plusMinutes(bloqueoMinutos));
+            }
+            usuarioRepository.save(usuario);
             throw new CamposInvalidosException(mensajeService.obtenerMensaje("auth.error.codigo_incorrecto"));
         }
 
+        usuario.setIntentosOtp(0);
+        usuario.setOtpBloqueadoHasta(null);
         usuario.setCuentaVerificada(true);
         usuario.setCodigoVerificacion(null);
         usuario.setCodigoVerificacionExpiracion(null);
@@ -163,26 +207,42 @@ public class AuthService {
 
     @Transactional
     public AuthRespuesta reenviarCodigo(ReenviarCodigoRequest request) {
-        Usuario usuario = usuarioRepository.findByCorreoInstitucional(request.correo())
+        limite.cuenta(request.correo());
+        Usuario usuario = usuarioRepository.bloquearPorCorreo(request.correo())
                 .orElseThrow(() -> new ResourceNotFoundException(mensajeService.obtenerMensaje("auth.error.cuenta_no_encontrada")));
 
         if (usuario.isCuentaVerificada()) {
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.cuenta_ya_verificada"));
         }
 
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        if ((usuario.getOtpBloqueadoHasta() != null && usuario.getOtpBloqueadoHasta().isAfter(ahora))
+                || (usuario.getUltimoEnvioOtp() != null
+                && usuario.getUltimoEnvioOtp().plusSeconds(reenvioSegundos).isAfter(ahora))) {
+            throw new com.uniride.exceptions.DemasiadasSolicitudesException();
+        }
+        usuario.setUltimoEnvioOtp(ahora);
+        usuario.setIntentosOtp(0);
+        usuario.setOtpBloqueadoHasta(null);
         String codigo = generarCodigo();
-        usuario.setCodigoVerificacion(codigo);
+        usuario.setCodigoVerificacion(passwordEncoder.encode(codigo));
         usuario.setCodigoVerificacionExpiracion(LocalDateTime.now(clock).plusMinutes(MINUTOS_EXPIRACION_CODIGO));
         usuarioRepository.save(usuario);
 
-        notificacionService.notificar(usuario, TipoNotificacion.EXITO,
+        notificacionService.notificarCodigo(usuario,
                 mensajeService.obtenerMensaje("auth.notif.nuevo_codigo.titulo"),
                 mensajeService.obtenerMensaje("auth.notif.nuevo_codigo.mensaje",
                         usuario.getNombre(), codigo, MINUTOS_EXPIRACION_CODIGO));
 
         return new AuthRespuesta(null,
                 mensajeService.obtenerMensaje("auth.reenviar_exitoso"),
-                usuarioMapper.toUsuarioRespuesta(usuario));
+                null);
+    }
+
+    private void validarLongitudContrasena(String contrasena) {
+        if (contrasena == null || contrasena.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 72) {
+            throw new CamposInvalidosException("La contraseña debe tener como máximo 72 bytes UTF-8");
+        }
     }
 
     private String generarCodigo() {

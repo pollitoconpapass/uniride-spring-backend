@@ -23,6 +23,9 @@ RUN apt-get update \
 
 COPY --from=build /app/target/*.jar app.jar
 
+RUN groupadd --system uniride && useradd --system --gid uniride uniride
+USER uniride
+
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]

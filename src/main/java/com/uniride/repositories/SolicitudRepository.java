@@ -112,6 +112,7 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     @Query("SELECT COUNT(DISTINCT s.viaje.id) FROM Solicitud s "
             + "WHERE s.pasajero.id = :pasajeroId AND s.viaje.estado = :estadoViaje "
+            + "AND s.afectadaPorCancelacionViaje = true "
             + "AND s.viaje.canceladoPor IS NOT NULL AND s.viaje.canceladoPor.id <> :pasajeroId")
     long contarViajesCanceladosPorTerceros(@Param("pasajeroId") Long pasajeroId,
             @Param("estadoViaje") EstadoViaje estadoViaje);
