@@ -43,12 +43,12 @@ public class HorarioAcademico {
     @PrePersist
     void antesDeGuardar() {
         if (fechaActualizacion == null) {
-            fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
+            fechaActualizacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 
     @PreUpdate
     void antesDeActualizar() {
-        fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
+        fechaActualizacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
     }
 }

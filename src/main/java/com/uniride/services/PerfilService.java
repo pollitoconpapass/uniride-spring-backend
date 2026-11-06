@@ -60,6 +60,10 @@ public class PerfilService {
 
     @Transactional
     public PerfilRespuesta guardarDatosPersonales(PerfilRequest request) {
+        if (request == null || request.fechaInicioClases() == null || request.fechaFinClases() == null
+                || request.fechaFinClases().isBefore(request.fechaInicioClases())) {
+            throw new CamposInvalidosException("La fecha de fin de clases no puede ser anterior al inicio");
+        }
         Usuario usuario = usuarioService.usuarioActual();
 
         if (request.metodoCompensacionFavorito() == null
@@ -78,6 +82,9 @@ public class PerfilService {
             perfilMapper.actualizarPerfil(request, perfil);
         }
 
+        usuario.setNombre(request.nombre());
+        usuario.setApellidos(request.apellidos());
+        // usuarioActual devuelve una entidad administrada por esta misma transacción.
         Perfil guardado = perfilRepository.save(perfil);
 
         notificacionService.notificar(usuario, TipoNotificacion.EXITO,

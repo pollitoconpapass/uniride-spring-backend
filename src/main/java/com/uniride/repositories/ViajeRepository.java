@@ -23,7 +23,8 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
     // Cierre 11.3: los cambios de estado se serializan con la aceptacion de cupos.
     // La consulta de solo lectura findByIdAndRutaConductorId NO se bloquea.
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("SELECT v FROM Viaje v WHERE v.id = :id AND v.ruta.conductor.id = :conductorId")
+    @Query("SELECT v FROM Viaje v WHERE v.id = :id "
+            + "AND v.ruta.id IN (SELECT r.id FROM Ruta r WHERE r.conductor.id = :conductorId)")
     Optional<Viaje> bloquearParaConductor(@Param("id") Long id,
             @Param("conductorId") Long conductorId);
 
@@ -35,13 +36,31 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     boolean existsByRutaId(Long rutaId);
 
-    List<Viaje> findByRutaId(Long rutaId);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.id = :rutaId ORDER BY v.id")
+    List<Viaje> findByRutaId(@Param("rutaId") Long rutaId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM Viaje v WHERE v.estado = :estado AND v.confirmado = false "
+            + "AND (v.fecha < :fecha OR (v.fecha = :fecha AND v.hora < :hora)) ORDER BY v.id")
+    List<Viaje> bloquearVencidos(@Param("estado") EstadoViaje estado,
+            @Param("fecha") LocalDate fecha, @Param("hora") LocalTime hora);
 
     // US09: una sola consulta para calcular el estado de las rutas del conductor.
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId")
     List<Viaje> buscarTodosPorConductor(@Param("conductorId") Long conductorId);
 
     long countByRutaConductorIdAndEstado(Long conductorId, EstadoViaje estado);
+
+    long countByEstadoAndCanceladoPorId(EstadoViaje estado, Long usuarioId);
+
+    @Query("SELECT COUNT(v) FROM Viaje v WHERE v.estado = :estado "
+            + "AND v.canceladoPor IS NOT NULL AND v.canceladoPor.id <> :usuarioId "
+            + "AND (v.ruta.conductor.id = :usuarioId OR EXISTS "
+            + "(SELECT s.id FROM Solicitud s WHERE s.viaje = v AND s.pasajero.id = :usuarioId "
+            + "AND s.afectadaPorCancelacionViaje = true))")
+    long contarCanceladosPorTerceros(@Param("usuarioId") Long usuarioId,
+            @Param("estado") EstadoViaje estado);
 
     @Query("SELECT v.dia, COUNT(v) FROM Viaje v "
             + "WHERE v.ruta.conductor.id = :conductorId AND v.estado = :estado "
@@ -56,7 +75,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("estado") EstadoViaje estado);
 
     @Query("SELECT r.origen, r.destino, COUNT(p) FROM Penalidad p JOIN p.viaje v JOIN v.ruta r "
-            + "WHERE r.conductor.id = :conductorId "
+            + "WHERE r.conductor.id = :conductorId AND p.usuario.id = :conductorId "
             + "GROUP BY r.origen, r.destino")
     List<Object[]> penalidadesPorRutaComoConductor(@Param("conductorId") Long conductorId);
 
@@ -90,6 +109,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual,
             Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta"})
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
             + "AND (v.estado <> :programado OR v.fecha <= :hoy) "
             + "ORDER BY v.fecha DESC, v.hora DESC")
@@ -111,7 +131,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
             + "AND v.confirmado = false AND v.estado = :estado "
-            + "AND v.fecha BETWEEN :desde AND :hasta")
+            + "AND v.fecha BETWEEN :desde AND :hasta ORDER BY v.id")
     List<Viaje> buscarPendientesDeConfirmacion(@Param("conductorId") Long conductorId,
             @Param("estado") EstadoViaje estado, @Param("desde") LocalDate desde,
             @Param("hasta") LocalDate hasta);
@@ -123,7 +143,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             + "WHERE v.confirmado = false "
             + "AND v.recordatorioEnviado = false "
             + "AND v.estado = :estado "
-            + "AND v.fecha BETWEEN :desde AND :hasta")
+            + "AND v.fecha BETWEEN :desde AND :hasta ORDER BY v.id")
     List<Viaje> buscarPendientesDeConfirmacionAutomaticos(
             @Param("estado") EstadoViaje estado,
             @Param("desde") LocalDate desde,

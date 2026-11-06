@@ -21,6 +21,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class BusquedaService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private final ViajeRepository viajeRepository;
     private final PerfilRepository perfilRepository;
     private final UsuarioService usuarioService;
@@ -53,8 +56,9 @@ public class BusquedaService {
             distrito = normalizar(perfil.getDistrito());
         }
 
-        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
-        LocalTime horaActual = LocalTime.now(ZoneId.systemDefault());
+        var ahora = java.time.LocalDateTime.now(clock);
+        LocalDate hoy = ahora.toLocalDate();
+        LocalTime horaActual = ahora.toLocalTime();
         return viajeRepository.buscarViajesRelevantes(
                 normalizar(origen), normalizar(destino), normalizar(dia), hora,
                 distrito, EstadoViaje.PROGRAMADO, EstadoRuta.ELIMINADA,

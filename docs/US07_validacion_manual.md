@@ -1,5 +1,10 @@
 # US07 — Verificación manual en Swagger (UniRide)
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 **Rama base:** `development` commit `675ed76053dc77361839b11199099adbb729a440` (PR #37 ya fusionado). **Ruta base de Swagger:** `http://localhost:8080/api/swagger-ui.html` (el gateway puede agregar `/api`).
 
 ## Preparación

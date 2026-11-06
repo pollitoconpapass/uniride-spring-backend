@@ -27,6 +27,9 @@ services:
       dockerfile: Dockerfile
 
     container_name: uniride-backend
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 128
     restart: unless-stopped
 
     environment:

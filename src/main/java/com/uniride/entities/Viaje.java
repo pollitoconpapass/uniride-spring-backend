@@ -64,6 +64,14 @@ public class Viaje {
     @Column(name = "recordatorio_enviado", columnDefinition = "boolean default false")
     private boolean recordatorioEnviado;
 
+    // Nullable: el autor de cancelaciones hist?ricas es desconocido.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cancelado_por_id")
+    private Usuario canceladoPor;
+
+    @Column(name = "fecha_cancelacion")
+    private LocalDateTime fechaCancelacion;
+
     @PrePersist
     void prePersist() {
         if (estado == null) {

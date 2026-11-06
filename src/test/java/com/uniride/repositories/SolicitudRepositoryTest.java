@@ -279,8 +279,14 @@ class SolicitudRepositoryTest {
         Usuario pasajero = crearUsuario("sol29@upc.edu.pe", Rol.PASAJERO);
         Viaje sinMiPenalidad = crearViajeConEstado(conductor, EstadoViaje.CANCELADO);
         Viaje conMiPenalidad = crearViajeConEstado(conductor, EstadoViaje.CANCELADO);
+        sinMiPenalidad.setCanceladoPor(conductor);
+        conMiPenalidad.setCanceladoPor(pasajero);
+        viajeRepository.save(sinMiPenalidad);
+        viajeRepository.save(conMiPenalidad);
 
-        solicitudRepository.save(crearSolicitud(sinMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
+        Solicitud afectada = crearSolicitud(sinMiPenalidad, pasajero, EstadoSolicitud.CANCELADA);
+        afectada.setAfectadaPorCancelacionViaje(true);
+        solicitudRepository.save(afectada);
         solicitudRepository.save(crearSolicitud(conMiPenalidad, pasajero, EstadoSolicitud.CANCELADA));
         penalidadRepository.save(Penalidad.builder()
                 .usuario(pasajero)

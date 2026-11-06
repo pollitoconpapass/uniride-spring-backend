@@ -1,5 +1,10 @@
 # US13 — Pruebas manuales (pasajero)
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Objetivo y alcance
 Permitir visualizar todas las solicitudes con sus estados, mostrar un mensaje orientativo al no existir solicitudes y consultar el historial como solo lectura con penalidades PROPIAS del pasajero (si las hubiera).
 

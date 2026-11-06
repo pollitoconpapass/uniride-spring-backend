@@ -1,5 +1,10 @@
 # US05 — Matriz de pruebas manuales
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 Endpoint: `PUT /api/perfil/info-adicional`. Autorizar Swagger con JWT. Antes de empezar, el usuario debe haber completado `PUT /api/perfil`.
 
 1. Primera carga con tres campos válidos: `200`; comprobar `GET /api/perfil` y `notificaciones`.

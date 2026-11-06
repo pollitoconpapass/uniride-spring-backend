@@ -51,15 +51,24 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
             @Param("conductorId") Long conductorId);
 
     // US14: solicitudes por ruta. El conductor se valida primero a nivel de ruta.
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta", "pasajero", "acuerdo"})
+    List<Solicitud> findByViajeRutaIdInOrderByFechaCreacionDesc(Collection<Long> rutaIds);
+
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta", "pasajero", "acuerdo"})
+    List<Solicitud> findByViajeRutaIdInAndEstadoOrderByFechaCreacionDesc(Collection<Long> rutaIds, EstadoSolicitud estado);
+
     List<Solicitud> findByViajeRutaIdOrderByFechaCreacionDesc(Long rutaId);
 
     List<Solicitud> findByViajeRutaIdAndEstadoOrderByFechaCreacionDesc(
             Long rutaId, EstadoSolicitud estado);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     Page<Solicitud> findByPasajeroId(Long pasajeroId, Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     Page<Solicitud> findByViajeIdOrderByFechaCreacionDesc(Long viajeId, Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"pasajero"})
     List<Solicitud> findByViajeIdAndEstadoIn(Long viajeId, Collection<EstadoSolicitud> estados);
 
     /**
@@ -67,6 +76,7 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
      * Incluye solicitudes finalizadas y las ligadas a salidas anteriores a ahora.
      * El usuario solo puede consultar las solicitudes propias.
      */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId "
             + "AND (s.viaje.fecha < :hoy "
             + "OR (s.viaje.fecha = :hoy AND s.viaje.hora < :horaActual) "
@@ -81,11 +91,13 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
             @Param("estadosSolicitudFinal") Collection<EstadoSolicitud> estadosSolicitudFinal,
             Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId AND s.estado = :estado "
             + "ORDER BY s.fechaCreacion DESC")
     Page<Solicitud> buscarPorPasajeroYEstado(@Param("pasajeroId") Long pasajeroId,
             @Param("estado") EstadoSolicitud estado, Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     @Query("SELECT s FROM Solicitud s WHERE s.viaje.id = :viajeId AND s.estado = :estado "
             + "ORDER BY s.fechaCreacion DESC")
     Page<Solicitud> buscarPorViajeYEstado(@Param("viajeId") Long viajeId,
@@ -112,11 +124,12 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     @Query("SELECT COUNT(DISTINCT s.viaje.id) FROM Solicitud s "
             + "WHERE s.pasajero.id = :pasajeroId AND s.viaje.estado = :estadoViaje "
-            + "AND NOT EXISTS (SELECT p FROM Penalidad p "
-            + "WHERE p.viaje.id = s.viaje.id AND p.usuario.id = :pasajeroId)")
+            + "AND s.afectadaPorCancelacionViaje = true "
+            + "AND s.viaje.canceladoPor IS NOT NULL AND s.viaje.canceladoPor.id <> :pasajeroId")
     long contarViajesCanceladosPorTerceros(@Param("pasajeroId") Long pasajeroId,
             @Param("estadoViaje") EstadoViaje estadoViaje);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta.conductor", "pasajero", "metodoCompensacion", "acuerdo"})
     @Query("SELECT s FROM Solicitud s WHERE s.pasajero.id = :pasajeroId "
             + "AND s.estado IN :estados ORDER BY s.viaje.fecha DESC, s.viaje.hora DESC")
     List<Solicitud> historialComoPasajero(@Param("pasajeroId") Long pasajeroId,

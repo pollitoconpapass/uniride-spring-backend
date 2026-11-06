@@ -39,6 +39,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RutaService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private final RutaRepository rutaRepository;
     private final RutaMapper rutaMapper;
     private final UsuarioService usuarioService;
@@ -87,6 +90,7 @@ public class RutaService {
      */
     @Transactional
     public Page<RutaRespuesta> listarMisRutas(EstadoRuta estado, int page, int size) {
+        com.uniride.util.Paginacion.validar(page, size);
         Usuario conductor = usuarioService.usuarioActual();
         PageRequest pageable = PageRequest.of(
                 page, size, Sort.by("fechaCreacion").descending());
@@ -125,7 +129,7 @@ public class RutaService {
         Map<Long, List<Viaje>> viajesPorRuta = viajeRepository
                 .buscarTodosPorConductor(conductorId).stream()
                 .collect(Collectors.groupingBy(viaje -> viaje.getRuta().getId()));
-        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        LocalDateTime ahora = LocalDateTime.now(clock);
         List<Ruta> modificadas = new ArrayList<>();
 
         for (Ruta ruta : rutas) {
@@ -190,9 +194,11 @@ public class RutaService {
                 || !Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia())
                 || !Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada());
 
+        // Bloquear antes de contar: aceptación solo toma la fila Viaje.
+        List<Viaje> viajesBloqueados = cambioRelevante ? viajeRepository.findByRutaId(id) : List.of();
         Map<Long, Usuario> pasajerosAfectados = new LinkedHashMap<>();
         if (cambioRelevante) {
-            for (Viaje viaje : viajeRepository.findByRutaId(id)) {
+            for (Viaje viaje : viajesBloqueados) {
                 if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
                     throw new BusinessException("No puedes cambiar detalles de una ruta con viajes en progreso");
                 }
@@ -246,7 +252,7 @@ public class RutaService {
         }
 
         List<Viaje> viajes = viajeRepository.findByRutaId(id);
-        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        LocalDateTime ahora = LocalDateTime.now(clock);
 
         // Nunca interrumpir un viaje que ya está en ejecución.
         if (viajes.stream().anyMatch(v -> v.getEstado() == EstadoViaje.EN_PROGRESO)) {

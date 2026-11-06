@@ -9,8 +9,10 @@ import jakarta.validation.constraints.Pattern;
 
 public record RegistroRequest(
         @NotBlank(message = "El correo es obligatorio")
+        @jakarta.validation.constraints.Email(message = "El correo no tiene un formato válido")
         @Pattern(regexp = ValidacionUtil.CORREO_REGEX,
                 message = "El correo debe ser institucional y contener .edu después del @")
+        @jakarta.validation.constraints.Size(max = 254)
         String correo,
         @NotBlank(message = "La contraseña es obligatoria")
         @Pattern(regexp = ValidacionUtil.CONTRASENA_REGEX,
@@ -27,4 +29,7 @@ public record RegistroRequest(
         Rol rol,
         @AssertTrue(message = "Debes aceptar los términos y condiciones")
         boolean aceptaTerminos) {
+    public RegistroRequest {
+        correo = com.uniride.util.ValidacionUtil.normalizarCorreo(correo);
+    }
 }

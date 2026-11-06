@@ -1,6 +1,15 @@
 # Diagramas
 
-Aquí se encuentran todos los diagramas relacionados al proyecto.
+Diagramas conceptuales históricos del diseño inicial. No representan el esquema
+físico vigente: Solicitud referencia Viaje mediante `viaje_id`, Perfil tiene PK
+`id` y FK única `usuario_id`, fecha/hora pertenecen a Viaje, Ruta utiliza
+`puntos_referencia` y admite `ELIMINADA`. Los diagramas originales tampoco incluyen
+las especializaciones persistentes de rol ni el outbox.
+
+Para implementación actual consultar las entidades y
+[migraciones V1..V6](operacion-hardening.md#base-de-datos),
+[modelo de roles](modelo-roles.md) y [contratos HTTP](endpoints.md).
+Estos diagramas se conservan como trazabilidad del diseño, no como scripts de BD.
 
 ## Diagrama de Clases
 

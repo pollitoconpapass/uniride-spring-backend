@@ -67,10 +67,16 @@ public class Usuario {
     @Column(name = "codigo_verificacion_expiracion")
     private LocalDateTime codigoVerificacionExpiracion;
 
+    @Column(nullable = false, columnDefinition = "integer default 0")
+    private int intentosOtp;
+
+    private LocalDateTime otpBloqueadoHasta;
+    private LocalDateTime ultimoEnvioOtp;
+
     @PrePersist
     void antesDeGuardar() {
         if (fechaRegistro == null) {
-            fechaRegistro = LocalDateTime.now(ZoneId.systemDefault());
+            fechaRegistro = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

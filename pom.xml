@@ -35,11 +35,26 @@
         <spring-dotenv.version>5.1.0</spring-dotenv.version>
 		<springdoc.version>3.1.1</springdoc.version>
         <openpdf.version>1.3.43</openpdf.version>
-        <pdfbox.version>3.0.3</pdfbox.version>
+        <pdfbox.version>3.0.8</pdfbox.version>
+        <!-- Parches de seguridad contrastados con avisos oficiales; conservar Boot 4.1.1. -->
+        <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+        <jackson-bom.version>3.1.7</jackson-bom.version>
+        <tomcat.version>11.0.27</tomcat.version>
+        <bouncycastle.version>1.85</bouncycastle.version>
+        <test.excludedGroups>postgres</test.excludedGroups>
     </properties>
 
 	<dependencyManagement>
 		<dependencies>
+            <dependency>
+                <groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId><artifactId>bcpkix-jdk18on</artifactId><version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId><artifactId>bcutil-jdk18on</artifactId><version>${bouncycastle.version}</version>
+            </dependency>
 			<dependency>
 				<groupId>me.paulschwarz</groupId>
 				<artifactId>spring-dotenv-bom</artifactId>
@@ -51,6 +66,19 @@
 	</dependencyManagement>
 
 	<dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.googlecode.libphonenumber</groupId>
+            <artifactId>libphonenumber</artifactId>
+            <version>9.0.42</version>
+        </dependency>
 		<dependency>
 			<groupId>org.springframework.security</groupId>
 			<artifactId>spring-security-test</artifactId>
@@ -160,6 +188,14 @@
 		<plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <systemPropertyVariables><user.timezone>America/Lima</user.timezone></systemPropertyVariables>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <annotationProcessorPaths>
@@ -185,6 +221,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
+                    <mainClass>com.uniride.UnirideApplication</mainClass>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>
@@ -195,5 +232,16 @@
             </plugin>
         </plugins>
 	</build>
+
+    <profiles>
+        <profile>
+            <id>postgres-it</id>
+            <properties><test.excludedGroups>none</test.excludedGroups></properties>
+            <build><plugins><plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId>
+                <configuration><groups>postgres</groups></configuration>
+            </plugin></plugins></build>
+        </profile>
+    </profiles>
 
 </project>

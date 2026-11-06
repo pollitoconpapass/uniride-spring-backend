@@ -50,6 +50,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SolicitudService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private static final List<EstadoSolicitud> ESTADOS_BLOQUEANTES =
             List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA);
 
@@ -152,7 +155,7 @@ public class SolicitudService {
     public SolicitudesHistorialResumenRespuesta historialMisSolicitudes(int page, int size) {
         validarPaginacion(page, size);
         Usuario pasajero = usuarioService.usuarioActual();
-        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        LocalDateTime ahora = LocalDateTime.now(clock);
         Page<Solicitud> pagina = solicitudRepository.buscarHistorialUS13(
                 pasajero.getId(), ahora.toLocalDate(), ahora.toLocalTime(),
                 List.of(EstadoViaje.CANCELADO, EstadoViaje.COMPLETADO, EstadoViaje.VENCIDO),
@@ -237,6 +240,7 @@ public class SolicitudService {
     @Transactional(readOnly = true)
     public Page<SolicitudRespuesta> listarRecibidas(Long viajeId, EstadoSolicitud estado,
             int page, int size) {
+        validarPaginacion(page, size);
         Usuario conductor = usuarioService.usuarioActual();
         viajeRepository.findByIdAndRutaConductorId(viajeId, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
@@ -246,9 +250,14 @@ public class SolicitudService {
                 ? solicitudRepository.findByViajeIdOrderByFechaCreacionDesc(viajeId, pageable)
                 : solicitudRepository.buscarPorViajeYEstado(viajeId, estado, pageable);
 
+        List<Long> idsPasajero = solicitudes.getContent().stream()
+                .map(s -> s.getPasajero().getId()).distinct().toList();
+        var perfiles = idsPasajero.isEmpty() ? Map.<Long,Perfil>of()
+                : perfilRepository.findByUsuarioIdIn(idsPasajero).stream().collect(
+                        Collectors.toMap(p -> p.getUsuario().getId(), p -> p));
+
         return solicitudes.map(solicitud -> {
-            Perfil perfil = perfilRepository.findByUsuarioId(solicitud.getPasajero().getId())
-                    .orElse(null);
+            Perfil perfil = perfiles.get(solicitud.getPasajero().getId());
             return solicitudMapper.toSolicitudRespuesta(solicitud, null,
                     perfil == null ? null : perfil.getCarrera(),
                     perfil == null ? null : perfil.getDistrito());
@@ -385,7 +394,7 @@ public class SolicitudService {
 
     private void validarSalidaFutura(Viaje viaje) {
         LocalDateTime salida = LocalDateTime.of(viaje.getFecha(), viaje.getHora());
-        if (!salida.isAfter(LocalDateTime.now(ZoneId.systemDefault()))) {
+        if (!salida.isAfter(LocalDateTime.now(clock))) {
             throw new BusinessException("El viaje ya ocurrió");
         }
     }

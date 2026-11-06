@@ -45,7 +45,12 @@ import org.springframework.web.multipart.MultipartFile;
 public class HorarioAcademicoService {
 
     private static final long TAMANO_MAXIMO_BYTES = 1024L * 1024L;
-    private static final int OCR_DPI = 300;
+    private static final int OCR_DPI = 200;
+    private static final int MAX_PAGINAS = 10;
+    private static final long MAX_PIXELES_PAGINA = 8_000_000;
+    private static final int MAX_TEXTO = 1_000_000;
+    private final java.util.concurrent.Semaphore procesadoresPdf = new java.util.concurrent.Semaphore(2);
+    @Value("${uniride.ocr.timeout-segundos:60}") private int timeoutSegundos = 60;
     private static final List<String> RUTAS_TESSDATA = List.of(
             "/opt/homebrew/share/tessdata",
             "/opt/homebrew/share/tesseract/5/tessdata",
@@ -58,7 +63,7 @@ public class HorarioAcademicoService {
     private static final Pattern PATRON_HORARIO =
             Pattern.compile("(\\d{1,2}:\\d{2})\\s*-\\s*(\\d{1,2}:\\d{2})");
     private static final Pattern PATRON_CODIGO_CURSO = Pattern.compile(
-            "\\s*-\\s*(?=[A-Za-z0-9?]*\\d)[A-Za-z0-9?]{4,}\\s*$");
+            "-\\s*(?=[A-Za-z0-9?]*\\d)[A-Za-z0-9?]{4,}\\s*$");
     private static final Pattern PREFIJO_DIA = Pattern.compile(
             "(?i)^\\s*(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\\s+\\d{1,2}\\b");
     private static final DateTimeFormatter FORMATO_HORA = DateTimeFormatter.ofPattern("H:mm");
@@ -69,6 +74,8 @@ public class HorarioAcademicoService {
     private final CursoMapper cursoMapper;
     private final UsuarioService usuarioService;
     private final NotificacionService notificacionService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<HorarioAcademicoService> self;
     private final String idiomaOcr;
     private final String rutaTessdataConfigurada;
 
@@ -93,6 +100,7 @@ public class HorarioAcademicoService {
         if (requests == null || requests.isEmpty()) {
             throw new CamposInvalidosException("Debes ingresar al menos un curso");
         }
+        if (requests.size() > 500) throw new CamposInvalidosException("No se permiten más de 500 cursos por importación");
 
         Usuario usuario = usuarioService.usuarioActual();
         HorarioAcademico horario = obtenerOCrearHorario(usuario);
@@ -120,6 +128,7 @@ public class HorarioAcademicoService {
 
     @Transactional(readOnly = true)
     public Page<CursoRespuesta> listarCursos(Pageable pageable) {
+        com.uniride.util.Paginacion.validar(pageable.getPageNumber(), pageable.getPageSize());
         Usuario usuario = usuarioService.usuarioActual();
         return cursoRepository.buscarPorUsuario(usuario.getId(), pageable)
                 .map(cursoMapper::toCursoRespuesta);
@@ -138,7 +147,6 @@ public class HorarioAcademicoService {
         cursoRepository.delete(curso);
     }
 
-    @Transactional
     public ArchivoRespuesta subirArchivo(MultipartFile archivo) {
         if (archivo == null || archivo.isEmpty()) {
             throw new CamposInvalidosException("Debes adjuntar un archivo");
@@ -156,16 +164,17 @@ public class HorarioAcademicoService {
             throw new CamposInvalidosException("El archivo no puede superar un tamaño de 1 MB");
         }
 
+        String texto = "pdf".equals(formato) ? leerPdf(archivo) : leerTxt(archivo);
+        // La extracción aislada no retiene una conexión ni bloqueos de base de datos.
+        return (self == null ? this : self.getObject()).guardarImportacion(archivo, formato, texto);
+    }
+
+    @Transactional
+    public ArchivoRespuesta guardarImportacion(MultipartFile archivo, String formato, String texto) {
         Usuario usuario = usuarioService.usuarioActual();
         HorarioAcademico horario = obtenerOCrearHorario(usuario);
-
-        ImportacionArchivo importacion;
-
-        if ("pdf".equals(formato)) {
-            importacion = importarCursosDesdePdf(archivo, horario);
-        } else {
-            importacion = importarCursosDesdeTxt(archivo, horario);
-        }
+        String nombreArchivo = archivo.getOriginalFilename();
+        ImportacionArchivo importacion = importarCursosDesdeTexto(texto, horario);
 
         archivoCargaRepository.save(ArchivoCarga.builder()
                 .horarioAcademico(horario)
@@ -247,9 +256,7 @@ public class HorarioAcademicoService {
         return "";
     }
 
-    private ImportacionArchivo importarCursosDesdePdf(
-            MultipartFile archivo,
-            HorarioAcademico horario) {
+    private String leerPdf(MultipartFile archivo) {
 
         String texto;
 
@@ -266,19 +273,18 @@ public class HorarioAcademicoService {
                             + "ni texto reconocible por OCR");
         }
 
-        return importarCursosDesdeTexto(texto, horario);
+        return texto;
     }
 
-    private ImportacionArchivo importarCursosDesdeTxt(
-            MultipartFile archivo,
-            HorarioAcademico horario) {
+    private String leerTxt(MultipartFile archivo) {
 
         String texto;
 
         try {
-            texto = new String(
-                    archivo.getBytes(),
-                    StandardCharsets.UTF_8);
+            texto = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(archivo.getBytes())).toString();
         } catch (IOException e) {
             throw new BusinessException(
                     "No se pudo leer el archivo TXT adjuntado");
@@ -289,7 +295,12 @@ public class HorarioAcademicoService {
                     "El archivo TXT está vacío");
         }
 
-        return importarCursosDesdeTexto(texto, horario);
+        if (texto.startsWith("%PDF-") || texto.length() > MAX_TEXTO
+                || texto.chars().anyMatch(c -> c == 0 || (c < 32 && c != 9 && c != 10 && c != 13))) {
+            throw new CamposInvalidosException("El TXT debe contener texto UTF-8 válido");
+        }
+
+        return texto;
     }
 
     private ImportacionArchivo importarCursosDesdeTexto(
@@ -383,10 +394,118 @@ public class HorarioAcademicoService {
     }
 
     String extraerTexto(byte[] bytes) {
+        validarBytesPdf(bytes);
+        if (!procesadoresPdf.tryAcquire()) throw new com.uniride.exceptions.DemasiadasSolicitudesException();
+        java.nio.file.Path carpeta = null;
+        Process proceso = null;
+        try {
+            carpeta = java.nio.file.Files.createTempDirectory("uniride-pdf-");
+            var entrada = carpeta.resolve("entrada.pdf");
+            var salida = carpeta.resolve("salida.txt");
+            java.nio.file.Files.write(entrada, bytes);
+            List<String> comando = new ArrayList<>();
+            comando.add(java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString());
+            comando.add("-Xmx256m"); comando.add("-Djava.awt.headless=true");
+            var origen = new org.springframework.boot.system.ApplicationHome(HorarioAcademicoService.class).getSource();
+            if (origen != null && origen.isFile() && origen.getName().endsWith(".jar")) {
+                comando.add("-Dloader.main=com.uniride.ocr.PdfWorker");
+                comando.add("-cp"); comando.add(origen.getAbsolutePath());
+                comando.add("org.springframework.boot.loader.launch.PropertiesLauncher");
+            } else {
+                comando.add("-cp"); comando.add(System.getProperty("java.class.path"));
+                comando.add("com.uniride.ocr.PdfWorker");
+            }
+            comando.add(entrada.toString()); comando.add(salida.toString());
+            comando.add(idiomaOcr == null ? "spa+eng" : idiomaOcr);
+            comando.add(rutaTessdataConfigurada == null ? "" : rutaTessdataConfigurada);
+            proceso = new ProcessBuilder(comando).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!proceso.waitFor(timeoutSegundos, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new CamposInvalidosException("El PDF superó el tiempo máximo de procesamiento");
+            }
+            if (proceso.exitValue() == 3) throw new CamposInvalidosException("El PDF supera los límites de procesamiento");
+            if (proceso.exitValue() != 0 || !java.nio.file.Files.exists(salida)) {
+                throw new BusinessException("No se pudo leer el PDF o supera los límites de procesamiento");
+            }
+            if (java.nio.file.Files.size(salida) > MAX_TEXTO * 4L) {
+                throw new CamposInvalidosException("El PDF contiene demasiado texto");
+            }
+            return java.nio.file.Files.readString(salida, StandardCharsets.UTF_8);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); throw new BusinessException("Procesamiento PDF interrumpido");
+        } catch (IOException e) {
+            throw new BusinessException("No se pudo procesar el PDF");
+        } finally {
+            if (proceso != null && proceso.isAlive()) {
+                proceso.descendants().forEach(ProcessHandle::destroyForcibly);
+                proceso.destroyForcibly();
+                try { proceso.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            if (carpeta != null) {
+                try {
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("entrada.pdf"));
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("salida.txt"));
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("pagina.png"));
+                    java.nio.file.Files.deleteIfExists(carpeta.resolve("pagina.txt"));
+                    java.nio.file.Files.deleteIfExists(carpeta);
+                } catch (IOException e) { /* El SO podrá limpiar temporales tras liberar el proceso. */ }
+            }
+            procesadoresPdf.release();
+        }
+    }
+
+    private void validarBytesPdf(byte[] bytes) {
+        if (bytes == null || bytes.length > TAMANO_MAXIMO_BYTES || bytes.length < 5
+                || !new String(bytes, 0, 5, StandardCharsets.US_ASCII).equals("%PDF-")) {
+            throw new CamposInvalidosException("El contenido no es un PDF válido de hasta 1 MB");
+        }
+    }
+
+    public String extraerTextoWorker(byte[] bytes) {
+        validarBytesPdf(bytes);
+        if (!procesadoresPdf.tryAcquire()) {
+            throw new com.uniride.exceptions.DemasiadasSolicitudesException();
+        }
         try (PDDocument documento = Loader.loadPDF(bytes)) {
+            if (documento.isEncrypted() || documento.getNumberOfPages() < 1
+                    || documento.getNumberOfPages() > MAX_PAGINAS) {
+                throw new CamposInvalidosException("El PDF debe tener entre 1 y 10 páginas y no estar cifrado");
+            }
+            long pixeles = 0;
+            for (var pagina : documento.getPages()) {
+                double ancho = pagina.getMediaBox().getWidth() * pagina.getUserUnit() * OCR_DPI / 72.0;
+                double alto = pagina.getMediaBox().getHeight() * pagina.getUserUnit() * OCR_DPI / 72.0;
+                double area = Math.ceil(ancho) * Math.ceil(alto);
+                if (!Double.isFinite(area) || ancho <= 0 || alto <= 0 || area > MAX_PIXELES_PAGINA) {
+                    throw new CamposInvalidosException("La resolución de la página PDF supera el límite permitido");
+                }
+                pixeles += (long) area;
+                if (pixeles > 40_000_000) throw new CamposInvalidosException("El PDF supera el límite total de píxeles");
+                // Acotar streams descomprimidos antes de pasarlos al intérprete de contenido.
+                var contenidos = pagina.getContentStreams();
+                while (contenidos.hasNext()) {
+                    try (var stream = contenidos.next().createInputStream()) {
+                        if (stream.readNBytes(2_000_001).length > 2_000_000) {
+                            throw new CamposInvalidosException("El contenido expandido del PDF supera el límite");
+                        }
+                    }
+                }
+            }
             PDFTextStripper stripper = new PDFTextStripper();
             stripper.setSortByPosition(true);
-            String texto = stripper.getText(documento);
+            java.io.StringWriter salida = new java.io.StringWriter() {
+                @Override public void write(String str, int off, int len) {
+                    if (getBuffer().length() + len > MAX_TEXTO) throw new CamposInvalidosException("El PDF contiene demasiado texto");
+                    super.write(str, off, len);
+                }
+                @Override public void write(char[] buf, int off, int len) {
+                    if (getBuffer().length() + len > MAX_TEXTO) throw new CamposInvalidosException("El PDF contiene demasiado texto");
+                    super.write(buf, off, len);
+                }
+            };
+            stripper.writeText(documento, salida);
+            String texto = salida.toString();
             if (texto != null && !texto.isBlank()) {
                 return texto;
             }
@@ -394,22 +513,57 @@ public class HorarioAcademicoService {
         } catch (IOException e) {
             throw new BusinessException("No se pudo leer el archivo PDF adjuntado");
         } catch (TesseractException e) {
-            throw new BusinessException("No se pudo reconocer el PDF con OCR: " + e.getMessage());
+            throw new BusinessException("No se pudo reconocer el PDF con OCR");
         } catch (UnsatisfiedLinkError e) {
             throw new BusinessException(
                     "El motor de OCR (Tesseract) no está disponible en esta máquina");
+        } finally {
+            procesadoresPdf.release();
         }
     }
 
     private String ocrDocumento(PDDocument documento) throws IOException, TesseractException {
-        Tesseract tesseract = crearTesseract();
+        boolean usaCli = java.nio.file.Files.isExecutable(java.nio.file.Path.of("/usr/bin/tesseract"));
+        Tesseract tesseract = usaCli ? null : crearTesseract();
         PDFRenderer renderer = new PDFRenderer(documento);
         StringBuilder texto = new StringBuilder();
+        long limite = System.nanoTime() + java.time.Duration.ofSeconds(60).toNanos();
         for (int pagina = 0; pagina < documento.getNumberOfPages(); pagina++) {
+            if (System.nanoTime() > limite) throw new CamposInvalidosException("El OCR superó el tiempo permitido");
             BufferedImage imagen = renderer.renderImageWithDPI(pagina, OCR_DPI);
-            texto.append(tesseract.doOCR(imagen)).append('\n');
+            try { texto.append(usaCli ? ocrConCli(imagen) : tesseract.doOCR(imagen)).append('\n'); }
+            finally { imagen.flush(); }
+            if (texto.length() > MAX_TEXTO) throw new CamposInvalidosException("El PDF contiene demasiado texto");
         }
         return texto.toString();
+    }
+
+    private String ocrConCli(BufferedImage imagen) throws IOException {
+        // Solo el worker establece este directorio generado por el padre, nunca el usuario.
+        var carpeta = java.nio.file.Path.of(System.getProperty("uniride.ocr.tempdir"));
+        var entrada = carpeta.resolve("pagina.png");
+        var salida = carpeta.resolve("pagina.txt");
+        Process proceso = null;
+        try {
+            javax.imageio.ImageIO.write(imagen, "png", entrada.toFile());
+            proceso = new ProcessBuilder("/usr/bin/tesseract", entrada.toString(), "stdout",
+                    "--tessdata-dir", resolverRutaTessdata(), "-l",
+                    idiomaOcr == null || idiomaOcr.isBlank() ? "spa+eng" : idiomaOcr)
+                    .redirectOutput(salida.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!proceso.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || proceso.exitValue() != 0) {
+                throw new BusinessException("No se pudo reconocer el PDF con OCR");
+            }
+            if (java.nio.file.Files.size(salida) > MAX_TEXTO * 4L) {
+                throw new CamposInvalidosException("El PDF contiene demasiado texto");
+            }
+            return java.nio.file.Files.readString(salida, StandardCharsets.UTF_8);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); throw new BusinessException("OCR interrumpido");
+        } finally {
+            if (proceso != null && proceso.isAlive()) proceso.destroyForcibly();
+            java.nio.file.Files.deleteIfExists(entrada);
+            java.nio.file.Files.deleteIfExists(salida);
+        }
     }
 
     private Tesseract crearTesseract() {
@@ -464,7 +618,11 @@ public class HorarioAcademicoService {
         String diaActual = null;
         String nombrePendiente = null;
 
-        for (String lineaCruda : texto.split("\\R")) {
+        if (texto.length() > MAX_TEXTO) throw new CamposInvalidosException("El texto supera el límite permitido");
+        List<String> lineas = Pattern.compile("\\R").splitAsStream(texto).limit(2001).toList();
+        if (lineas.size() > 2000) throw new CamposInvalidosException("El archivo supera 2000 líneas");
+        for (String lineaCruda : lineas) {
+            if (lineaCruda.length() > 2000) throw new CamposInvalidosException("Una línea supera 2000 caracteres");
             String linea = normalizarLinea(lineaCruda);
             if (linea.isEmpty()) {
                 continue;
@@ -485,7 +643,7 @@ public class HorarioAcademicoService {
                 if (nombre.isEmpty()) {
                     nombre = nombrePendiente;
                 }
-                if (nombre.isEmpty()) {
+                if (nombre == null || nombre.isEmpty()) {
                     continue;
                 }
 
@@ -496,6 +654,7 @@ public class HorarioAcademicoService {
                         continue;
                     }
                     cursos.add(new CursoParseado(nombre, diaActual, horaInicio, horaFin));
+                    if (cursos.size() > 500) throw new CamposInvalidosException("No se permiten más de 500 cursos por importación");
                     nombrePendiente = null;
                 } catch (DateTimeParseException e) {
                     continue;
@@ -522,7 +681,11 @@ public class HorarioAcademicoService {
         String limpio = nombre.replaceAll("^[^\\p{L}\\p{N}]+", "").trim();
         limpio = PREFIJO_DIA.matcher(limpio).replaceFirst("").trim();
         limpio = PATRON_CODIGO_CURSO.matcher(limpio).replaceFirst("").trim();
-        return limpio.replaceAll("[^\\p{L}\\p{N}]+$", "").trim();
+        int fin = limpio.length();
+        while (fin > 0 && !Character.isLetterOrDigit(limpio.codePointBefore(fin))) {
+            fin -= Character.charCount(limpio.codePointBefore(fin));
+        }
+        return limpio.substring(0, fin).trim();
     }
 
     private String capitalizar(String texto) {
