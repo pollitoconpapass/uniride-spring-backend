@@ -15,10 +15,13 @@ public interface RutaRepository extends JpaRepository<Ruta, Long> {
     Page<Ruta> findByConductorId(Long conductorId, Pageable pageable);
 
     // US09: obtener todas las rutas del conductor para recalcular estados antes de filtrar.
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT r FROM Ruta r WHERE r.conductor.id = :conductorId ORDER BY r.id")
     List<Ruta> findByConductorId(Long conductorId);
 
     Page<Ruta> findByConductorIdAndEstadoNot(Long conductorId, EstadoRuta estado, Pageable pageable);
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     Optional<Ruta> findByIdAndConductorId(Long id, Long conductorId);
 
     boolean existsByConductorId(Long conductorId);

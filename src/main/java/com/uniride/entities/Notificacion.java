@@ -56,7 +56,7 @@ public class Notificacion {
     @PrePersist
     void antesDeGuardar() {
         if (fechaEnvio == null) {
-            fechaEnvio = LocalDateTime.now(ZoneId.systemDefault());
+            fechaEnvio = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

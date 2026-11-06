@@ -1,4 +1,6 @@
 spring:
+  flyway:
+    enabled: false # Suite rápida H2. PostgreSQL valida la cadena real de migraciones.
   datasource:
     url: jdbc:h2:mem:uniride;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
     driver-class-name: org.h2.Driver

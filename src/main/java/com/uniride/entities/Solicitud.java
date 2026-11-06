@@ -59,6 +59,9 @@ public class Solicitud {
     @Column(name = "motivo_rechazo")
     private String motivoRechazo;
 
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private boolean afectadaPorCancelacionViaje;
+
     @Column(name = "fecha_creacion", nullable = false)
     private LocalDateTime fechaCreacion;
 
@@ -75,7 +78,7 @@ public class Solicitud {
             estado = EstadoSolicitud.PENDIENTE;
         }
         if (fechaCreacion == null) {
-            fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
+            fechaCreacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

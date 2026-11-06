@@ -40,7 +40,7 @@ public class Pasajero {
     @PrePersist
     void antesDeGuardar() {
         if (fechaAlta == null) {
-            fechaAlta = LocalDateTime.now();
+            fechaAlta = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

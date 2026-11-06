@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    url: ${UNIRIDE_TEST_PG_URL:jdbc:postgresql://localhost:55432/uniride_audit}
+    driver-class-name: org.postgresql.Driver
+    username: ${UNIRIDE_TEST_PG_USER:postgres}
+    password: ${UNIRIDE_TEST_PG_PASSWORD:uniride_ephemeral_test_only}
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect

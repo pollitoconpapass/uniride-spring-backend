@@ -1,5 +1,10 @@
 # Cierre unificado del punto 11 — Auditoría transversal UniRide
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 **Rama fuente:** `development` de `pollitoconpapass/uniride-spring-backend`. **Commit verificado:** `e81c0c1b71930d1d37a30196deba6b95b1382ab2` (PR #48, 11.3).
 
 ## Hallazgos confirmados y correcciones del kit

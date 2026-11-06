@@ -11,6 +11,8 @@ public interface PerfilRepository extends JpaRepository<Perfil, Long> {
 
     Optional<Perfil> findByUsuarioId(Long usuarioId);
 
+    List<Perfil> findByUsuarioIdIn(java.util.Collection<Long> usuarioIds);
+
     boolean existsByUsuarioId(Long usuarioId);
 
     @Query("SELECT p FROM Perfil p WHERE p.distrito = :distrito")

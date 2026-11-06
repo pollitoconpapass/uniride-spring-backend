@@ -40,6 +40,7 @@ public class HorarioAcademicoController {
     public ResponseEntity<Page<CursoRespuesta>> listarCursos(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
+        com.uniride.util.Paginacion.validar(page, size);
         PageRequest pageable = PageRequest.of(page, size, Sort.by("dia").ascending());
         return ResponseEntity.ok(horarioAcademicoService.listarCursos(pageable));
     }

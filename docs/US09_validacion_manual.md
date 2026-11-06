@@ -1,5 +1,10 @@
 # US09 — Validación manual de estados y listado de rutas
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Preparación
 
 1. Actualiza la rama de desarrollo y aplica el kit US09. No requiere SQL nuevo.

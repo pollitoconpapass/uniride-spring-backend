@@ -1,5 +1,10 @@
 # Cierre 11.3 — Consistencia transaccional y validación de estados
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 **Base confirmada:** `development` SHA `09f3ef2d7fed6457d2a72ef8cf7addfa1b110efd` (PR #47).
 
 ## Fallos detectados en el código

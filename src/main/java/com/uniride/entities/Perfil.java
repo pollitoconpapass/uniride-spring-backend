@@ -85,11 +85,11 @@ public class Perfil {
 
     @PrePersist
     void antesDeGuardar() {
-        fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
+        fechaActualizacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
     }
 
     @PreUpdate
     void antesDeActualizar() {
-        fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
+        fechaActualizacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
     }
 }

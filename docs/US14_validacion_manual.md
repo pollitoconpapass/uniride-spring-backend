@@ -1,5 +1,10 @@
 # Validación manual de US14
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 1. Iniciar sesión como `CONDUCTOR` (rol activo) y publicar dos rutas, con viajes programados. Como `PASAJERO`, enviar dos solicitudes a un viaje de la primera ruta y dejar la segunda ruta sin interesados.
 2. Con el token del conductor, llamar `GET /api/solicitudes/recibidas/por-ruta`. Verificar que se incluyan **ambas** rutas y que la primera agrupe las dos solicitudes. La segunda debe incluir `solicitudes: []` y una recomendación para revisar la ruta.
 3. Aplicar `?estado=PENDIENTE&page=0&size=10` y comprobar que el filtro no muestre solicitudes con otro estado. La paginación es por rutas.

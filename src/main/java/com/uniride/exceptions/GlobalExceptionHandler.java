@@ -27,6 +27,38 @@ public class GlobalExceptionHandler {
         this.mensajeService = mensajeService;
     }
 
+    @ExceptionHandler(DemasiadasSolicitudesException.class)
+    public ResponseEntity<ErrorRespuesta> demasiadosIntentos(DemasiadasSolicitudesException e) {
+        return ResponseEntity.status(429).header("Retry-After", "900")
+                .body(new ErrorRespuesta(e.getMessage(), null));
+    }
+
+    @ExceptionHandler({org.springframework.web.servlet.resource.NoResourceFoundException.class,
+            org.springframework.web.servlet.NoHandlerFoundException.class})
+    public ResponseEntity<ErrorRespuesta> rutaInexistente(Exception e) {
+        return ResponseEntity.status(404).body(new ErrorRespuesta("Recurso no encontrado", null));
+    }
+
+    @ExceptionHandler({org.springframework.web.bind.ServletRequestBindingException.class,
+            org.springframework.web.multipart.support.MissingServletRequestPartException.class,
+            org.springframework.web.multipart.MultipartException.class})
+    public ResponseEntity<ErrorRespuesta> parametroFaltante(Exception e) {
+        return ResponseEntity.badRequest().body(new ErrorRespuesta("Faltan parámetros obligatorios de la solicitud", null));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorRespuesta> metodoNoSoportado(org.springframework.web.HttpRequestMethodNotSupportedException e) {
+        return ResponseEntity.status(405).allow(e.getSupportedHttpMethods() == null
+                ? new org.springframework.http.HttpMethod[0]
+                : e.getSupportedHttpMethods().toArray(org.springframework.http.HttpMethod[]::new))
+                .body(new ErrorRespuesta("Método HTTP no permitido", null));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ErrorRespuesta> tipoNoSoportado(Exception e) {
+        return ResponseEntity.status(415).body(new ErrorRespuesta("Tipo de contenido no soportado", null));
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ErrorRespuesta> recursoNoEncontrado(ResourceNotFoundException e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)

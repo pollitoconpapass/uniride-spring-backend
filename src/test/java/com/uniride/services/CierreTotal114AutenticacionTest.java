@@ -67,7 +67,7 @@ class CierreTotal114AutenticacionTest {
 
     @Test
     void cuentaYaVerificadaGuardaNotificacionAunqueRetorneConflicto() {
-        when(usuarios.findByCorreoInstitucional("lucia@upc.edu.pe")).thenReturn(Optional.of(usuario));
+        when(usuarios.bloquearPorCorreo("lucia@upc.edu.pe")).thenReturn(Optional.of(usuario));
         assertThatThrownBy(() -> servicio.verificarCodigo(
                 new VerificarCodigoRequest("lucia@upc.edu.pe", "123456")))
                 .isInstanceOf(BusinessException.class);

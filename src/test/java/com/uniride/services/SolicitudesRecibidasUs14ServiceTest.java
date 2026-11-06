@@ -59,15 +59,15 @@ class SolicitudesRecibidasUs14ServiceTest {
     void agrupaSolicitudesDeVariasRutasEIncluyeRutasSinInteresados() {
         Ruta primera = ruta(1L), segunda = ruta(2L);
         pagina(primera, segunda);
-        when(solicitudRepository.findByViajeRutaIdOrderByFechaCreacionDesc(1L))
+        when(solicitudRepository.findByViajeRutaIdInOrderByFechaCreacionDesc(List.of(1L, 2L)))
                 .thenReturn(List.of(solicitud(3L, primera), solicitud(4L, primera)));
-        when(solicitudRepository.findByViajeRutaIdOrderByFechaCreacionDesc(2L))
-                .thenReturn(List.of());
-        when(perfilRepository.findByUsuarioId(15L)).thenReturn(Optional.of(
-                Perfil.builder().carrera("Ingenieria de Software").distrito("Surco").build()));
+        when(perfilRepository.findByUsuarioIdIn(List.of(15L))).thenReturn(List.of(
+                Perfil.builder().usuario(pasajero).carrera("Ingenieria de Software").distrito("Surco").build()));
 
         var respuesta = service.porRuta(null, 0, 10);
 
+        verify(perfilRepository, times(1)).findByUsuarioIdIn(List.of(15L));
+        verify(perfilRepository, never()).findByUsuarioId(anyLong());
         assertThat(respuesta.rutas().getTotalElements()).isEqualTo(2);
         assertThat(respuesta.rutas().getContent().get(0).solicitudes()).hasSize(2);
         assertThat(respuesta.rutas().getContent().get(0).solicitudes().get(0).pasajeroCarrera())
@@ -89,7 +89,7 @@ class SolicitudesRecibidasUs14ServiceTest {
     void rutaSinSolicitudesOfreceRevisarDetalles() {
         Ruta r = ruta(4L);
         pagina(r);
-        when(solicitudRepository.findByViajeRutaIdOrderByFechaCreacionDesc(4L))
+        when(solicitudRepository.findByViajeRutaIdInOrderByFechaCreacionDesc(List.of(4L)))
                 .thenReturn(List.of());
         var respuesta = service.porRuta(null, 0, 10);
         assertThat(respuesta.rutas().getContent().get(0).mensaje()).contains("Revisa");
@@ -100,8 +100,8 @@ class SolicitudesRecibidasUs14ServiceTest {
     void filtroDeEstadoUsaConsultaCorrespondiente() {
         Ruta r = ruta(1L);
         pagina(r);
-        when(solicitudRepository.findByViajeRutaIdAndEstadoOrderByFechaCreacionDesc(
-                1L, EstadoSolicitud.ACEPTADA)).thenReturn(List.of());
+        when(solicitudRepository.findByViajeRutaIdInAndEstadoOrderByFechaCreacionDesc(
+                List.of(1L), EstadoSolicitud.ACEPTADA)).thenReturn(List.of());
         var respuesta = service.porRuta(EstadoSolicitud.ACEPTADA, 0, 10);
         assertThat(respuesta.mensaje()).contains("ACEPTADA");
         verify(solicitudRepository, never()).findByViajeRutaIdOrderByFechaCreacionDesc(anyLong());

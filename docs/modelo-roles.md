@@ -11,14 +11,15 @@
 
 ## Migración de base de datos
 
-1. Respaldar la base `uniride` (pgAdmin > Backup). No correr sobre producción sin ensayo previo.
-2. Actualizar la rama y ejecutar pruebas Java en H2 (`.\mvnw.cmd test`). Detener Spring Boot antes de modificar PostgreSQL.
-3. Ejecutar SQL `db/migrations/2026-11-02_00_us08_estado_eliminada.sql` para sincronizar US08 en otros equipos si fuera necesario.
-4. Ejecutar `db/migrations/2026-11-02_01_crear_perfiles_roles.sql` en pgAdmin Query Tool sobre la BD correcta. No es necesario iniciar Spring antes; el SQL crea tablas y FKs.
-5. Iniciar Spring Boot y comprobar que se conecta a PostgreSQL sin errores. Verificar que existen filas para todos los IDs históricos y que las FKs se crearon.
-6. Iniciar sesión y probar cambio de rol. Verificar que aparezca una fila en la tabla correspondiente sin duplicados.
+Seguir [operación y migraciones Flyway](operacion-hardening.md#base-de-datos):
+backup/restauración de una copia, revisión de colisiones y baseline explícito para
+bases existentes. La aplicación usa `ddl-auto=validate` y aplica V1..V6.
+Los scripts de `db/migrations/` son evidencia histórica y no se ejecutan además
+de Flyway. V2 incorpora los perfiles y V6 comprueba las FK por tabla incluso si
+otro esquema contiene restricciones con el mismo nombre.
 
-**Estos scripts están versionados, pero NO se ejecutan automáticamente.** Flyway/Liquibase se adoptarán posteriormente cuando se estabilice el baseline del esquema; no asumir que `ddl-auto=update` actualiza restricciones `CHECK`/FK.
+Después del arranque, verificar filas y FK con las consultas siguientes e iniciar
+sesión para probar cambio de rol sin duplicados.
 
 ## Consultas de verificación
 

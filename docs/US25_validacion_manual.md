@@ -1,5 +1,10 @@
 # UniRide - Validación US25: notificaciones por correo
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Alcance y condiciones previas
 
 Basado en la rama `development` commit `22a6ae5` (PR #44, US14 integrado). Esta corrección **no cambia endpoints, DTO, entidades ni esquema PostgreSQL**.

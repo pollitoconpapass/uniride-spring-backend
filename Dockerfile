@@ -10,7 +10,7 @@ COPY src ./src
 RUN mvn clean package
 
 
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:21-jre-noble
 
 WORKDIR /app
 
@@ -22,6 +22,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/*.jar app.jar
+
+RUN groupadd --system uniride && useradd --system --gid uniride uniride
+USER uniride
 
 EXPOSE 8080
 

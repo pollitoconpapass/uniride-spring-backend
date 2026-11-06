@@ -1,5 +1,10 @@
 # Validación del kit único de cierre del punto 11
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 ## Aplicación
 
 1. `git status` (debe estar limpio); `git switch development`; `git pull origin development`.

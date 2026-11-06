@@ -1,5 +1,10 @@
 # Corrección transversal 11.1 — Integridad de eliminación de viajes
 
+> Evidencia histórica de esta entrega. Para contratos y ejecución actuales prevalecen
+> [endpoints](endpoints.md) y [operación/Flyway](operacion-hardening.md).
+> El hardening añade plazos de 12 h, correo con reintentos y validación del esquema;
+> los estados pasados de una prueba requieren fixtures, no crear viajes pasados por HTTP.
+
 Base verificada: `development` commit `19fdae45b3a8cff151d88e860f0ba1a4aad07c93` (PR #45 US25).
 
 ## Problema reproducible

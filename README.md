@@ -13,6 +13,15 @@ Toda la documentación del proyecto se encuentra dentro de la carpeta `docs`. En
 - Lista de todos los endpoints presentes hasta el momento: `endpoints.md`
 - Diagramas relacionados con el código del proyecto: `diagramas.md`
 
+Hardening final: [trazabilidad de 29 historias y 49 mappings](docs/historias-endpoints.md),
+[operación, migraciones y seguridad](docs/operacion-hardening.md) e
+[informe de auditoría y pruebas](docs/auditoria-hardening.md).
+Se requiere Java 21. Ejecutar `mvnw.cmd clean test` y `mvnw.cmd verify` en Windows,
+o `./mvnw clean test` y `./mvnw verify` en Linux. PostgreSQL adicional:
+`mvnw.cmd -Ppostgres-it test` con una base temporal configurada según la guía.
+El backend aplica Flyway y valida el esquema; las bases existentes necesitan
+backup, revisión de colisiones y baseline explícito antes del primer arranque.
+
 ## Ejecución con Docker
 
 ### Requisitos
