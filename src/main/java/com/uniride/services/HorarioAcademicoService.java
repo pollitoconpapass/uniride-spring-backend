@@ -120,6 +120,7 @@ public class HorarioAcademicoService {
 
     @Transactional(readOnly = true)
     public Page<CursoRespuesta> listarCursos(Pageable pageable) {
+        com.uniride.util.Paginacion.validar(pageable.getPageNumber(), pageable.getPageSize());
         Usuario usuario = usuarioService.usuarioActual();
         return cursoRepository.buscarPorUsuario(usuario.getId(), pageable)
                 .map(cursoMapper::toCursoRespuesta);

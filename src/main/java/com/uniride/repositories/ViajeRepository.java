@@ -51,6 +51,15 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     long countByRutaConductorIdAndEstado(Long conductorId, EstadoViaje estado);
 
+    long countByEstadoAndCanceladoPorId(EstadoViaje estado, Long usuarioId);
+
+    @Query("SELECT COUNT(v) FROM Viaje v WHERE v.estado = :estado "
+            + "AND v.canceladoPor IS NOT NULL AND v.canceladoPor.id <> :usuarioId "
+            + "AND (v.ruta.conductor.id = :usuarioId OR EXISTS "
+            + "(SELECT s.id FROM Solicitud s WHERE s.viaje = v AND s.pasajero.id = :usuarioId))")
+    long contarCanceladosPorTerceros(@Param("usuarioId") Long usuarioId,
+            @Param("estado") EstadoViaje estado);
+
     @Query("SELECT v.dia, COUNT(v) FROM Viaje v "
             + "WHERE v.ruta.conductor.id = :conductorId AND v.estado = :estado "
             + "GROUP BY v.dia")

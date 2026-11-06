@@ -240,6 +240,7 @@ public class SolicitudService {
     @Transactional(readOnly = true)
     public Page<SolicitudRespuesta> listarRecibidas(Long viajeId, EstadoSolicitud estado,
             int page, int size) {
+        validarPaginacion(page, size);
         Usuario conductor = usuarioService.usuarioActual();
         viajeRepository.findByIdAndRutaConductorId(viajeId, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));

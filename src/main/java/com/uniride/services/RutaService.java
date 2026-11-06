@@ -90,6 +90,7 @@ public class RutaService {
      */
     @Transactional
     public Page<RutaRespuesta> listarMisRutas(EstadoRuta estado, int page, int size) {
+        com.uniride.util.Paginacion.validar(page, size);
         Usuario conductor = usuarioService.usuarioActual();
         PageRequest pageable = PageRequest.of(
                 page, size, Sort.by("fechaCreacion").descending());

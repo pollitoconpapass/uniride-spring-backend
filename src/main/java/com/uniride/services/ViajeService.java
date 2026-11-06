@@ -151,6 +151,7 @@ public class ViajeService {
 
     @Transactional
     public Page<ViajeRespuesta> listarPorRuta(Long rutaId, int page, int size) {
+        com.uniride.util.Paginacion.validar(page, size);
         Usuario conductor = usuarioService.usuarioActual();
         buscarRutaPropia(rutaId, conductor);
 

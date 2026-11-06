@@ -94,8 +94,8 @@ public class EstadisticasService {
         long realizados = viajeRepository.countByRutaConductorIdAndEstado(id, EstadoViaje.COMPLETADO)
                 + solicitudRepository.contarRealizadosComoPasajero(
                         id, EstadoSolicitud.ACEPTADA, EstadoViaje.COMPLETADO);
-        long canceladosPorMi = penalidadRepository.countByUsuarioIdAndViajeIsNotNull(id);
-        long canceladosPorTerceros = solicitudRepository.contarViajesCanceladosPorTerceros(
+        long canceladosPorMi = viajeRepository.countByEstadoAndCanceladoPorId(EstadoViaje.CANCELADO, id);
+        long canceladosPorTerceros = viajeRepository.contarCanceladosPorTerceros(
                 id, EstadoViaje.CANCELADO);
 
         if (realizados < VIAJES_MINIMOS) {
@@ -188,12 +188,14 @@ public class EstadisticasService {
 
         Map<Long, String> penalidades = penalidadesPorViaje(usuario.getId());
         List<FilaHistorial> filas = new ArrayList<>();
-        LocalDate hoy = LocalDate.now(clock);
+        java.time.LocalDateTime ahora = java.time.LocalDateTime.now(clock);
+        LocalDate hoy = ahora.toLocalDate();
 
         if (!tipoLimpio.equals("pasajero")) {
             List<Viaje> viajes = viajeRepository.historialComoConductor(
                     usuario.getId(), EstadoViaje.PROGRAMADO, hoy);
             for (Viaje viaje : viajes) {
+                if (esProgramadoFuturo(viaje, ahora)) continue;
                 if (!incluirEnRango(viaje.getFecha(), desde, hasta)) {
                     continue;
                 }
@@ -213,7 +215,7 @@ public class EstadisticasService {
                     usuario.getId(), List.of(EstadoSolicitud.ACEPTADA, EstadoSolicitud.CANCELADA));
             for (Solicitud solicitud : solicitudes) {
                 Viaje viaje = solicitud.getViaje();
-                if (viaje.getEstado() == EstadoViaje.PROGRAMADO && viaje.getFecha().isAfter(hoy)) {
+                if (esProgramadoFuturo(viaje, ahora)) {
                     continue;
                 }
                 if (!incluirEnRango(viaje.getFecha(), desde, hasta)) {
@@ -253,6 +255,11 @@ public class EstadisticasService {
                     (a, b) -> a + " | " + b);
         }
         return porViaje;
+    }
+
+    private boolean esProgramadoFuturo(Viaje viaje, java.time.LocalDateTime ahora) {
+        return viaje.getEstado() == EstadoViaje.PROGRAMADO
+                && java.time.LocalDateTime.of(viaje.getFecha(), viaje.getHora()).isAfter(ahora);
     }
 
     private boolean incluirEnRango(LocalDate fecha, LocalDate desde, LocalDate hasta) {
