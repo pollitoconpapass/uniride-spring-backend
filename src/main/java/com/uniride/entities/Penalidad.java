@@ -56,7 +56,7 @@ public class Penalidad {
     @PrePersist
     void prePersist() {
         if (fecha == null) {
-            fecha = LocalDateTime.now(ZoneId.systemDefault());
+            fecha = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

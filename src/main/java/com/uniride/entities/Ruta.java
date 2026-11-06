@@ -70,7 +70,7 @@ public class Ruta {
             estado = EstadoRuta.ACTIVA;
         }
         if (fechaCreacion == null) {
-            fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
+            fechaCreacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

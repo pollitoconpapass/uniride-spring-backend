@@ -37,6 +37,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 @Service
 public class ViajeService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private static final Duration PLAZO_CONFIRMACION = Duration.ofHours(12);
     private static final Duration UMBRAL_RECORDATORIO = Duration.ofHours(20);
     private static final Duration UMBRAL_CANCELACION_SIN_PENALIDAD = Duration.ofHours(24);
@@ -70,9 +73,7 @@ public class ViajeService {
             throw new BusinessException("No se pueden crear viajes en una ruta eliminada");
         }
 
-        if (request.fecha().isBefore(LocalDate.now(ZoneId.systemDefault()))) {
-            throw new CamposInvalidosException("La fecha del viaje no puede ser en el pasado");
-        }
+        validarNuevaSalida(request);
 
         Viaje viaje = viajeMapper.toViaje(request);
         viaje.setRuta(ruta);
@@ -105,7 +106,7 @@ public class ViajeService {
             throw new CamposInvalidosException("La fecha y la hora son obligatorias");
         }
         LocalDateTime nuevaSalida = LocalDateTime.of(request.fecha(), request.hora());
-        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        LocalDateTime ahora = LocalDateTime.now(clock);
         if (!nuevaSalida.isAfter(ahora)) {
             throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
         }
@@ -114,11 +115,7 @@ public class ViajeService {
         }
         // Un viaje confirmado deberá confirmarse nuevamente según US17.
         // Nunca permitir dejarlo sin posibilidad de confirmar 12 h antes.
-        if (viaje.isConfirmado()
-                && Duration.between(ahora, nuevaSalida).compareTo(PLAZO_CONFIRMACION) < 0) {
-            throw new BusinessException("Un viaje confirmado solo puede reprogramarse a una "
-                    + "salida con al menos 12 horas de anticipación para volver a confirmarlo");
-        }
+        validarNuevaSalida(request);
 
         List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
                 id, List.of(EstadoSolicitud.ACEPTADA));
@@ -216,44 +213,15 @@ public class ViajeService {
                     "El viaje no puede confirmarse; estado actual: " + viaje.getEstado());
         }
 
-        Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
-        if (hastaSalida.isNegative()) {
-            throw new BusinessException("El viaje ya ocurrió; no se puede confirmar");
-        }
-
+        Duration hastaSalida = Duration.between(LocalDateTime.now(clock), horaSalida(viaje));
         if (hastaSalida.compareTo(PLAZO_CONFIRMACION) < 0) {
-            viaje.setEstado(EstadoViaje.VENCIDO);
-
-            Viaje vencido = viajeRepository.save(viaje);
-
-            penalidadRepository.save(Penalidad.builder()
-                    .usuario(conductor)
-                    .viaje(viaje)
-                    .tipo(TipoPenalidad.LEVE)
-                    .motivo("No confirmó el viaje con al menos 12 horas de anticipación")
-                    .build());
-
-            notificacionService.notificar(
-                    conductor,
-                    TipoNotificacion.ERROR,
-                    "Confirmación vencida",
-                    "No confirmaste a tiempo el viaje del "
-                            + viaje.getDia() + " "
-                            + viaje.getFecha()
-                            + " a las "
-                            + viaje.getHora()
-                            + ". El viaje quedó VENCIDO y se registró una penalidad leve."
-            );
-
-            return viajeMapper.toViajeRespuesta(
-                    vencido,
-                    "El plazo de confirmación de 12 horas venció; "
-                            + "el viaje quedó VENCIDO y se registró una penalidad leve"
-            );
+            vencer(viaje);
+            return viajeMapper.toViajeRespuesta(viaje,
+                    "El plazo de confirmación de 12 horas venció; el viaje quedó VENCIDO");
         }
 
         viaje.setConfirmado(true);
-        viaje.setFechaConfirmacion(LocalDateTime.now(ZoneId.systemDefault()));
+        viaje.setFechaConfirmacion(LocalDateTime.now(clock));
         Viaje guardado = viajeRepository.save(viaje);
 
         List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
@@ -302,6 +270,9 @@ public class ViajeService {
             throw new BusinessException("El viaje debe estar confirmado para poder iniciarlo");
         }
 
+        if (LocalDateTime.now(clock).isBefore(horaSalida(viaje))) {
+            throw new BusinessException("El viaje no puede iniciarse antes de su hora programada");
+        }
         viaje.setEstado(EstadoViaje.EN_PROGRESO);
         Viaje iniciado = viajeRepository.save(viaje);
 
@@ -367,7 +338,9 @@ public class ViajeService {
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         boolean esConductor = viaje.getRuta().getConductor().getId().equals(usuario.getId());
-        if (!esConductor) {
+        boolean esAutor = viaje.getCanceladoPor() != null
+                && viaje.getCanceladoPor().getId().equals(usuario.getId());
+        if (!esConductor && !esAutor) {
             boolean aceptada = solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
                     id, usuario.getId(), List.of(EstadoSolicitud.ACEPTADA));
             if (!aceptada) {
@@ -377,10 +350,6 @@ public class ViajeService {
         }
 
         if (viaje.getEstado() == EstadoViaje.CANCELADO) {
-            notificacionService.notificar(usuario, TipoNotificacion.EXITO,
-                    "Viaje ya cancelado",
-                    "El viaje del " + viaje.getDia() + " " + viaje.getFecha()
-                            + " a las " + viaje.getHora() + " ya estaba cancelado.");
             return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba cancelado");
         }
         if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
@@ -388,12 +357,14 @@ public class ViajeService {
                     "El viaje no puede cancelarse; estado actual: " + viaje.getEstado());
         }
 
-        Duration hastaSalida = Duration.between(LocalDateTime.now(ZoneId.systemDefault()), horaSalida(viaje));
+        Duration hastaSalida = Duration.between(LocalDateTime.now(clock), horaSalida(viaje));
         if (hastaSalida.isNegative()) {
             throw new BusinessException("El viaje ya ocurrió");
         }
         TipoPenalidad penalidad = clasificarPenalidad(hastaSalida);
 
+        viaje.setCanceladoPor(usuario);
+        viaje.setFechaCancelacion(LocalDateTime.now(clock));
         viaje.setEstado(EstadoViaje.CANCELADO);
         Viaje cancelado = viajeRepository.save(viaje);
 
@@ -461,10 +432,10 @@ public class ViajeService {
     public void enviarRecordatoriosAutomaticos() {
 
         LocalDate hoy =
-                LocalDate.now(ZoneId.systemDefault());
+                LocalDate.now(clock);
 
         LocalDateTime ahora =
-                LocalDateTime.now(ZoneId.systemDefault());
+                LocalDateTime.now(clock);
 
         List<Viaje> candidatos =
                 viajeRepository.buscarPendientesDeConfirmacionAutomaticos(
@@ -510,6 +481,47 @@ public class ViajeService {
                             + viaje.getHora()
                             + ". Confírmalo antes de que falten 12 horas "
                             + "para evitar que el viaje venza.");
+        }
+    }
+
+    @Scheduled(fixedDelayString = "${uniride.viajes.vencimiento-ms:60000}")
+    @Transactional
+    public void vencerAutomaticamente() {
+        LocalDateTime limite = LocalDateTime.now(clock).plus(PLAZO_CONFIRMACION);
+        for (Viaje viaje : viajeRepository.bloquearVencidos(
+                EstadoViaje.PROGRAMADO, limite.toLocalDate(), limite.toLocalTime())) {
+            vencer(viaje);
+        }
+    }
+
+    private void vencer(Viaje viaje) {
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO || viaje.isConfirmado()) return;
+        viaje.setEstado(EstadoViaje.VENCIDO);
+        viajeRepository.save(viaje);
+        penalidadRepository.save(Penalidad.builder().usuario(viaje.getRuta().getConductor())
+                .viaje(viaje).tipo(TipoPenalidad.LEVE)
+                .motivo("No confirmó el viaje con al menos 12 horas de anticipación").build());
+        notificacionService.notificar(viaje.getRuta().getConductor(), TipoNotificacion.ERROR,
+                "Confirmación vencida", "El viaje " + viaje.getId()
+                        + " quedó VENCIDO y se registró una penalidad leve.");
+        // Las solicitudes y acuerdos permanecen como historial, sin borrar ni reasignar cupos.
+        for (Solicitud solicitud : solicitudRepository.findByViajeIdAndEstadoIn(
+                viaje.getId(), List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA))) {
+            notificacionService.notificar(solicitud.getPasajero(), TipoNotificacion.ADVERTENCIA,
+                    "Viaje vencido", "El viaje " + viaje.getId() + " venció por falta de confirmación.");
+        }
+    }
+
+    private void validarNuevaSalida(ViajeRequest request) {
+        if (request == null || request.fecha() == null || request.hora() == null) {
+            throw new CamposInvalidosException("La fecha y la hora son obligatorias");
+        }
+        LocalDateTime salida = LocalDateTime.of(request.fecha(), request.hora());
+        if (!salida.isAfter(LocalDateTime.now(clock))) {
+            throw new CamposInvalidosException("La fecha y hora del viaje deben ser futuras");
+        }
+        if (salida.isBefore(LocalDateTime.now(clock).plus(PLAZO_CONFIRMACION))) {
+            throw new BusinessException("La salida debe tener al menos 12 horas de anticipación");
         }
     }
 

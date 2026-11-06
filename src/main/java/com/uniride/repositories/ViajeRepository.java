@@ -35,7 +35,15 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
     boolean existsByRutaId(Long rutaId);
 
-    List<Viaje> findByRutaId(Long rutaId);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.id = :rutaId ORDER BY v.id")
+    List<Viaje> findByRutaId(@Param("rutaId") Long rutaId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT v FROM Viaje v WHERE v.estado = :estado AND v.confirmado = false "
+            + "AND (v.fecha < :fecha OR (v.fecha = :fecha AND v.hora < :hora)) ORDER BY v.id")
+    List<Viaje> bloquearVencidos(@Param("estado") EstadoViaje estado,
+            @Param("fecha") LocalDate fecha, @Param("hora") LocalTime hora);
 
     // US09: una sola consulta para calcular el estado de las rutas del conductor.
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId")

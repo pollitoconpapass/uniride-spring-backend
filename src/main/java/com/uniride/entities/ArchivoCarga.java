@@ -51,7 +51,7 @@ public class ArchivoCarga {
     @PrePersist
     void antesDeGuardar() {
         if (fechaSubida == null) {
-            fechaSubida = LocalDateTime.now(ZoneId.systemDefault());
+            fechaSubida = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

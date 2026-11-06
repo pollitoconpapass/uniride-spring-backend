@@ -55,7 +55,7 @@ public class AcuerdoCompensacion {
             estado = EstadoAcuerdo.BORRADOR;
         }
         if (fechaCreacion == null) {
-            fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
+            fechaCreacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

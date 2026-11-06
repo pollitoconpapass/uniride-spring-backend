@@ -35,3 +35,16 @@ No se atribuirán cancelaciones históricas sin autor registrado. Los cierres 11
 
 Este documento se completará con cambios, comandos, resultados y limitaciones
 efectivamente verificados; el baseline por sí solo no demuestra cierre de la auditoría.
+
+## Fase 1
+
+Creación/reprogramación exigen salida futura y >=12 h. Inicio exige hora de salida.
+Vencimiento automático serializado sobre Viaje, incluso salidas pasadas; un único
+cambio de estado, penalidad y avisos. Historial y solicitudes conservados.
+Autor/fecha de cancelación permiten reintentar al mismo pasajero sin nuevos efectos.
+Ruta se bloquea antes de crear/editar/eliminar y sus viajes antes de validar cupos;
+US09 bloquea rutas para no resucitar eliminaciones. Orden: rutas por id, viajes por id.
+Clock inyectable en servicios/JWT; zona Lima explícita en callbacks de persistencia.
+
+Validación: suite completa 315 pruebas, 56 clases, 0 fallos/errores/omitidas;
+ejecución focal posterior de ViajeHardeningTest y ViajeServiceTest exit 0.

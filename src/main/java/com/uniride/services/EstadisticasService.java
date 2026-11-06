@@ -42,6 +42,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class EstadisticasService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private static final long VIAJES_MINIMOS = 5;
     private static final DateTimeFormatter FORMATO_FECHA = DateTimeFormatter.ofPattern("dd/MM/yyyy");
     private static final List<String> DIAS_SEMANA = List.of(
@@ -185,7 +188,7 @@ public class EstadisticasService {
 
         Map<Long, String> penalidades = penalidadesPorViaje(usuario.getId());
         List<FilaHistorial> filas = new ArrayList<>();
-        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
+        LocalDate hoy = LocalDate.now(clock);
 
         if (!tipoLimpio.equals("pasajero")) {
             List<Viaje> viajes = viajeRepository.historialComoConductor(
@@ -298,7 +301,7 @@ public class EstadisticasService {
                     + usuario.getApellidos() + " (" + usuario.getCorreoInstitucional() + ")",
                     fuenteSub));
             documento.add(new Paragraph(rango + " | Exportado el "
-                    + LocalDate.now(ZoneId.systemDefault()).format(FORMATO_FECHA), fuenteSub));
+                    + LocalDate.now(clock).format(FORMATO_FECHA), fuenteSub));
             documento.add(new Paragraph(" ", fuenteSub));
 
             PdfPTable tabla = new PdfPTable(new float[]{9, 9, 7, 31, 9, 13, 22});

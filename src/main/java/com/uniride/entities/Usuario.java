@@ -70,7 +70,7 @@ public class Usuario {
     @PrePersist
     void antesDeGuardar() {
         if (fechaRegistro == null) {
-            fechaRegistro = LocalDateTime.now(ZoneId.systemDefault());
+            fechaRegistro = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }

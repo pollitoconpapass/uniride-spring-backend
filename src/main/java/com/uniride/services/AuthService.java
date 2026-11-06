@@ -25,6 +25,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private java.time.Clock clock = java.time.Clock.system(com.uniride.config.TiempoConfig.LIMA);
+
     private static final int CODIGO_LARGO = 6;
     private static final int CODIGO_MAXIMO = 1_000_000;
     private static final int MINUTOS_EXPIRACION_CODIGO = 15;
@@ -77,7 +80,7 @@ public class AuthService {
                 .aceptaTerminos(request.aceptaTerminos())
                 .cuentaVerificada(false)
                 .codigoVerificacion(codigo)
-                .codigoVerificacionExpiracion(LocalDateTime.now(ZoneId.systemDefault()).plusMinutes(MINUTOS_EXPIRACION_CODIGO))
+                .codigoVerificacionExpiracion(LocalDateTime.now(clock).plusMinutes(MINUTOS_EXPIRACION_CODIGO))
                 .build();
 
         Usuario guardado = usuarioRepository.save(usuario);
@@ -136,7 +139,7 @@ public class AuthService {
         }
 
         if (usuario.getCodigoVerificacion() == null || usuario.getCodigoVerificacionExpiracion() == null
-                || usuario.getCodigoVerificacionExpiracion().isBefore(LocalDateTime.now(ZoneId.systemDefault()))) {
+                || usuario.getCodigoVerificacionExpiracion().isBefore(LocalDateTime.now(clock))) {
             throw new BusinessException(mensajeService.obtenerMensaje("auth.error.codigo_expirado"));
         }
 
@@ -169,7 +172,7 @@ public class AuthService {
 
         String codigo = generarCodigo();
         usuario.setCodigoVerificacion(codigo);
-        usuario.setCodigoVerificacionExpiracion(LocalDateTime.now(ZoneId.systemDefault()).plusMinutes(MINUTOS_EXPIRACION_CODIGO));
+        usuario.setCodigoVerificacionExpiracion(LocalDateTime.now(clock).plusMinutes(MINUTOS_EXPIRACION_CODIGO));
         usuarioRepository.save(usuario);
 
         notificacionService.notificar(usuario, TipoNotificacion.EXITO,

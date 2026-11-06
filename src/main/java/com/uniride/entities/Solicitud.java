@@ -75,7 +75,7 @@ public class Solicitud {
             estado = EstadoSolicitud.PENDIENTE;
         }
         if (fechaCreacion == null) {
-            fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
+            fechaCreacion = LocalDateTime.now(com.uniride.config.TiempoConfig.LIMA);
         }
     }
 }
