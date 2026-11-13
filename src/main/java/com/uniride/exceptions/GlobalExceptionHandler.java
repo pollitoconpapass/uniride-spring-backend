@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import tools.jackson.core.JacksonException;
 
 @RestControllerAdvice
 @Slf4j
@@ -138,6 +139,14 @@ public class GlobalExceptionHandler {
                 .body(new ErrorRespuesta(
                         "No se pudo completar la operación porque existen datos relacionados "
                                 + "o ya registrados.", null));
+    }
+
+    // El modelo de IA respondió texto en vez del JSON esperado.
+    @ExceptionHandler(JacksonException.class)
+    public ResponseEntity<ErrorRespuesta> respuestaAgenteInvalida(JacksonException e) {
+        log.warn("El agente no devolvió el JSON esperado", e);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ErrorRespuesta("El agente no pudo armar la respuesta, intenta de nuevo", null));
     }
 
     @ExceptionHandler(Exception.class)
