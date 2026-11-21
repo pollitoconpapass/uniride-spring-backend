@@ -113,6 +113,10 @@ no combina Structured Outputs con tool calling ni registra una herramienta `json
 Las cuatro operaciones de escritura únicamente preparan confirmaciones. Para
 ejecutarlas se necesita un endpoint autenticado explícito, independiente del modelo.
 
+El chat admite estadísticas personales y frecuencia histórica por día de la semana
+para ambos roles. Los conductores también pueden consultar el ranking de sus rutas
+con las penalidades asociadas. Los reportes se devuelven en `resultados`.
+
 Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md) y el
 [informe de auditoría del agente](docs/auditoria-hardening-agente-ia.md).

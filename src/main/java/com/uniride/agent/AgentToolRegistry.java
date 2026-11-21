@@ -17,13 +17,14 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse", "registrarMetodoCompensacion");
+    private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
 
     @Autowired
     public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
-                             MetodoCompensacionAgentTools metodos) {
-        this(mapper, ToolCallbacks.from(viajes, rutas, metodos));
+                             MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes) {
+        this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes));
     }
 
     AgentToolRegistry(ObjectMapper mapper, ToolCallback... callbacks) {
@@ -54,16 +55,32 @@ public class AgentToolRegistry {
             }).toArray(ToolCallback[]::new);
         }
 
+        synchronized void recoverReports(Set<AgentReportIntent> requested) {
+            for (AgentReportIntent report : requested) {
+                String name = report.toolName();
+                if (receipts.containsKey(name + NO_ARGUMENTS)) continue;
+
+                ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
+                        .filter(candidate -> candidate.getToolDefinition().name().equals(name))
+                        .findFirst()
+                        .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
+                execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
+            }
+        }
+
         private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
-            String key = name + mapper.writeValueAsString(canonical(mapper.readValue(input, Object.class)));
+            Object arguments = mapper.readValue(input, Object.class);
+            boolean report = AgentReportIntent.isReportTool(name);
+            // The report callbacks take no arguments. Extra model fields cannot change the query or its receipt.
+            String key = name + (report ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
             if (PREPARATIONS.contains(name) && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
             String output;
             try {
-                output = delegate.call(input, context);
+                output = delegate.call(report ? NO_ARGUMENTS : input, context);
             } catch (RuntimeException failure) {
                 // Spring AI's default processor returns ToolExecutionException.message to the model.
                 // Unwrap permitted public errors; never let database/SDK exception details reach it.
@@ -110,18 +127,32 @@ public class AgentToolRegistry {
         }
 
         public ChatResponse response(String text, AdvertenciaAgente warning) {
-            // Operation status is authoritative, including when the last provider request failed.
-            String message = operation != null ? operation.detalle()
-                    : warning != null ? text
-                    : hasResults() ? querySummary() : clarification(text);
-            return new ChatResponse(message, List.copyOf(viajes), List.copyOf(rutas),
+            return new ChatResponse(message(text, warning), List.copyOf(viajes), List.copyOf(rutas),
                     List.copyOf(metodos), operation, List.copyOf(results), warning);
+        }
+
+        private String message(String text, AdvertenciaAgente warning) {
+            // The operation receipt or controlled warning takes precedence over model text.
+            String primary = operation != null ? operation.detalle() : warning != null ? text : null;
+            List<String> reports = results.stream()
+                    .map(result -> AgentReportSummary.describe(result, mapper))
+                    .filter(Objects::nonNull)
+                    .toList();
+            if (reports.isEmpty()) {
+                return primary != null ? primary : hasResults() ? querySummary() : clarification(text);
+            }
+            String reportSummary = String.join(" ", reports)
+                    + " Los reportes consultan todo tu historial y no admiten filtros por fechas.";
+            if (results.stream().anyMatch(result -> result.datos().has("hayMas") || result.datos().isArray())) {
+                reportSummary = querySummary() + " " + reportSummary;
+            }
+            return primary == null ? reportSummary : primary + " " + reportSummary;
         }
 
         private String querySummary() {
             int count = viajes.size() + rutas.size() + metodos.size();
             boolean more = results.stream().anyMatch(r -> r.datos().path("hayMas").asBoolean(false));
-            return (count == 0 ? "No se encontraron resultados para esta consulta."
+            return (count == 0 ? "No se encontraron resultados en las páginas consultadas."
                     : count == 1 ? "Se encontró 1 resultado en las páginas consultadas."
                     : "Se encontraron " + count + " resultados en las páginas consultadas.")
                     + (more ? " Hay más resultados; puedes pedir la siguiente página." : "");
@@ -140,7 +171,8 @@ public class AgentToolRegistry {
                 if (normalized.contains("ruta") || normalized.contains("origen") || normalized.contains("destino"))
                     return "¿Cuál es el origen y, si corresponde, el destino de la ruta?";
             }
-            return "Puedo consultar rutas, viajes, solicitudes y métodos de compensación, o preparar una operación para tu confirmación. ¿Qué deseas hacer?";
+            return "Puedo consultar rutas, viajes, solicitudes, métodos de compensación y estadísticas históricas, "
+                    + "o preparar una operación para tu confirmación. ¿Qué deseas hacer?";
         }
     }
 

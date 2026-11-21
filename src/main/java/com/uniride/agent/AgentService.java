@@ -75,6 +75,7 @@ public class AgentService {
                     || text.stripLeading().startsWith("{") || text.stripLeading().startsWith("```")) {
                 throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta inválida.");
             }
+            turn.recoverReports(AgentReportIntent.classify(message));
             return turn.response(text.trim());
         } catch (RuntimeException failure) {
             // No model retries: an earlier tool may already have completed.

@@ -4,7 +4,7 @@ Implementación vigente: Java 21, Spring Boot 4.1.1, Spring AI 2.0.2 y Groq medi
 
 ## Componentes y descubrimiento
 
-El texto visible se controla en Java: resumen de la operación, conteo paginado o preguntas aclaratorias de un catálogo. La salida libre del modelo solo orienta el tema de la pregunta; no puede afirmar una escritura sin recibo. Las excepciones de callbacks se interceptan antes del procesador de Spring AI para no enviar errores internos al proveedor.
+Java genera el texto visible a partir del resumen de la operación, las páginas consultadas, los reportes ejecutados o un catálogo de preguntas aclaratorias. El texto libre del modelo puede orientar una aclaración. El backend exige un recibo para comunicar el estado de una escritura e intercepta las excepciones de los callbacks antes del procesador de Spring AI.
 
 `@SpringBootApplication` escanea `com.uniride`. Spring descubre `AgentConfig`, crea el `ChatClient` e inyecta los componentes por constructor. No se instancia la configuración manualmente.
 
@@ -14,17 +14,20 @@ flowchart TD
     S --> M[AgentConversationStore: RAM limitada]
     S --> CC[ChatClient / Groq]
     CC --> R[AgentToolRegistry: recibos por petición]
+    S -->|Completa reportes omitidos| R
     R --> T[AgentTools]
     T --> Q[AgentQueryService: solo lectura]
+    T --> A[EstadisticasService: reportes personales]
     T --> P[ConfirmationService: preparar]
     H[ConfirmationController: JWT y UUID] --> E[ConfirmationService: confirmar/cancelar/consultar]
     E --> B[Services existentes: reglas de negocio]
     Q --> DB[Repositories]
+    A --> DB
     P --> DB
     B --> DB
 ```
 
-El modelo elige entre las nueve herramientas registradas. Las consultas recuperan datos autorizados; las escrituras preparan una confirmación. Ninguna herramienta confirma. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta. El texto del modelo no proporciona IDs, estados ni listas al contrato HTTP.
+El modelo elige entre las doce herramientas registradas. Las consultas recuperan datos autorizados y las escrituras preparan confirmaciones que se ejecutan mediante una petición HTTP explícita. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los IDs, estados, listas y cifras entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -37,6 +40,8 @@ Todas las rutas `/api/agent/**` requieren Bearer JWT válido de una cuenta verif
 | consultarMisRutas, consultarMisViajes, crearRuta, crearViaje | CONDUCTOR |
 | buscarViajes, consultarMisSolicitudes, solicitarUnirse | PASAJERO |
 | consultarMisMetodosCompensacion, registrarMetodoCompensacion | Ambos |
+| consultarMisEstadisticas, consultarMiFrecuenciaViajes | Ambos |
+| consultarRankingMisRutas | CONDUCTOR |
 
 La búsqueda de viajes respeta la restricción del controller tradicional a PASAJERO. El agente no cambia roles. La ejecución de confirmaciones comprueba nuevamente rol, propiedad, datos resumidos y reglas existentes.
 
@@ -77,7 +82,56 @@ Continuar sesión:
 
 Omitir `conversationId` inicia una sesión independiente. El ID es aleatorio y está vinculado al usuario; uno ajeno o desconocido devuelve 404. La sesión vive en RAM, conserva como máximo 20 mensajes (diez intercambios), admite 100 peticiones y expira tras 30 minutos sin actividad. Limpieza cada minuto. Se permiten cinco sesiones por usuario (se desplaza la más antigua libre) y mil en total por instancia. Un mensaje simultáneo en la misma sesión devuelve 409. El cambio de rol invalida su contexto (409). Reiniciar la instancia elimina la memoria, sin afectar confirmaciones persistidas. No hay endpoint para recuperar historias ajenas. No enviar contraseñas, JWT ni claves; los patrones de credenciales reconocidos se rechazan antes de llamar al proveedor.
 
-Las herramientas devuelven diez elementos por página y `hayMas`; la primera página es cero. Se admite hasta la página 10000 por protección de coste. No se carga toda la base. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido: el agente no dispara la sincronización de estados del endpoint tradicional.
+Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez elementos por página y `hayMas`. La primera página es cero y se admite hasta la página 10000. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido.
+
+## Reportes de viajes por chat
+
+Las tres herramientas de `ReportesAgentTools` consultan el historial del usuario autenticado. Envía una pregunta en lenguaje natural a `POST /api/agent/chat`. Los endpoints tradicionales siguen disponibles para consultar el mismo servicio directamente.
+
+Groq puede finalizar correctamente con texto aunque haya omitido una herramienta solicitada. Antes de este ajuste, una petición explícita como «¿Cuáles son mis rutas más utilizadas como conductor?» podía terminar con la aclaración genérica y `resultados` vacío. Tras una respuesta final válida de Groq, Java reconoce intenciones explícitas de reportes en el mensaje actual y ejecuta los callbacks de reportes que falten. Conserva los recibos que ya existen, aplica el presupuesto y los permisos del mismo turno y arma la respuesta sin otra llamada a Groq.
+
+La detección admite expresiones en español con y sin tildes y combinaciones claras de reportes. Las peticiones ambiguas, las referencias que dependen solo de turnos anteriores, el listado de rutas, la búsqueda de viajes y las escrituras siguen el flujo habitual. Los fallos del proveedor siguen su propio manejo de errores.
+
+| Historia y herramienta | Servicio reutilizado | Endpoint tradicional | Roles activos |
+|---|---|---|---|
+| US19 `consultarMisEstadisticas` | `EstadisticasService.resumen()` | `GET /api/estadisticas` | CONDUCTOR y PASAJERO |
+| US20 `consultarMiFrecuenciaViajes` | `EstadisticasService.analisisSemanal()` | `GET /api/estadisticas/semana` | CONDUCTOR y PASAJERO |
+| US21 `consultarRankingMisRutas` | `EstadisticasService.rankingRutas()` | `GET /api/estadisticas/rutas` | CONDUCTOR |
+
+- **US19.** Devuelve `viajesComoConductor`, `viajesComoPasajero`, `viajesCancelados` y `penalidadesAcumuladas`. Los dos primeros campos cuentan viajes completados. Java suma ambos para presentar el total. La consulta admite historiales vacíos y conserva los ceros devueltos por el servicio.
+- **US20.** Agrupa el historial de viajes completados por día de la semana. Con al menos cinco viajes, `viajesPorDia` contiene los siete días, incluidos los de frecuencia cero. También permite consultar un día concreto o identificar los días de mayor frecuencia. Con menos de cinco, `suficientesDatos` es `false`, `viajesPorDia` queda vacío y se presenta el `mensaje` del servicio. `canceladosPorMi` y `canceladosPorTerceros` se conservan en ambos casos.
+- **US21.** El callback valida el rol activo antes de invocar el servicio, que requiere cinco viajes completados como conductor. Si se invoca con rol `PASAJERO`, el chat devuelve HTTP 403. Con suficientes datos, cada entrada del `ranking` incluye `origen`, `destino`, `cantidad` de viajes completados y `penalidades` del conductor asociadas a esa combinación. Con menos de cinco se devuelve `suficientesDatos: false`, el `mensaje` de negocio y un ranking vacío.
+
+Los reportes abarcan todo el historial. Si la pregunta solicita una semana concreta, los últimos siete días u otro período, el agente presenta los datos con su alcance histórico e informa que el reporte carece de filtros por fechas. Los reportes operan en modo de solo lectura y una petición exclusiva de reportes devuelve `operacion: null`.
+
+Cada consulta queda en `resultados` con el nombre de la herramienta en `tipo` y el DTO de estadísticas en `datos`. `message` resume esos datos e indica su alcance histórico. Cuando hay datos suficientes, el resumen de frecuencia muestra el desglose por día y destaca los días con más viajes. El resumen del ranking destaca las rutas con más viajes y las que registran más penalidades, y el cliente puede leer el ranking completo en `datos`. Un turno puede reunir varios reportes bajo el mismo `conversationId`.
+
+Ejemplo de respuesta con cifras ilustrativas para `{"message":"¿Cuántos viajes he completado?"}`.
+
+```json
+{
+  "message": "Has completado 12 viajes (8 como conductor y 4 como pasajero). También registras 2 viajes cancelados y 1 penalidad acumulada. Los reportes consultan todo tu historial y no admiten filtros por fechas.",
+  "viajes": [],
+  "rutas": [],
+  "metodosCompensacion": [],
+  "operacion": null,
+  "resultados": [
+    {
+      "tipo": "consultarMisEstadisticas",
+      "datos": {
+        "viajesComoConductor": 8,
+        "viajesComoPasajero": 4,
+        "viajesCancelados": 2,
+        "penalidadesAcumuladas": 1
+      }
+    }
+  ],
+  "advertencia": null,
+  "conversationId": "2c54e29b-701e-44af-a745-87aa311b9661"
+}
+```
+
+La exportación PDF del historial (US22) está disponible mediante `GET /api/historial/pdf`. Su integración con el chat queda pendiente para una fase posterior. El contrato del endpoint se detalla en la [referencia de la API](endpoints.md#módulo-5--historial-y-estadísticas).
 
 ## Preparación y confirmación
 
@@ -138,7 +192,7 @@ POST /api/agent/confirmaciones/{id}/cancelar
 
 Ambos requieren JWT del propietario. Cancelar no recibe cuerpo ni parámetros. Devuelve el mismo sobre con `estado:"CANCELADA"`, `resultado:null`; cancelar otra vez no ejecuta nada. Cancelar una ejecutada o confirmar una cancelada devuelve 409. Una confirmación expirada devuelve 410 y su sobre con `estado:"EXPIRADA"`, `resultado:null`. Una ajena/inexistente da 404. Cambio de rol incompatible: 403. Cambio de ruta, destino de perfil, horario o estado frente al resumen: 409, preparar de nuevo. Fallo de reglas de negocio: 400/409 según la regla, rollback conjunto y confirmación pendiente.
 
-Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE` y `REGISTRAR_METODO`. No se incorporan herramientas de perfil, horarios, reportes ni coordinación.
+Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE` y `REGISTRAR_METODO`.
 
 ## Errores y recuperación
 
@@ -172,5 +226,35 @@ Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelv
 6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
 7. Preparar una escritura en una base local aislada, revisar el resumen y confirmar/cancelar mediante sus endpoints.
 8. Para una prueba real con Groq sobre Supabase, utilizar únicamente consultas. No confirmar escrituras ni cambiar datos.
+
+Para probar reportes, abre `POST /api/agent/chat` en Swagger, elige **Try it out** y ejecuta cada cuerpo por separado. Comprueba `message`, `conversationId`, `operacion: null` y el contenido de `resultados`.
+
+```json
+{"message":"¿Cuántos viajes he completado como conductor y como pasajero?"}
+```
+
+Busca `tipo: "consultarMisEstadisticas"` y compara los totales de `datos` con `GET /api/estadisticas`.
+
+```json
+{"message":"¿Cuántos viajes he realizado los lunes y qué día suelo viajar más?"}
+```
+
+Busca `tipo: "consultarMiFrecuenciaViajes"`. Con un historial suficiente, comprueba los siete días de `datos.viajesPorDia`, incluido el lunes.
+
+```json
+{"message":"¿Cuáles son mis rutas más utilizadas como conductor?"}
+```
+
+```json
+{"message":"Muéstrame el ranking de mis rutas y cuáles tienen más penalidades."}
+```
+
+Busca `tipo: "consultarRankingMisRutas"`. Con un conductor que tenga al menos cinco viajes completados, compara `datos.ranking` con `GET /api/estadisticas/rutas` y verifica `origen`, `destino`, `cantidad` y `penalidades` de cada entrada. Con un conductor por debajo del mínimo, comprueba `datos.suficientesDatos: false`, `datos.mensaje` y el ranking vacío. Un pasajero que pide el ranking recibe HTTP 403 cuando se ejecuta el callback.
+
+```json
+{"message":"¿Cuántos viajes he completado y qué rutas tienen más penalidades?"}
+```
+
+Con un conductor, comprueba que `resultados` contiene un resultado de estadísticas y otro de ranking y que `message` utiliza los datos de ambos. Prueba también `{"message":"¿Cuál fue mi frecuencia de viajes en los últimos siete días?"}` para comprobar que la respuesta indica el alcance histórico y la limitación temporal.
 
 Pruebas automáticas sin Groq ni Supabase: `mvnw.cmd clean test`, `mvnw.cmd verify`. PostgreSQL temporal: `powershell -File scripts/test-agent-postgres.ps1` (requiere binarios PostgreSQL; acepta `-PostgresBin`). El script crea una base nueva limitada a loopback, fuerza la configuración de pruebas, ejecuta `-Ppostgres-it test`, detiene el clúster y conserva sus archivos temporales para inspección. Nunca ejecutar `flyway clean`.

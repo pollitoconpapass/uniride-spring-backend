@@ -45,8 +45,16 @@ class EstadisticasHardeningRepositoryTest {
         Viaje v=viaje(ruta,EstadoViaje.COMPLETADO,null);
         for(Usuario u:List.of(conductor,pasajero)) penalidades.save(Penalidad.builder().usuario(u).viaje(v)
                 .tipo(TipoPenalidad.LEVE).motivo("Prueba").build());
-        var ranking=viajes.penalidadesPorRutaComoConductor(conductor.getId());
-        assertThat(((Number)ranking.getFirst()[2]).longValue()).isEqualTo(1);
+        Ruta ajena = rutas.save(Ruta.builder().conductor(pasajero).origen("Lince").destino("UPC")
+                .capacidadMaxima(2).puntosReferencia("Parque").build());
+        Viaje viajeAjeno = viaje(ajena, EstadoViaje.COMPLETADO, null);
+        penalidades.save(Penalidad.builder().usuario(conductor).viaje(viajeAjeno)
+                .tipo(TipoPenalidad.LEVE).motivo("Prueba como pasajero").build());
+
+        assertThat(viajes.rankingRutasComoConductor(conductor.getId(), EstadoViaje.COMPLETADO)).singleElement()
+                .satisfies(fila -> assertThat(fila).containsExactly("Surco", "UPC", 1L));
+        assertThat(viajes.penalidadesPorRutaComoConductor(conductor.getId())).singleElement()
+                .satisfies(fila -> assertThat(fila).containsExactly("Surco", "UPC", 1L));
         var dias=viajes.frecuenciaPorDiaComoConductor(conductor.getId(),EstadoViaje.COMPLETADO);
         assertThat(((Number)dias.getFirst()[1]).longValue()).isEqualTo(1); // Viaje de 2020.
     }
