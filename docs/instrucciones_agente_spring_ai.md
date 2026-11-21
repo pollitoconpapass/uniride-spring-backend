@@ -24,6 +24,8 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | AgentToolRegistry | Callbacks, límite por turno, recibos y construcción de resultados estructurados |
 | AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
 | AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
+| ReportesAgentTools | Consultas personales de solo lectura y validación del rol activo para el ranking |
+| EstadisticasService | Totales de actividad, frecuencia histórica y ranking de rutas |
 | ConfirmationService | Guardar propuesta, validar propietario/estado/expiración y ejecutar negocio una sola vez |
 | ConfirmationController | Confirmación explícita recibida fuera del modelo |
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
@@ -35,13 +37,25 @@ Spring descubre los componentes por `@ComponentScan`; usar inyección por constr
 1. Verificar la regla de negocio y autorización del endpoint equivalente. No basta con copiar `@PreAuthorize` al prompt.
 2. Obtener identidad mediante `UsuarioService.usuarioActual()` y verificar el rol actual. No aceptar usuarioId/correo del modelo como propietario.
 3. Reutilizar un servicio de consulta de solo lectura. Comprobar su implementación: un método llamado «listar» puede sincronizar y escribir, como ocurría con las rutas.
-4. Consultar con paginación estable en SQL. Usar `PaginaAgente<T>` e informar `hayMas`, `total`, `pagina` y `tamano`; evitar listas completas y límites ocultos.
+4. Usar paginación estable en SQL para listados. `PaginaAgente<T>` informa `hayMas`, `total`, `pagina` y `tamano`. Para agregaciones de negocio, conservar el contrato del servicio reutilizado.
 5. Crear un DTO pequeño con datos estrictamente autorizados. No devolver entidades JPA, contraseñas, correos de terceros, teléfonos privados ni tokens.
 6. Exponer un método `@Tool` con nombre estable, descripción clara y parámetros opcionales donde se pueda pedir un dato faltante. Validar argumentos en Java.
 7. Registrar el bean en `AgentToolRegistry`. El sobre `ResultadoAgente(tipo,datos)` admite nuevos tipos; solo agregar una proyección a las listas antiguas si el tipo realmente corresponde a viajes/rutas/métodos.
 8. Agregar pruebas de rol, propiedad, filtros, página siguiente y ausencia de escrituras. Simular el proveedor; nunca usar una clave real en tests.
 
-No agregar campos vacíos de perfil, horarios o reportes a ChatResponse para reservar funcionalidades futuras. Las listas heredadas se mantienen por compatibilidad; el contrato extensible es `resultados`.
+`resultados` es el contrato extensible de `ChatResponse`. Las listas heredadas siguen disponibles para los clientes existentes.
+
+### Herramientas de reportes implementadas
+
+| Herramienta | Servicio y DTO | Selección desde el chat |
+|---|---|---|
+| `consultarMisEstadisticas` | `resumen()` → `EstadisticasRespuesta` | Totales completados por rol, cancelaciones o penalidades acumuladas |
+| `consultarMiFrecuenciaViajes` | `analisisSemanal()` → `AnalisisSemanalRespuesta` | Frecuencia histórica, días más frecuentes, viajes de un día concreto y cancelaciones propias o de terceros |
+| `consultarRankingMisRutas` | `rankingRutas()` → `RankingRutasRespuesta` | Rutas más usadas o penalidades por ruta del conductor autenticado |
+
+Los tres métodos de `EstadisticasService` obtienen la identidad a partir de `UsuarioService.usuarioActual()`. Las herramientas se invocan sin argumentos, le permiten al agente consultar el historial propio y consumen el mismo presupuesto por turno que las demás consultas. El ranking requiere el rol activo `CONDUCTOR`, validado en el callback antes de llamar al servicio. Resumen y frecuencia admiten a `CONDUCTOR` y `PASAJERO`.
+
+La frecuencia se habilita a partir de cinco viajes completados y conserva los siete días, los recuentos de cancelaciones y los días con cero viajes. El ranking requiere cinco viajes completados como conductor. Si cualquiera de los dos devuelve `suficientesDatos: false`, se conserva el mensaje de negocio. El prompt orienta la selección de la herramienta y describe el alcance histórico sin filtros temporales. Para el contrato HTTP, los ejemplos de Swagger y las diferencias con los endpoints tradicionales, consulta [Reportes de viajes por chat](agente_flujo.md#reportes-de-viajes-por-chat).
 
 ## Agregar una herramienta de escritura
 
@@ -60,7 +74,7 @@ La aplicación confirma por `POST /api/agent/confirmaciones/{id}/confirmar`, sin
 
 ## Salida y errores
 
-La salida del LLM es texto no confiable. El servidor valida que no esté vacía, truncada o en un formato inesperado. Las listas, operaciones, confirmaciones y sus IDs proceden exclusivamente de callbacks Java y persistencia. No reconstruirlos desde JSON del modelo. El mensaje de una operación se reemplaza por el resumen/resultado del backend.
+La salida del LLM es texto no confiable. El servidor valida que conserve contenido y que respete el formato esperado. Las listas, operaciones, confirmaciones, cifras y sus IDs proceden exclusivamente de callbacks Java y persistencia. El mensaje de una operación usa el resumen o resultado del backend. En los reportes, Java compone `message` a partir de las respuestas registradas en `resultados`, incluso si un turno combina varias consultas de estadísticas.
 
 Un fallo antes de resultados se traduce a ErrorRespuesta con HTTP apropiado y código estable: 429 cuota, 502 formato/herramienta rechazada, 503 indisponibilidad/credencial del proveedor y 504 timeout. No exponer cuerpos de error Groq, prompts ni secretos en mensajes o logs. Si existen recibos, se devuelven con `advertencia` sin repetir llamadas. Ninguna solución debe crear una herramienta ficticia `json` ni desactivar la validación.
 

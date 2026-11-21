@@ -6,8 +6,15 @@ import static org.mockito.Mockito.*;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
+import com.uniride.dto.responses.AnalisisSemanalRespuesta;
+import com.uniride.dto.responses.DiaCantidadRespuesta;
+import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.dto.responses.RankingRutasRespuesta;
+import com.uniride.dto.responses.RutaFrecuenteRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
+import com.uniride.exceptions.NoPermitidoException;
+import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
 import java.util.*;
 import org.junit.jupiter.api.Test;
@@ -18,17 +25,20 @@ class AgentToolRegistryTest {
     private final AgentQueryService queries = mock(AgentQueryService.class);
     private final ConfirmationService confirmations = mock(ConfirmationService.class);
     private final UsuarioService users = mock(UsuarioService.class);
+    private final EstadisticasService statistics = mock(EstadisticasService.class);
     private final AgentToolRegistry registry = new AgentToolRegistry(new ObjectMapper(),
             new ViajeAgentTools(queries, confirmations, users),
             new RutaAgentTools(queries, confirmations, users),
-            new MetodoCompensacionAgentTools(queries, confirmations));
+            new MetodoCompensacionAgentTools(queries, confirmations),
+            new ReportesAgentTools(statistics, users));
 
     @Test void registersEveryExistingToolWithoutAnyConfirmationOrJsonTool() {
         assertThat(Arrays.stream(registry.newTurn().callbacks()).map(c -> c.getToolDefinition().name()))
                 .containsExactlyInAnyOrder("buscarViajes", "consultarMisViajes", "consultarMisSolicitudes",
                         "consultarMisRutas", "consultarMisMetodosCompensacion", "crearRuta", "crearViaje",
-                        "solicitarUnirse", "registrarMetodoCompensacion");
-        verifyNoInteractions(confirmations, queries, users);
+                        "solicitarUnirse", "registrarMetodoCompensacion", "consultarMisEstadisticas",
+                        "consultarMiFrecuenciaViajes", "consultarRankingMisRutas");
+        verifyNoInteractions(confirmations, queries, users, statistics);
     }
 
     @Test void repeatedArgumentsInDifferentOrderReturnSameReceiptAndOnlyOnePreparationIsAllowed() {
@@ -67,5 +77,94 @@ class AgentToolRegistryTest {
         assertThatThrownBy(() -> callback.call("{}"))
                 .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("TOOL_LIMIT"));
         verify(queries, times(1)).metodos(null);
+    }
+
+    @Test void reportReadsKeepReceiptsAndComposeWithExistingPagedResults() {
+        when(statistics.resumen()).thenReturn(new EstadisticasRespuesta(8, 4, 2, 1));
+        when(statistics.analisisSemanal()).thenReturn(new AnalisisSemanalRespuesta(true, null, List.of(
+                new DiaCantidadRespuesta("Lunes", 6), new DiaCantidadRespuesta("Martes", 0),
+                new DiaCantidadRespuesta("Miercoles", 0), new DiaCantidadRespuesta("Jueves", 6),
+                new DiaCantidadRespuesta("Viernes", 0), new DiaCantidadRespuesta("Sabado", 0),
+                new DiaCantidadRespuesta("Domingo", 0)), 1, 1));
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(), 0, 10, 0, false));
+        var turn = registry.newTurn();
+        var summary = callback(turn, "consultarMisEstadisticas");
+        String first = summary.call("{}");
+        assertThat(summary.call("{ }")).isEqualTo(first);
+        callback(turn, "consultarMisMetodosCompensacion").call("{}");
+        callback(turn, "consultarMiFrecuenciaViajes").call("{}");
+
+        ChatResponse response = turn.response("Completaste 999 viajes y registré una ruta.");
+
+        assertThat(response.message()).contains("No se encontraron resultados", "Has completado 12 viajes",
+                        "8 como conductor y 4 como pasajero", "2 viajes cancelados", "1 penalidad acumulada",
+                        "frecuencia histórica", "Lunes (6)", "Domingo (0)", "Mayor frecuencia en Lunes, Jueves",
+                        "a ti (1) y a terceros (1)", "no admiten filtros por fechas")
+                .doesNotContain("999", "registré");
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly(
+                "consultarMisEstadisticas", "consultarMisMetodosCompensacion", "consultarMiFrecuenciaViajes");
+        assertThat(response.resultados().getFirst().datos().path("viajesComoPasajero").asLong()).isEqualTo(4);
+        assertThat(response.resultados().getLast().datos().path("viajesPorDia").size()).isEqualTo(7);
+        assertThat(response.operacion()).isNull();
+        verify(statistics).resumen();
+        verify(statistics).analisisSemanal();
+        verifyNoMoreInteractions(statistics);
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test void insufficientReportsKeepBusinessMessagesDuringProviderRecovery() {
+        String frequencyMessage = "Se requieren al menos 5 viajes completados para la frecuencia.";
+        String rankingMessage = "Se requieren al menos 5 viajes completados como conductor para el ranking.";
+        when(users.usuarioActual()).thenReturn(Usuario.builder().rolPrincipal(Rol.CONDUCTOR).build());
+        when(statistics.analisisSemanal()).thenReturn(new AnalisisSemanalRespuesta(false, frequencyMessage, List.of(), 2, 3));
+        when(statistics.rankingRutas()).thenReturn(new RankingRutasRespuesta(false, rankingMessage, List.of()));
+        var turn = registry.newTurn();
+        callback(turn, "consultarMiFrecuenciaViajes").call("{}");
+        callback(turn, "consultarRankingMisRutas").call("{}");
+        var warning = new AdvertenciaAgente("PROVIDER_REJECTED", "El proveedor rechazó la respuesta.");
+
+        ChatResponse response = turn.response("El proveedor no completó la explicación.", warning);
+
+        assertThat(response.message()).contains("El proveedor no completó la explicación.", frequencyMessage,
+                        "a ti (2) y a terceros (3)", rankingMessage).doesNotContain("Mayor frecuencia", "más utilizada");
+        assertThat(response.resultados()).allSatisfy(result ->
+                assertThat(result.datos().path("suficientesDatos").asBoolean()).isFalse());
+        assertThat(response.advertencia()).isEqualTo(warning);
+        assertThat(response.operacion()).isNull();
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test void rankingSummarizesMostUsedRouteAndHighestPenaltiesFromTheirOwnRows() {
+        when(users.usuarioActual()).thenReturn(Usuario.builder().rolPrincipal(Rol.CONDUCTOR).build());
+        when(statistics.rankingRutas()).thenReturn(new RankingRutasRespuesta(true, null, List.of(
+                new RutaFrecuenteRespuesta("Surco", "UPC", 8, 1),
+                new RutaFrecuenteRespuesta("Barranco", "Campus", 4, 3))));
+        var turn = registry.newTurn();
+        callback(turn, "consultarRankingMisRutas").call("{}");
+
+        ChatResponse response = turn.response("Todas tus rutas tienen 900 penalidades.");
+
+        assertThat(response.message()).contains("Surco a UPC, con 8 viajes completados y 1 penalidad.",
+                "La ruta con más penalidades va de Barranco a Campus, con 3 penalidades.").doesNotContain("900");
+        var ranking = response.resultados().getFirst().datos().path("ranking");
+        assertThat(ranking.size()).isEqualTo(2);
+        assertThat(ranking.path(1).path("cantidad").asLong()).isEqualTo(4);
+        assertThat(response.operacion()).isNull();
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test void unauthorizedRankingCreatesNeitherResultNorConfirmation() {
+        when(users.usuarioActual()).thenReturn(Usuario.builder().rolPrincipal(Rol.PASAJERO).build());
+        var turn = registry.newTurn();
+
+        assertThatThrownBy(() -> callback(turn, "consultarRankingMisRutas").call("{}"))
+                .isInstanceOf(NoPermitidoException.class).hasMessageContaining("CONDUCTOR");
+        assertThat(turn.hasResults()).isFalse();
+        verifyNoInteractions(statistics, confirmations);
+    }
+
+    private ToolCallback callback(AgentToolRegistry.Turn turn, String name) {
+        return Arrays.stream(turn.callbacks()).filter(tool -> tool.getToolDefinition().name().equals(name))
+                .findFirst().orElseThrow();
     }
 }

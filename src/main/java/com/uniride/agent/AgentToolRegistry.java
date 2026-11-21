@@ -22,8 +22,8 @@ public class AgentToolRegistry {
 
     @Autowired
     public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
-                             MetodoCompensacionAgentTools metodos) {
-        this(mapper, ToolCallbacks.from(viajes, rutas, metodos));
+                             MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes) {
+        this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes));
     }
 
     AgentToolRegistry(ObjectMapper mapper, ToolCallback... callbacks) {
@@ -110,18 +110,32 @@ public class AgentToolRegistry {
         }
 
         public ChatResponse response(String text, AdvertenciaAgente warning) {
-            // Operation status is authoritative, including when the last provider request failed.
-            String message = operation != null ? operation.detalle()
-                    : warning != null ? text
-                    : hasResults() ? querySummary() : clarification(text);
-            return new ChatResponse(message, List.copyOf(viajes), List.copyOf(rutas),
+            return new ChatResponse(message(text, warning), List.copyOf(viajes), List.copyOf(rutas),
                     List.copyOf(metodos), operation, List.copyOf(results), warning);
+        }
+
+        private String message(String text, AdvertenciaAgente warning) {
+            // The operation receipt or controlled warning takes precedence over model text.
+            String primary = operation != null ? operation.detalle() : warning != null ? text : null;
+            List<String> reports = results.stream()
+                    .map(result -> AgentReportSummary.describe(result, mapper))
+                    .filter(Objects::nonNull)
+                    .toList();
+            if (reports.isEmpty()) {
+                return primary != null ? primary : hasResults() ? querySummary() : clarification(text);
+            }
+            String reportSummary = String.join(" ", reports)
+                    + " Los reportes consultan todo tu historial y no admiten filtros por fechas.";
+            if (results.stream().anyMatch(result -> result.datos().has("hayMas") || result.datos().isArray())) {
+                reportSummary = querySummary() + " " + reportSummary;
+            }
+            return primary == null ? reportSummary : primary + " " + reportSummary;
         }
 
         private String querySummary() {
             int count = viajes.size() + rutas.size() + metodos.size();
             boolean more = results.stream().anyMatch(r -> r.datos().path("hayMas").asBoolean(false));
-            return (count == 0 ? "No se encontraron resultados para esta consulta."
+            return (count == 0 ? "No se encontraron resultados en las páginas consultadas."
                     : count == 1 ? "Se encontró 1 resultado en las páginas consultadas."
                     : "Se encontraron " + count + " resultados en las páginas consultadas.")
                     + (more ? " Hay más resultados; puedes pedir la siguiente página." : "");
@@ -140,7 +154,8 @@ public class AgentToolRegistry {
                 if (normalized.contains("ruta") || normalized.contains("origen") || normalized.contains("destino"))
                     return "¿Cuál es el origen y, si corresponde, el destino de la ruta?";
             }
-            return "Puedo consultar rutas, viajes, solicitudes y métodos de compensación, o preparar una operación para tu confirmación. ¿Qué deseas hacer?";
+            return "Puedo consultar rutas, viajes, solicitudes, métodos de compensación y estadísticas históricas, "
+                    + "o preparar una operación para tu confirmación. ¿Qué deseas hacer?";
         }
     }
 

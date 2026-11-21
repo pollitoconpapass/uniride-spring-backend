@@ -8,16 +8,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.ConfirmacionResumen;
+import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.confirmation.*;
+import com.uniride.agent.tools.ReportesAgentTools;
+import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
 import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.exceptions.ResourceNotFoundException;
+import com.uniride.mappers.UsuarioMapper;
 import com.uniride.repositories.UsuarioRepository;
 import com.uniride.security.*;
+import com.uniride.services.EstadisticasService;
 import com.uniride.services.MensajeService;
+import com.uniride.services.PerfilRolService;
+import com.uniride.services.UsuarioService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
@@ -38,6 +45,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+import tools.jackson.databind.ObjectMapper;
 
 /** Real security chain and JWT parser; all business and model interactions are simulated. */
 @SpringJUnitConfig(AgentHttpSecurityTest.Configuration.class)
@@ -118,6 +126,59 @@ class AgentHttpSecurityTest {
                 .andExpect(status().isOk());
         verify(agent).chat("Continúa", conversation);
         verify(usuarios).findByCorreoInstitucional("ana@upc.edu.pe");
+    }
+
+    @Test
+    void reportUsesExistingChatEnvelopeAndKeepsConversationUuid() throws Exception {
+        UUID conversation = UUID.randomUUID();
+        String question = "¿Cuántos viajes he realizado?";
+        var resumen = new EstadisticasRespuesta(8, 4, 2, 1);
+        var result = new ResultadoAgente("consultarMisEstadisticas", new ObjectMapper().valueToTree(resumen));
+        when(agent.chat(eq(question), eq(conversation))).thenReturn(
+                new ChatResponse("Has completado 12 viajes.", List.of(), List.of(), List.of(),
+                        null, List.of(result), null, conversation));
+
+        mvc.perform(post("/agent/chat").header("Authorization", bearer())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"message":"%s","conversationId":"%s"}
+                        """.formatted(question, conversation)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Has completado 12 viajes."))
+                .andExpect(jsonPath("$.viajes").isEmpty())
+                .andExpect(jsonPath("$.rutas").isEmpty())
+                .andExpect(jsonPath("$.metodosCompensacion").isEmpty())
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.advertencia").isEmpty())
+                .andExpect(jsonPath("$.conversationId").value(conversation.toString()))
+                .andExpect(jsonPath("$.resultados.length()").value(1))
+                .andExpect(jsonPath("$.resultados[0].tipo").value("consultarMisEstadisticas"))
+                .andExpect(jsonPath("$.resultados[0].datos.viajesComoConductor").value(8))
+                .andExpect(jsonPath("$.resultados[0].datos.viajesComoPasajero").value(4))
+                .andExpect(jsonPath("$.resultados[0].datos.viajesCancelados").value(2))
+                .andExpect(jsonPath("$.resultados[0].datos.penalidadesAcumuladas").value(1));
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void reportDenialReturnsForbiddenForPassengerJwt() throws Exception {
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        var estadisticas = mock(EstadisticasService.class);
+        var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var reportes = new ReportesAgentTools(estadisticas, usuarioService);
+        when(agent.chat(eq("Ranking de mis rutas"), isNull(UUID.class))).thenAnswer(call -> {
+            reportes.consultarRankingMisRutas();
+            return null;
+        });
+
+        mvc.perform(post("/agent/chat").header("Authorization", bearer())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Ranking de mis rutas\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("CONDUCTOR")))
+                .andExpect(jsonPath("$.resultados").doesNotExist());
+        verifyNoInteractions(estadisticas, confirmations);
     }
 
     @Test
