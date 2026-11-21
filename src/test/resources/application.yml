@@ -1,4 +1,7 @@
 spring:
+  ai:
+    openai:
+      api-key: test-key
   flyway:
     enabled: false # Suite rápida H2. PostgreSQL valida la cadena real de migraciones.
   datasource:

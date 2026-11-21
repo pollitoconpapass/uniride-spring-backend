@@ -36,6 +36,7 @@
 		<springdoc.version>3.1.1</springdoc.version>
         <openpdf.version>1.3.43</openpdf.version>
         <pdfbox.version>3.0.8</pdfbox.version>
+		<spring-ai.version>2.0.2</spring-ai.version>
         <!-- Parches de seguridad contrastados con avisos oficiales; conservar Boot 4.1.1. -->
         <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
         <jackson-bom.version>3.1.7</jackson-bom.version>
@@ -46,6 +47,13 @@
 
 	<dependencyManagement>
 		<dependencies>
+			<dependency>
+				<groupId>org.springframework.ai</groupId>
+				<artifactId>spring-ai-bom</artifactId>
+				<version>${spring-ai.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
             <dependency>
                 <groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>${bouncycastle.version}</version>
             </dependency>
@@ -181,6 +189,10 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-model-openai</artifactId>
 		</dependency>
 	</dependencies>
 
