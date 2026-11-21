@@ -79,6 +79,40 @@ class AgentToolRegistryTest {
         verify(queries, times(1)).metodos(null);
     }
 
+    @Test void recoverySharesTheTurnBudgetAndPreservesResultsAlreadyCaptured() {
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(), 0, 10, 0, false));
+        when(statistics.resumen()).thenReturn(new EstadisticasRespuesta(8, 4, 2, 1));
+        var turn = registry.newTurn();
+        ToolCallback methods = callback(turn, "consultarMisMetodosCompensacion");
+        for (int i = 0; i < 7; i++) methods.call("{}");
+
+        assertThatThrownBy(() -> turn.recoverReports(EnumSet.of(AgentReportIntent.ESTADISTICAS, AgentReportIntent.RANKING)))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("TOOL_LIMIT"));
+
+        assertThat(turn.response("Fin del turno.").resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("consultarMisMetodosCompensacion", "consultarMisEstadisticas");
+        verify(queries).metodos(null);
+        verify(statistics).resumen();
+        verifyNoMoreInteractions(statistics);
+        verifyNoInteractions(confirmations, users);
+    }
+
+    @Test void reportReceiptIgnoresExtraModelArgumentsAndRecoverySkipsIt() {
+        when(statistics.resumen()).thenReturn(new EstadisticasRespuesta(8, 4, 2, 1));
+        var turn = registry.newTurn();
+        ToolCallback report = callback(turn, "consultarMisEstadisticas");
+        String first = report.call("{\"usuarioId\":999}");
+        assertThat(report.call("{}")).isEqualTo(first);
+
+        turn.recoverReports(Set.of(AgentReportIntent.ESTADISTICAS));
+
+        assertThat(turn.response("Fin del turno.").resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("consultarMisEstadisticas");
+        verify(statistics).resumen();
+        verifyNoMoreInteractions(statistics);
+        verifyNoInteractions(confirmations);
+    }
+
     @Test void reportReadsKeepReceiptsAndComposeWithExistingPagedResults() {
         when(statistics.resumen()).thenReturn(new EstadisticasRespuesta(8, 4, 2, 1));
         when(statistics.analisisSemanal()).thenReturn(new AnalisisSemanalRespuesta(true, null, List.of(

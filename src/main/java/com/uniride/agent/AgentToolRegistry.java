@@ -17,6 +17,7 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse", "registrarMetodoCompensacion");
+    private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
 
@@ -54,16 +55,32 @@ public class AgentToolRegistry {
             }).toArray(ToolCallback[]::new);
         }
 
+        synchronized void recoverReports(Set<AgentReportIntent> requested) {
+            for (AgentReportIntent report : requested) {
+                String name = report.toolName();
+                if (receipts.containsKey(name + NO_ARGUMENTS)) continue;
+
+                ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
+                        .filter(candidate -> candidate.getToolDefinition().name().equals(name))
+                        .findFirst()
+                        .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
+                execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
+            }
+        }
+
         private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
-            String key = name + mapper.writeValueAsString(canonical(mapper.readValue(input, Object.class)));
+            Object arguments = mapper.readValue(input, Object.class);
+            boolean report = AgentReportIntent.isReportTool(name);
+            // The report callbacks take no arguments. Extra model fields cannot change the query or its receipt.
+            String key = name + (report ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
             if (PREPARATIONS.contains(name) && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
             String output;
             try {
-                output = delegate.call(input, context);
+                output = delegate.call(report ? NO_ARGUMENTS : input, context);
             } catch (RuntimeException failure) {
                 // Spring AI's default processor returns ToolExecutionException.message to the model.
                 // Unwrap permitted public errors; never let database/SDK exception details reach it.

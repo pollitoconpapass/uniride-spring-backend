@@ -14,6 +14,7 @@ flowchart TD
     S --> M[AgentConversationStore: RAM limitada]
     S --> CC[ChatClient / Groq]
     CC --> R[AgentToolRegistry: recibos por petición]
+    S -->|Completa reportes omitidos| R
     R --> T[AgentTools]
     T --> Q[AgentQueryService: solo lectura]
     T --> A[EstadisticasService: reportes personales]
@@ -85,7 +86,11 @@ Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez 
 
 ## Reportes de viajes por chat
 
-Las tres herramientas de `ReportesAgentTools` consultan el historial del usuario autenticado. A través de `POST /api/agent/chat`, se elige la herramienta mediante una pregunta en lenguaje natural. Los endpoints tradicionales siguen disponibles para consultar el mismo servicio directamente.
+Las tres herramientas de `ReportesAgentTools` consultan el historial del usuario autenticado. Envía una pregunta en lenguaje natural a `POST /api/agent/chat`. Los endpoints tradicionales siguen disponibles para consultar el mismo servicio directamente.
+
+Groq puede finalizar correctamente con texto aunque haya omitido una herramienta solicitada. Antes de este ajuste, una petición explícita como «¿Cuáles son mis rutas más utilizadas como conductor?» podía terminar con la aclaración genérica y `resultados` vacío. Tras una respuesta final válida de Groq, Java reconoce intenciones explícitas de reportes en el mensaje actual y ejecuta los callbacks de reportes que falten. Conserva los recibos que ya existen, aplica el presupuesto y los permisos del mismo turno y arma la respuesta sin otra llamada a Groq.
+
+La detección admite expresiones en español con y sin tildes y combinaciones claras de reportes. Las peticiones ambiguas, las referencias que dependen solo de turnos anteriores, el listado de rutas, la búsqueda de viajes y las escrituras siguen el flujo habitual. Los fallos del proveedor siguen su propio manejo de errores.
 
 | Historia y herramienta | Servicio reutilizado | Endpoint tradicional | Roles activos |
 |---|---|---|---|
@@ -222,20 +227,34 @@ Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelv
 7. Preparar una escritura en una base local aislada, revisar el resumen y confirmar/cancelar mediante sus endpoints.
 8. Para una prueba real con Groq sobre Supabase, utilizar únicamente consultas. No confirmar escrituras ni cambiar datos.
 
-Para probar reportes, abre `POST /api/agent/chat` en Swagger, elige **Try it out** y ejecuta cada cuerpo por separado. Verifica `resultados[].tipo`, `resultados[].datos` y `message`. Reutiliza el `conversationId` devuelto cuando quieras continuar con una pregunta relacionada.
+Para probar reportes, abre `POST /api/agent/chat` en Swagger, elige **Try it out** y ejecuta cada cuerpo por separado. Comprueba `message`, `conversationId`, `operacion: null` y el contenido de `resultados`.
 
 ```json
 {"message":"¿Cuántos viajes he completado como conductor y como pasajero?"}
 ```
 
+Busca `tipo: "consultarMisEstadisticas"` y compara los totales de `datos` con `GET /api/estadisticas`.
+
 ```json
 {"message":"¿Cuántos viajes he realizado los lunes y qué día suelo viajar más?"}
 ```
 
+Busca `tipo: "consultarMiFrecuenciaViajes"`. Con un historial suficiente, comprueba los siete días de `datos.viajesPorDia`, incluido el lunes.
+
 ```json
-{"message":"Muéstrame el ranking de mis rutas con viajes completados y penalidades."}
+{"message":"¿Cuáles son mis rutas más utilizadas como conductor?"}
 ```
 
-Con ambos roles puedes probar resumen y frecuencia. Para el ranking, usa primero un conductor con cinco o más viajes completados, luego uno con un historial menor y finalmente un pasajero. Compara las respuestas con tus datos en los endpoints tradicionales. Para comprobar la limitación temporal, prueba `{"message":"¿Cuál fue mi frecuencia de viajes en los últimos siete días?"}`.
+```json
+{"message":"Muéstrame el ranking de mis rutas y cuáles tienen más penalidades."}
+```
+
+Busca `tipo: "consultarRankingMisRutas"`. Con un conductor que tenga al menos cinco viajes completados, compara `datos.ranking` con `GET /api/estadisticas/rutas` y verifica `origen`, `destino`, `cantidad` y `penalidades` de cada entrada. Con un conductor por debajo del mínimo, comprueba `datos.suficientesDatos: false`, `datos.mensaje` y el ranking vacío. Un pasajero que pide el ranking recibe HTTP 403 cuando se ejecuta el callback.
+
+```json
+{"message":"¿Cuántos viajes he completado y qué rutas tienen más penalidades?"}
+```
+
+Con un conductor, comprueba que `resultados` contiene un resultado de estadísticas y otro de ranking y que `message` utiliza los datos de ambos. Prueba también `{"message":"¿Cuál fue mi frecuencia de viajes en los últimos siete días?"}` para comprobar que la respuesta indica el alcance histórico y la limitación temporal.
 
 Pruebas automáticas sin Groq ni Supabase: `mvnw.cmd clean test`, `mvnw.cmd verify`. PostgreSQL temporal: `powershell -File scripts/test-agent-postgres.ps1` (requiere binarios PostgreSQL; acepta `-PostgresBin`). El script crea una base nueva limitada a loopback, fuerza la configuración de pruebas, ejecuta `-Ppostgres-it test`, detiene el clúster y conserva sus archivos temporales para inspección. Nunca ejecutar `flyway clean`.
