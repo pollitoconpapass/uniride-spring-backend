@@ -1,586 +1,81 @@
-# Documento sobre como integrar un agente con Spring AI
+﻿# Integración y extensión del agente Spring AI
 
-## Requisitos
+Esta guía describe la implementación real de UniRide. Los primeros ejemplos de laboratorio usaban venta de entradas y Gemini; se conserva ese antecedente conceptual, pero sus snippets de `.entity(...)` y confirmación por texto no son aplicables a esta integración Groq. Los principios útiles siguen siendo descubrir beans con Spring, describir tools con precisión y reutilizar los servicios de negocio.
 
-- Java 21, Maven, JWT Secret
-- Una clave de algun servicio de IA (Gemini)
+## Configuración actual
 
-## Configuracion
+El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.md) se conserva como referencia histórica; sus snippets no son instrucciones de despliegue actuales.
 
-- Dependencias en el `pom.xml`
-- Configuración del servicio externo de IA en `application.yaml`
+- Java 21, Spring Boot 4.1.1, Spring AI 2.0.2.
+- Starter `spring-ai-starter-model-openai`, conectado a `https://api.groq.com/openai/v1`.
+- Clave privada `GROQ_API_KEY`; modelo `openai/gpt-oss-120b`, temperatura 0.1.
+- `spring.ai.openai.max-retries: 0`, `spring.ai.retry.max-attempts: 1`, timeout 30 segundos y herramientas paralelas desactivadas.
+- No habilitar Structured Outputs, JSON mode ni `.entity(ChatResponse.class)` en el flujo con tools. La [compatibilidad documentada por Groq](https://console.groq.com/docs/structured-outputs) excluye tool use con Structured Outputs.
+- La aplicación utiliza Flyway y `ddl-auto: validate`; no cambiar el esquema con Hibernate.
 
-## Buenas Prácticas
+## Responsabilidades
 
-### Implementar DTOs del chat: ChatRequest, ViajeSummary, ChatResponse, etc. (Todo dentro de un directorio: `uniride/agent/dto/`)
+| Componente | Responsabilidad |
+|---|---|
+| AgentController | Validar petición de chat y devolver DTO |
+| AgentService | Resolver usuario, sesión y contexto; llamar una vez al flujo del proveedor; mapear fallos |
+| AgentConversationStore | Propiedad, TTL, límites y exclusión de mensajes simultáneos |
+| AgentConfig | Prompt y construcción de ChatClient; no contiene permisos efectivos |
+| AgentToolRegistry | Callbacks, límite por turno, recibos y construcción de resultados estructurados |
+| AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
+| AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
+| ConfirmationService | Guardar propuesta, validar propietario/estado/expiración y ejecutar negocio una sola vez |
+| ConfirmationController | Confirmación explícita recibida fuera del modelo |
+| Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
 
-### Configurar ChatClient dentro de `uniride/agent/AgentConfig.java`.
+Spring descubre los componentes por `@ComponentScan`; usar inyección por constructor. Evitar dependencias circulares y llamadas manuales a configuración.
 
-Ejemplo de codigo (de otro proyecto):
+## Agregar una herramienta de consulta
 
-```java
-package com.hampcode.ticketsales.agent;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-@Configuration
-public class AgentConfig {
-  private static final String SYSTEM = """
+1. Verificar la regla de negocio y autorización del endpoint equivalente. No basta con copiar `@PreAuthorize` al prompt.
+2. Obtener identidad mediante `UsuarioService.usuarioActual()` y verificar el rol actual. No aceptar usuarioId/correo del modelo como propietario.
+3. Reutilizar un servicio de consulta de solo lectura. Comprobar su implementación: un método llamado «listar» puede sincronizar y escribir, como ocurría con las rutas.
+4. Consultar con paginación estable en SQL. Usar `PaginaAgente<T>` e informar `hayMas`, `total`, `pagina` y `tamano`; evitar listas completas y límites ocultos.
+5. Crear un DTO pequeño con datos estrictamente autorizados. No devolver entidades JPA, contraseñas, correos de terceros, teléfonos privados ni tokens.
+6. Exponer un método `@Tool` con nombre estable, descripción clara y parámetros opcionales donde se pueda pedir un dato faltante. Validar argumentos en Java.
+7. Registrar el bean en `AgentToolRegistry`. El sobre `ResultadoAgente(tipo,datos)` admite nuevos tipos; solo agregar una proyección a las listas antiguas si el tipo realmente corresponde a viajes/rutas/métodos.
+8. Agregar pruebas de rol, propiedad, filtros, página siguiente y ausencia de escrituras. Simular el proveedor; nunca usar una clave real en tests.
 
-      # ROL
+No agregar campos vacíos de perfil, horarios o reportes a ChatResponse para reservar funcionalidades futuras. Las listas heredadas se mantienen por compatibilidad; el contrato extensible es `resultados`.
 
-      Eres el asistente de una plataforma de venta de entradas.
+## Agregar una herramienta de escritura
 
-      # REGLAS
+Una tool de escritura debe **preparar**, nunca ejecutar el servicio de negocio directamente.
 
-      - Responde en español, breve y amable.
-      - Datos reales: usa siempre las tools. Nunca inventes eventos,
-      fechas, precios ni cupos.
-      - El usuario escribe informal (abreviaciones, errores): interpreta
-      su intención y no exijas nombres exactos.
-      - Al buscar por nombre usa una palabra clave corta, sin tildes y tal
-      como la escribió el usuario.
-      - Si falta un dato para continuar, pregúntalo.
-      - Si no hay resultados, dilo con claridad.
+1. Incorporar un tipo concreto en `TipoOperacion` y su DTO real de parámetros. Evitar deserialización polimórfica a clases indicadas por el modelo.
+2. Extraer o reutilizar validadores puros del servicio existente; aplicarlos al preparar y al ejecutar. Jakarta Validation debe invocarse explícitamente para llamadas Java internas.
+3. Resolver el recurso por filtros completos y detectar ambigüedad global antes de preparar. No seleccionar «el primero» entre varias coincidencias.
+4. Guardar únicamente parámetros necesarios, ID del usuario autenticado, resumen exacto y snapshot de los datos que acepta el usuario. No almacenar el mensaje completo ni credenciales.
+5. Reutilizar expiración, UUID aleatorio, bloqueo de confirmación propia y comprobación del rol actual. En ejecución, tomar locks compatibles con las operaciones tradicionales y comparar nuevamente el snapshot.
+6. Ejecutar el servicio existente y guardar el resultado en la misma transacción. No marcar EJECUTADA si falla negocio o commit. No introducir reintentos de escrituras.
+7. Registrar el nombre de la preparación en el límite de una operación por turno de `AgentToolRegistry`. Nunca registrar `confirmar` como `@Tool`.
+8. Añadir tests de preparación sin efectos, rol cambiado, propiedad ajena, expiración, cancelación, snapshot cambiado, reglas revalidadas, rollback, confirmación duplicada y concurrencia PostgreSQL.
 
-      # FORMATO DE RESPUESTA
+La aplicación confirma por `POST /api/agent/confirmaciones/{id}/confirmar`, sin parámetros ni cuerpo. El modelo no puede fabricar una aprobación. Repetir el mismo UUID ejecutado devuelve su recibo; si el resultado de red es incierto, consultar primero ese UUID. `GET` y `/cancelar` completan el protocolo. Ver [contratos completos](agente_flujo.md).
 
-      - Responde siempre y solo con el JSON pedido: nada de texto fuera de
-      él, ni siquiera una pregunta.
-      - message: la respuesta completa para el usuario. Nunca vacío.
-      - events: lo que devolvieron las tools. Vacío si no usaste ninguna.
-      """;
-      @Bean
-      ChatClient chatClient(ChatClient.Builder builder) {
-          return builder
-          .defaultSystem(SYSTEM)
-          .build();
-          }
-  }
+## Salida y errores
 
+La salida del LLM es texto no confiable. El servidor valida que no esté vacía, truncada o en un formato inesperado. Las listas, operaciones, confirmaciones y sus IDs proceden exclusivamente de callbacks Java y persistencia. No reconstruirlos desde JSON del modelo. El mensaje de una operación se reemplaza por el resumen/resultado del backend.
+
+Un fallo antes de resultados se traduce a ErrorRespuesta con HTTP apropiado y código estable: 429 cuota, 502 formato/herramienta rechazada, 503 indisponibilidad/credencial del proveedor y 504 timeout. No exponer cuerpos de error Groq, prompts ni secretos en mensajes o logs. Si existen recibos, se devuelven con `advertencia` sin repetir llamadas. Ninguna solución debe crear una herramienta ficticia `json` ni desactivar la validación.
+
+## Memoria
+
+La sesión se identifica con UUID vinculado al usuario, no por correo. `conversationId` es opcional en la petición y vuelve en la respuesta. Omitirlo inicia sesión independiente. Se guardan veinte mensajes en RAM, con TTL de treinta minutos, máximo cien peticiones por sesión, cinco sesiones por usuario y mil por instancia. No se almacenan tool transcripts completos. Reiniciar pierde memoria; las confirmaciones persisten en PostgreSQL. El cambio de rol invalida el contexto. Los patrones de credenciales reconocidos se rechazan antes de enviar al proveedor; la detección es una protección adicional y no un sistema general de clasificación de datos personales.
+
+## Pruebas y colaboración del equipo
+
+```powershell
+.\mvnw.cmd clean test
+.\mvnw.cmd verify
+powershell -File scripts/test-agent-postgres.ps1
 ```
 
-El prompt tiene una estructura fija de secciones: ROL, REGLAS y FORMATO DE RESPUESTA. Cualquier grupo puede reutilizarla cambiando solo el contenido de cada sección. No hace falta listar jergas: los modelos ya entienden el lenguaje informal, basta con indicarlo en las reglas.
+La suite rápida utiliza H2 aislado, mocks y un servidor HTTP loopback que reproduce la API Groq. La suite PostgreSQL utiliza Flyway real, Hibernate validate y pruebas de concurrencia/rollback. El script jamás acepta una URL de base existente. Las pruebas no deben consumir Groq ni Supabase.
 
-### Servicio y controller del agente (dentro de `/uniride/agent/`)
-
-AgentService.java (ejemplo de otro proyecto)
-
-```java
-  package com.hampcode.ticketsales.agent;
-  import com.hampcode.ticketsales.agent.dto.ChatResponse;
-  import lombok.RequiredArgsConstructor;
-  import org.springframework.ai.chat.client.ChatClient;
-  import org.springframework.stereotype.Service;
-
-  @Service
-  @RequiredArgsConstructor
-  public class AgentService {
-      private final ChatClient chatClient;
-
-      public ChatResponse chat(String message) {
-          // El agente responde con un objeto (salida estructurada), no con texto
-          libre
-          return chatClient.prompt()
-          .user(message)
-          .call()
-          .entity(ChatResponse.class);
-          }
-  }
-```
-
-.entity(ChatResponse.class) reemplaza a .content(): la respuesta ya no es un String sino un objeto
-
-AgentController.java
-
-```java
-package com.hampcode.ticketsales.agent;
-import com.hampcode.ticketsales.agent.dto.ChatRequest;
-import com.hampcode.ticketsales.agent.dto.ChatResponse;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-@RestController
-@RequestMapping("/agent")
-@RequiredArgsConstructor
-public class AgentController {
-    private final AgentService agentService;
-    @PostMapping("/chat")
-    public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
-        return agentService.chat(request.message());
-    }
-}
-```
-
-El controller solo recibe la petición y responde: la lógica del agente está en el servicio, como en el resto del proyecto.
-
-### Tools: Herramientas que el Agente podra utilizar (se implementa dentro de `/uniride/agent/tools/`)
-
-#### EventAgentTools.java (de otro proyecto)
-
-```java
-package com.hampcode.ticketsales.agent.tools;
-import com.hampcode.ticketsales.agent.dto.EventSummary;
-import com.hampcode.ticketsales.dto.response.EventResponseDTO;
-import com.hampcode.ticketsales.service.EventService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.stereotype.Component;
-import java.util.List;
-
-@Component
-@RequiredArgsConstructor
-public class EventAgentTools {
-    private final EventService eventService;
-    @Tool(description = """
-        Busca eventos por ciudad o por parte del nombre.
-        Úsala siempre que el usuario pregunte por eventos.
-    """)
-    public List<EventSummary> searchEvents(
-        @ToolParam(description = "Ciudad, solo si el usuario la menciona", required = false) String city,
-        @ToolParam(description = "Parte del nombre del evento, solo si el usuario la menciona", required = false) String name) {
-            return eventService.searchEvents(name, city, null, null, null, null, PageRequest.of(0, 5))
-                    .content()
-                    .stream()
-                    .map(this::toSummary)
-                    .toList();
-    }
-
-    private EventSummary toSummary(EventResponseDTO e) {
-        return new EventSummary(
-                e.id(), e.name(), e.date(), e.city(),
-                e.basePrice(), e.availableCapacity());
-    }
-}
-```
-
-La tool devuelve una lista de EventSummary: ese resultado vuelve al modelo, que lo usa para redactar el mensaje. La ciudad y el nombre son opcionales y el nombre se busca de forma parcial, así el usuario no necesita escribirlos exacto
-
-#### Registrar la tool (Dentro de `/uniride/agent/AgentConfig.java`)
-
-```java
-package com.hampcode.ticketsales.agent;
-import com.hampcode.ticketsales.agent.tools.EventAgentTools;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-@Configuration
-public class AgentConfig {
-    private static final String SYSTEM = """
-    # ROL
-    Eres el asistente de una plataforma de venta de entradas.
-    # REGLAS
-    - Responde en español, breve y amable
-    - Datos reales: usa siempre las tools. Nunca inventes eventos,
-    fechas, precios ni cupos.
-    - El usuario escribe informal (abreviaciones, errores): interpreta
-    su intención y no exijas nombres exactos.
-    - Al buscar por nombre usa una palabra clave corta, sin tildes y tal
-    como la escribió el usuario.
-    - Si falta un dato para continuar, pregúntalo.
-    - Si no hay resultados, dilo con claridad.
-    # HERRAMIENTAS
-    - searchEvents: cuando pregunten qué eventos hay, por ciudad o por
-    nombre.
-    # FORMATO DE RESPUESTA
-    - Responde siempre y solo con el JSON pedido: nada de texto fuera de
-    él, ni siquiera una pregunta.
-    - message: la respuesta completa para el usuario. Nunca vacío.
-    - events: lo que devolvieron las tools. Vacío si no usaste ninguna.
-    """;
-    @Bean
-    ChatClient chatClient(ChatClient.Builder builder, EventAgentTools tools) {
-        return builder
-            .defaultSystem(SYSTEM)
-            .defaultTools(tools)
-            .build();
-    }
-}
-```
-
-### Modificar `GlobalExceptionHandler.java`
-
-```java
-import tools.jackson.core.JacksonException;
-...
-// el modelo de IA respondió texto en vez del JSON esperado
-@ExceptionHandler(JacksonException.class)
-public ResponseEntity<ErrorResponseDTO> handleAiFormat(JacksonException ex) {
-    return build(HttpStatus.BAD_GATEWAY, "El agente no pudo armar la respuesta, intenta de nuevo");
-}
-```
-
-A veces el modelo responde con texto en vez del JSON esperado. Spring AI lanza entonces una JacksonException y el GlobalExceptionHandler que ya existe la convierte en un error 502 con el mismo formato de los demás errores. Agrega el import junto a los demás y el método antes de build.
-
-### Tools de lectura por nombre (en `/uniride/agent/tools/EventAgentTools.java`)
-
-Ejemplo de otro proyecto:
-
-```java
-package com.hampcode.ticketsales.agent.tools;
-import com.hampcode.ticketsales.agent.dto.EventSummary;
-import com.hampcode.ticketsales.dto.response.EventResponseDTO;
-import com.hampcode.ticketsales.service.EventService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.stereotype.Component;
-import java.util.List;
-
-@Component
-@RequiredArgsConstructor
-public class EventAgentTools {
-    private final EventService eventService;
-    @Tool(description = """Busca eventos por ciudad o por parte del nombre. Sin filtros devuelve los próximos eventos. Úsala siempre que el usuario pregunte por eventos. """)
-    public List<EventSummary> searchEvents(
-        @ToolParam(description = "Ciudad, solo si el usuario la menciona", required = false) String city,
-        @ToolParam(description = "Parte del nombre del evento, solo si el usuario la menciona", required = false) String name) {
-            return find(name, city);
-    }
-    @Tool(description = """Consulta los cupos y el precio de un evento a partir de su nombre. Si devuelve más de un evento, pregunta al usuario cuál le interesa.""")
-    public List<EventSummary> checkAvailability(@ToolParam(description = "Nombre del evento, o parte de él") String name,
-                                                @ToolParam(description = "Ciudad, solo si el usuario la menciona", required = false) String city) {
-        return find(name, city);
-    }
-
-    // El usuario no conoce ids: el servidor resuelve el evento a partir del nombre y la ciudad
-    private List<EventSummary> find(String name, String city) {
-        return eventService.searchEvents(
-            name, city, null, null, null, null,
-            PageRequest.of(0, 5))
-                .content()
-                .stream()
-                .map(this::toSummary)
-                .toList();
-    }
-
-    private EventSummary toSummary(EventResponseDTO e) {
-        return new EventSummary(
-            e.id(), e.name(), e.date(), e.city(),
-            e.basePrice(), e.availableCapacity());
-    }
-}
-```
-
-El participante no conoce el id de un evento, por eso ninguna tool lo pide: checkAvailability recibe el nombre (y opcionalmente la ciudad) y el servidor busca el evento. Si hay variosque coinciden, la tool los devuelve todos y el agente pregunta cuál.
-
-### Tools de Escritura (en `/uniride/agent/tools/EventAgentTools.java`)
-
-```java
-package com.hampcode.ticketsales.agent.tools;
-import com.hampcode.ticketsales.agent.dto.EventSummary;
-import com.hampcode.ticketsales.agent.dto.PurchaseResult;
-import com.hampcode.ticketsales.dto.request.TicketRequestDTO;
-import com.hampcode.ticketsales.dto.response.EventResponseDTO;
-import com.hampcode.ticketsales.dto.response.TicketResponseDTO;
-import com.hampcode.ticketsales.service.EventService;
-import com.hampcode.ticketsales.service.TicketService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.stereotype.Component;
-import java.util.List;
-
-@Component
-@RequiredArgsConstructor
-public class EventAgentTools {
-    private final EventService eventService;
-    private final TicketService ticketService;
-    @Tool(description = ""
-            "
-            Busca eventos por ciudad o por parte del nombre.Sin filtros devuelve los próximos eventos.Úsala siempre que el usuario pregunte por eventos.
-            ""
-            ")
-            public List < EventSummary > searchEvents(
-                @ToolParam(description = "Ciudad, solo si el usuario la menciona",
-                    required = false) String city,
-                @ToolParam(description = "Parte del nombre del evento, solo si el
-                    usuario la menciona ", required = false)
-                    String name) {
-                    return find(name, city);
-                }
-                @Tool(description = ""
-                    "
-                    Consulta los cupos y el precio de un evento a partir de su nombre.Si devuelve más de un evento, pregunta al usuario cuál le interesa.
-                    ""
-                    ")
-                    public List < EventSummary > checkAvailability(
-                        @ToolParam(description = "Nombre del evento, o parte de él") String name,
-                        @ToolParam(description = "Ciudad, solo si el usuario la menciona",
-                            required = false) String city) {
-                        return find(name, city);
-                    }
-                    @Tool(description = ""
-                        "
-                        Inicia la compra de UNA entrada para el evento indicado por nombre y / o ciudad.NO registra la entrada: devuelve CONFIRMATION_REQUIRED con el evento y el precio para que el usuario confirme.Si varios eventos coinciden devuelve AMBIGUOUS.Si el usuario no dijo ningún evento devuelve MISSING_EVENT.
-                        ""
-                        ")
-                        public PurchaseResult requestTicket(
-                            @ToolParam(description = "Nombre del evento, o parte de él",
-                                required = false) String name,
-                            @ToolParam(description = "Ciudad, solo si el usuario la menciona",
-                                required = false) String city) {
-                            return buy(name, city, false);
-                        }
-                        @Tool(description = ""
-                            "
-                            Registra la entrada cuando el usuario YA confirmó la compra(dijo sí, confirmo, dale).Es la única forma de registrar una entrada.Devuelve PENDING si quedó registrada.
-                            ""
-                            ")
-                            public PurchaseResult confirmTicket(
-                                @ToolParam(description = "Nombre del evento que el usuario
-                                    confirmó ", required = false) String name,
-                                    @ToolParam(description = "Ciudad, solo si el usuario la menciona",
-                                        required = false) String city) {
-                                    return buy(name, city, true);
-                                }
-                                private PurchaseResult buy(String name, String city, boolean confirmed) {
-                                    requireParticipant();
-                                    if (isBlank(name) && isBlank(city)) {
-                                        return new PurchaseResult(null, null, null, "MISSING_EVENT");
-                                    }
-                                    List < EventSummary > matches = find(name, city);
-                                    EventSummary event = pickEvent(matches, name);
-                                    if (event == null) {
-                                        return new PurchaseResult(null, null, null, matches.isEmpty() ?
-                                            "NOT_FOUND" : "AMBIGUOUS");
-                                    }
-                                    if (!confirmed) {
-                                        return new PurchaseResult(null, event.name(), event.price(),
-                                            "CONFIRMATION_REQUIRED");
-                                    }
-                                    TicketResponseDTO t = ticketService
-                                        .purchaseTicket(new TicketRequestDTO(event.id()));
-                                    return new PurchaseResult(
-                                        t.id(), t.eventName(), t.pricePaid(), t.status());
-                                }
-                                // El usuario no conoce ids: el servidor resuelve el evento a partir del
-                                nombre y la ciudad private List < EventSummary > find(String name, String city) {
-                                    return eventService.searchEvents(
-                                            name, city, null, null, null, null,
-                                            PageRequest.of(0, 5))
-                                        .content()
-                                        .stream()
-                                        .map(this::toSummary)
-                                        .toList();
-                                }
-                                // Un solo resultado: ese. Varios: solo si uno coincide exactamente con el
-                                nombre dicho private EventSummary pickEvent(List < EventSummary > matches, String name) {
-                                    if (matches.size() == 1) {
-                                        return matches.get(0);
-                                    }
-                                    if (isBlank(name)) {
-                                        return null;
-                                    }
-                                    List < EventSummary > exact = matches.stream()
-                                    filter(e - > e.name().equalsIgnoreCase(name.trim()))
-                                        .toList();
-                                    return exact.size() == 1 ? exact.get(0) : null;
-                                }
-                                private boolean isBlank(String s) {
-                                    return s == null || s.isBlank();
-                                }
-                                private EventSummary toSummary(EventResponseDTO e) {
-                                    return new EventSummary(
-                                        e.id(), e.name(), e.date(), e.city(),
-                                        e.basePrice(), e.availableCapacity());
-                                }
-                                private void requireParticipant() {
-                                    Authentication auth = SecurityContextHolder
-                                        .getContext().getAuthentication();
-                                    boolean isParticipant = auth != null &&
-                                        auth.getAuthorities().stream()
-                                        .anyMatch(a - > a.getAuthority().equals("ROLE_PARTICIPANT"));
-                                    if (!isParticipant) {
-                                        throw new AccessDeniedException(
-                                            "Solo un participante puede comprar entradas");
-                                    }
-                                }
-                            }
-
-```
-
-La compra son dos tools con nombres que equivalen a lo que dice el usuario: requestTicket inicia la compra pero NO registra nada (devuelve CONFIRMATION_REQUIRED con el evento y el precio) y confirmTicket registra la entrada cuando el usuario confirma.
-Resultados posibles: PENDING (registrada), CONFIRMATION_REQUIRED, AMBIGUOUS (varios eventos coinciden), NOT_FOUND y MISSING_EVENT (no dijo cuál). La validación de rol es lo primero que se ejecuta: si quien llama no es PARTICIPANT, ni siquiera busca eventos.
-Aprobación de la compra. El flujo de dos pasos pide que el usuario apruebe: requestTicket no registra nada y solo confirmTicket lo hace. Hoy ese orden lo sigue el modelo porque el prompt (FLUJO DE COMPRA) se lo indica; el servidor solo garantiza el rol PARTICIPANT, y la entrada queda en estado PENDING (sin pagar). En un sistema real la aprobación debería ser un botón en la pantalla que llame directamente a POST /tickets, así ninguna respuesta del modelo puede registrar una compra por sí sola.
-
-### Memoria de conversación y system prompt (Modificar en `/uniride/agent/AgentConfig.java`)
-
-```java
-package com.hampcode.ticketsales.agent;
-import com.hampcode.ticketsales.agent.tools.EventAgentTools;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-@Configuration
-public class AgentConfig {
-    private static final String SYSTEM = ""
-    "
-    # ROL
-    Eres el asistente de una plataforma de venta de entradas.
-    # REGLAS
-        -
-        Responde en español, breve y amable. -
-        Datos reales: usa siempre las tools.Nunca inventes eventos,
-        fechas, precios ni cupos. -
-        El usuario escribe informal(abreviaciones, errores): interpreta
-    su intención y no exijas nombres exactos. -
-        Nunca pidas ids: identifica el evento por el nombre o la ciudad
-    que mencione el usuario. -
-        Al buscar por nombre usa una palabra clave corta, sin tildes y tal
-    como la escribió el usuario. -
-        Si falta un dato para continuar, pregúntalo. -
-        Si no hay resultados, dilo con claridad. -
-        Nunca digas que hiciste algo(comprar, consultar) si no llamaste a
-    la tool que lo hace. -
-        Llama a las tools en cada mensaje que lo requiera, aunque ya lo
-    hayas hecho antes en la conversación.
-    # HERRAMIENTAS
-        -
-        searchEvents: cuando pregunten qué eventos hay, por ciudad o por
-    nombre. -
-        checkAvailability: cuando pregunten por los cupos o el precio de
-    un evento. -
-        requestTicket: cuando el usuario quiera comprar una entrada.No la
-    registra. -
-        confirmTicket: cuando el usuario confirme la compra.Es lo único
-    que registra la entrada.
-    # FLUJO DE COMPRA
-    1. Llama a requestTicket, aunque el usuario no haya dicho el evento.
-    2. MISSING_EVENT: pregunta qué evento quiere.
-    3. AMBIGUOUS: llama a searchEvents, lista las opciones y pregunta
-    cuál quiere.
-    4. CONFIRMATION_REQUIRED: pide confirmación mostrando el nombre del
-    evento y el precio.
-    5. Si el usuario confirma, aunque sea con una sola palabra(sí,
-            confirmo, dale):
-        llama a confirmTicket con el nombre del evento de la
-    conversación.
-    Sin esa llamada la entrada NO se registra.
-    # FORMATO DE RESPUESTA
-        -
-        Responde siempre y solo con el JSON pedido: nada de texto fuera de
-    él, ni siquiera una pregunta. -
-        message: la respuesta completa para el usuario.Nunca vacío. -
-        events: lo que devolvieron las tools.Vacío si no usaste ninguna. -
-        purchase: copia completo(con todos sus campos) el resultado de
-    requestTicket o confirmTicket.null si no los llamaste. -
-        En message informa según lo que devolvió la tool: PENDING
-    significa entrada registrada.
-    # LÍMITES
-        -
-        Una entrada por vez. -
-        No puedes pagar ni reembolsar.
-    ""
-    ";
-    @Bean
-    ChatClient chatClient(ChatClient.Builder builder,
-        EventAgentTools tools) {
-        // Memoria: guarda los últimos 20 mensajes de cada conversación
-        var memory = MessageWindowChatMemory.builder()
-            .maxMessages(20)
-            .build();
-        return builder
-            .defaultSystem(SYSTEM)
-            .defaultTools(tools)
-            .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())
-            .build();
-    }
-}
-```
-
-La memoria es un advisor: MessageWindowChatMemory guarda los últimos 20 mensajes de cada conversación y MessageChatMemoryAdvisor los agrega a cada llamada. Gracias a eso el agente entiende un "sí, confirmo" o un "el de jazz" que depende del mensaje anterior.
-La memoria vive en RAM: al reiniciar la app se pierde. El system prompt mantiene la misma estructura de secciones del Laboratorio 01 (ROL, REGLAS, HERRAMIENTAS, FLUJO DE COMPRA, FORMATO DE RESPUESTA y LÍMITES): para otro proyecto se cambia el contenido de cada sección, no la estructura.
-
-#### Modificar (`/uniride/agent/AgentService.java`)
-
-```java
-package com.hampcode.ticketsales.agent;
-import com.hampcode.ticketsales.agent.dto.ChatResponse;
-import lombok.RequiredArgsConstructor;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.stereotype.Service;
-@Service
-@RequiredArgsConstructor
-public class AgentService {
-    private final ChatClient chatClient;
-    // username sale del JWT: cada usuario tiene su propia conversación y nadie
-    lee la de otro
-    public ChatResponse chat(String username, String message) {
-        return chatClient.prompt()
-            .user(message)
-            .advisors(a - > a.param(ChatMemory.CONVERSATION_ID, username))
-            .call()
-            .entity(ChatResponse.class);
-    }
-}
-```
-
-El username sale del JWT (auth.getName()): cada usuario tiene su propia conversación y nadie puede leer la de otro
-
-#### Modificar (`/uniride/agent/AgentController.java`)
-
-```java
-package com.hampcode.ticketsales.agent;
-import com.hampcode.ticketsales.agent.dto.ChatRequest;
-import com.hampcode.ticketsales.agent.dto.ChatResponse;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-@RestController
-@RequestMapping("/agent")
-@RequiredArgsConstructor
-public class AgentController {
-    private final AgentService agentService;
-    @PostMapping("/chat")
-    public ChatResponse chat(@Valid @RequestBody ChatRequest request,
-        Authentication auth) {
-        return agentService.chat(auth.getName(), request.message());
-    }
-}
-```
-
-El controller solo agrega el usuario autenticado y sigue recibiendo y respondiendo.
-
-## Estructura del directorio para el agente
-
-```
-|_ uniride
-|   |_ agent/
-|       |_ dto/
-|       |_ tools/
-|           |_ AgentTools.java
-|       |_ AgentService.java
-|       |_ AgentController.java
-|       |_ AgentConfig.java
-```
-
-## Objetivos para este proyecto:
-
-1. Que el pasajero pueda preguntar por viajes en X dia en X horas...
-2. Que el pasajero / conductor consulte sobre sus viajes.
-3. Que el conductor pueda consultar sobre sus rutas.
-4. Que el pasajero / conductor consulte sobre sus metodos de compensacion
-5. Que el conductor pueda crear una ruta
-6. Que el conductor pueda crear un viaje
-7. Que el pasajero se pueda unir a un viaje
-8. Que el pasajero / conductor pueda registrar metodos de compensacion
+Cada integrante debe añadir sus futuras tools sobre estos contratos, con DTO propios, consultas acotadas y el protocolo de confirmación compartido. Coordinar nombres de tipos, migraciones consecutivas y orden de locks; no alterar endpoints tradicionales ni implementar una memoria persistente compleja sin una necesidad concreta.

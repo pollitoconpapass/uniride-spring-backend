@@ -45,6 +45,7 @@ Configurar las siguientes variables:
 - `JWT_SECRET`: clave Base64 utilizada para firmar los tokens JWT.
 - `EMAIL_ADDRESS`: opcional para el entorno local.
 - `EMAIL_PASSWORD`: opcional para el entorno local.
+- `GROQ_API_KEY`: clave de Groq para el agente (`openai/gpt-oss-120b`).
 
 Para generar una clave JWT segura desde PowerShell:
 
@@ -97,6 +98,26 @@ La especificación OpenAPI en formato JSON está disponible en:
 
 Los endpoints protegidos utilizan autenticación Bearer mediante JWT.
 El token puede configurarse desde el botón `Authorize` de Swagger UI.
+
+## Agente de IA
+
+`POST /api/agent/chat` recibe `{"message":"Consulta mis rutas"}` con JWT.
+La respuesta conserva los campos originales y agrega `conversationId`, `resultados`
+y `advertencia`. Para continuar una sesión, reenvía su `conversationId`; omitirlo
+inicia una conversación independiente. Las sesiones viven en RAM, expiran tras
+30 minutos de inactividad y no se comparten entre usuarios.
+
+El agente utiliza herramientas Java mediante Spring AI y la API compatible de
+Groq. El backend construye los datos estructurados a partir de sus resultados;
+no combina Structured Outputs con tool calling ni registra una herramienta `json`.
+Las cuatro operaciones de escritura únicamente preparan confirmaciones. Para
+ejecutarlas se necesita un endpoint autenticado explícito, independiente del modelo.
+
+Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
+[guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md) y el
+[informe de auditoría del agente](docs/auditoria-hardening-agente-ia.md).
+No habilites `ddl-auto: update`: Flyway migra y Hibernate valida el esquema.
+Las pruebas usan proveedores simulados y bases aisladas; no requieren una clave Groq real.
 
 ### Cambiar la contraseña de una base existente
 

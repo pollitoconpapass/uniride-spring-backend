@@ -42,11 +42,7 @@ public class MetodoCompensacionService {
     public MetodoCompensacionRespuesta registrar(MetodoCompensacionRequest request) {
         Usuario usuario = usuarioService.usuarioActual();
         String descripcion = request.descripcion().trim();
-
-        if (metodoCompensacionRepository.existsByUsuarioIdAndTipoAndDescripcionIgnoreCase(
-                usuario.getId(), request.tipo(), descripcion)) {
-            throw new BusinessException("Ya tienes un método con el mismo tipo y descripción en tu lista");
-        }
+        validarRegistro(usuario, request);
 
         MetodoCompensacion metodo = metodoCompensacionMapper.toMetodoCompensacion(request);
         metodo.setUsuario(usuario);
@@ -59,6 +55,18 @@ public class MetodoCompensacionService {
                 "Registraste tu método " + guardado.getTipo() + ": " + guardado.getDescripcion() + ".");
 
         return metodoCompensacionMapper.toMetodoCompensacionRespuesta(guardado);
+    }
+
+    @Transactional(readOnly = true)
+    public void validarRegistro(MetodoCompensacionRequest request) {
+        validarRegistro(usuarioService.usuarioActual(), request);
+    }
+
+    private void validarRegistro(Usuario usuario, MetodoCompensacionRequest request) {
+        if (metodoCompensacionRepository.existsByUsuarioIdAndTipoAndDescripcionIgnoreCase(
+                usuario.getId(), request.tipo(), request.descripcion().trim())) {
+            throw new BusinessException("Ya tienes un método con el mismo tipo y descripción en tu lista");
+        }
     }
 
     @Transactional

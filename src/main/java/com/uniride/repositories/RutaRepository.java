@@ -12,6 +12,17 @@ import org.springframework.data.repository.query.Param;
 
 public interface RutaRepository extends JpaRepository<Ruta, Long> {
 
+    /** Agent reads must not call the legacy state synchronization method. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"conductor"})
+    @Query("SELECT r FROM Ruta r WHERE r.conductor.id = :conductorId "
+            + "AND r.estado <> :eliminada "
+            + "AND LOCATE(COALESCE(:origen, ''), LOWER(r.origen)) > 0 "
+            + "AND LOCATE(COALESCE(:destino, ''), LOWER(r.destino)) > 0 "
+            + "ORDER BY r.fechaCreacion DESC, r.id DESC")
+    Page<Ruta> consultarRutasAgente(@Param("conductorId") Long conductorId,
+            @Param("eliminada") EstadoRuta eliminada, @Param("origen") String origen,
+            @Param("destino") String destino, Pageable pageable);
+
     Page<Ruta> findByConductorId(Long conductorId, Pageable pageable);
 
     // US09: obtener todas las rutas del conductor para recalcular estados antes de filtrar.

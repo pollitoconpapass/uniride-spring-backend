@@ -28,7 +28,9 @@ public class UsuarioService {
 
     public Usuario usuarioActual() {
         Authentication autenticacion = SecurityContextHolder.getContext().getAuthentication();
-        if (autenticacion == null || autenticacion.getName() == null) {
+        if (autenticacion == null || !autenticacion.isAuthenticated()
+                || autenticacion instanceof org.springframework.security.authentication.AnonymousAuthenticationToken
+                || autenticacion.getName() == null) {
             throw new NoAutorizadoException("Debes iniciar sesión para realizar esta acción");
         }
         return usuarioRepository.findByCorreoInstitucional(autenticacion.getName())

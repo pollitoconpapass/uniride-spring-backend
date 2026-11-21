@@ -68,9 +68,7 @@ public class RutaService {
     @Transactional
     public RutaRespuesta publicar(RutaRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
-        if (conductor.getRolPrincipal() != Rol.CONDUCTOR) {
-            throw new NoPermitidoException("Debes tener el rol de conductor para publicar rutas");
-        }
+        validarConductor(conductor);
 
         Ruta ruta = rutaMapper.toRuta(request);
         ruta.setConductor(conductor);
@@ -82,6 +80,20 @@ public class RutaService {
                 "Tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino() + " fue publicada correctamente.");
 
         return rutaMapper.toRutaRespuesta(guardada);
+    }
+
+    /** Same prerequisite as publication, without persisting a route or a notification. */
+    @Transactional(readOnly = true)
+    public String validarPublicacion(RutaRequest request) {
+        Usuario conductor = usuarioService.usuarioActual();
+        validarConductor(conductor);
+        return universidadDelConductor(conductor);
+    }
+
+    private void validarConductor(Usuario conductor) {
+        if (conductor.getRolPrincipal() != Rol.CONDUCTOR) {
+            throw new NoPermitidoException("Debes tener el rol de conductor para publicar rutas");
+        }
     }
 
     /**

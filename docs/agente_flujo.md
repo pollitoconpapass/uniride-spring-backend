@@ -1,167 +1,46 @@
-# Agente de IA: descubrimiento de beans y flujo de una petición
+﻿# Agente UniRide: flujo, contratos y pruebas manuales
 
-Este documento explica cómo se conecta el módulo `com.uniride.agent` con el resto de la aplicación y qué ocurre desde que llega un mensaje a `POST /api/agent/chat` hasta que se devuelve la respuesta.
+Implementación vigente: Java 21, Spring Boot 4.1.1, Spring AI 2.0.2 y Groq mediante API compatible con OpenAI, modelo `openai/gpt-oss-120b`. No requiere una clave de OpenAI. Configurar únicamente `GROQ_API_KEY` en el entorno privado.
 
-## 1. Archivos que participan
+## Componentes y descubrimiento
 
-| Archivo | Responsabilidad |
-|---|---|
-| `UnirideApplication.java` | Arranca Spring Boot y escanea el paquete `com.uniride` y sus subpaquetes. |
-| `agent/AgentConfig.java` | Define el bean `ChatClient`, el system prompt, las tools y la memoria. |
-| `agent/AgentController.java` | Recibe `POST /agent/chat` y obtiene el usuario autenticado. |
-| `agent/AgentService.java` | Agrega el contexto de fecha/rol y llama al `ChatClient`. |
-| `agent/tools/*.java` | Métodos anotados con `@Tool` que el modelo puede invocar. |
-| `services/*.java` | Reglas de negocio reutilizadas por las tools. |
-| `security/JwtAuthFilter.java` | Valida el JWT y llena el `SecurityContext`. |
-| `exceptions/GlobalExceptionHandler.java` | Convierte errores del agente o del modelo en respuestas HTTP controladas. |
+El texto visible se controla en Java: resumen de la operación, conteo paginado o preguntas aclaratorias de un catálogo. La salida libre del modelo solo orienta el tema de la pregunta; no puede afirmar una escritura sin recibo. Las excepciones de callbacks se interceptan antes del procesador de Spring AI para no enviar errores internos al proveedor.
 
-`AgentConfig` **no se importa** en `AgentService` ni en `AgentController`. La unión ocurre en tiempo de arranque mediante el contenedor de Spring.
-
-## 2. Cómo se descubre `AgentConfig`
-
-`UnirideApplication` está anotada con `@SpringBootApplication`:
-
-```java
-@SpringBootApplication
-@EnableScheduling
-public class UnirideApplication { ... }
-```
-
-`@SpringBootApplication` incluye `@ComponentScan`, que busca componentes en `com.uniride` y todos sus subpaquetes. Por eso encuentra automáticamente:
-
-- `AgentConfig` porque tiene `@Configuration`.
-- `AgentController` porque tiene `@RestController`.
-- `AgentService` porque tiene `@Service`.
-- `ViajeAgentTools`, `RutaAgentTools` y `MetodoCompensacionAgentTools` porque tienen `@Component`.
+`@SpringBootApplication` escanea `com.uniride`. Spring descubre `AgentConfig`, crea el `ChatClient` e inyecta los componentes por constructor. No se instancia la configuración manualmente.
 
 ```mermaid
 flowchart TD
-    START["SpringApplication.run(UnirideApplication)"] --> SCAN["@SpringBootApplication<br/>incluye @ComponentScan sobre com.uniride"]
-    SCAN --> CFG["Encuentra AgentConfig<br/>@Configuration"]
-    SCAN --> BEANS["Encuentra AgentController, AgentService<br/>y las clases @Component de tools"]
-    AI["spring-ai-starter-model-google-genai<br/>+ spring.ai.google.genai.api-key"] --> AUTOCFG["Auto-configuración de Spring AI"]
-    AUTOCFG --> BUILDER["Bean ChatClient.Builder"]
-    CFG --> METHOD["Ejecuta el método @Bean chatClient(...)"]
-    BEANS --> METHOD
-    BUILDER --> METHOD
-    METHOD --> CLIENT["Bean ChatClient<br/>system prompt + tools + memoria"]
-    CLIENT --> SERVICE["Se inyecta en AgentService"]
-    SERVICE --> CONTROLLER["Se inyecta en AgentController"]
+    C[AgentController] --> S[AgentService]
+    S --> M[AgentConversationStore: RAM limitada]
+    S --> CC[ChatClient / Groq]
+    CC --> R[AgentToolRegistry: recibos por petición]
+    R --> T[AgentTools]
+    T --> Q[AgentQueryService: solo lectura]
+    T --> P[ConfirmationService: preparar]
+    H[ConfirmationController: JWT y UUID] --> E[ConfirmationService: confirmar/cancelar/consultar]
+    E --> B[Services existentes: reglas de negocio]
+    Q --> DB[Repositories]
+    P --> DB
+    B --> DB
 ```
 
-### El método `@Bean`
+El modelo elige entre las nueve herramientas registradas. Las consultas recuperan datos autorizados; las escrituras preparan una confirmación. Ninguna herramienta confirma. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta. El texto del modelo no proporciona IDs, estados ni listas al contrato HTTP.
 
-```java
-@Configuration
-public class AgentConfig {
+El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
-    @Bean
-    ChatClient chatClient(ChatClient.Builder builder, ViajeAgentTools viajeTools,
-            RutaAgentTools rutaTools, MetodoCompensacionAgentTools metodoTools) {
-        var memory = MessageWindowChatMemory.builder().maxMessages(20).build();
-        return builder
-                .defaultSystem(SYSTEM)
-                .defaultTools(viajeTools, rutaTools, metodoTools)
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())
-                .build();
-    }
-}
-```
+## Autenticación y permisos
 
-Al arrancar, Spring:
+Todas las rutas `/api/agent/**` requieren Bearer JWT válido de una cuenta verificada. La identidad procede de Spring Security y del usuario actual de la base, nunca de argumentos del modelo. Las pruebas conservan el comportamiento HTTP existente de SecurityConfig: sin token, inválido o expirado se responde 403; no se cambia globalmente el contrato de seguridad.
 
-1. Detecta `AgentConfig` como configuración.
-2. Ejecuta `chatClient(...)`.
-3. Resuelve los parámetros por tipo desde el contenedor:
-   - `ChatClient.Builder`: lo provee la auto-configuración de Spring AI.
-   - Las tools: son beans `@Component` encontrados por el escaneo.
-4. Registra el objeto devuelto como un bean de tipo `ChatClient`.
+| Herramienta | Rol actual requerido |
+|---|---|
+| consultarMisRutas, consultarMisViajes, crearRuta, crearViaje | CONDUCTOR |
+| buscarViajes, consultarMisSolicitudes, solicitarUnirse | PASAJERO |
+| consultarMisMetodosCompensacion, registrarMetodoCompensacion | Ambos |
 
-`defaultTools(...)` convierte los métodos anotados con `@Tool` en definiciones que se envían al modelo. Cuando Gemini decide usar una, **Spring AI ejecuta el método Java** del bean correspondiente. No hay una llamada manual a las tools desde `AgentService`.
+La búsqueda de viajes respeta la restricción del controller tradicional a PASAJERO. El agente no cambia roles. La ejecución de confirmaciones comprueba nuevamente rol, propiedad, datos resumidos y reglas existentes.
 
-### Inyección por constructor
-
-`AgentService` solo declara el campo:
-
-```java
-@Service
-@RequiredArgsConstructor
-public class AgentService {
-    private final ChatClient chatClient;
-    private final UsuarioService usuarioService;
-    private final Clock clock;
-    ...
-}
-```
-
-Lombok genera el constructor y Spring inyecta cada dependencia por tipo. No hay `new AgentConfig()` ni `AgentConfig.chatClient()`.
-
-Lo mismo ocurre con `AgentController`:
-
-```java
-@RestController
-@RequiredArgsConstructor
-public class AgentController {
-    private final AgentService agentService;
-}
-```
-
-## 3. Dependencias entre componentes
-
-```mermaid
-flowchart LR
-    C["AgentController"] --> S["AgentService"]
-    S --> CC["ChatClient<br/>bean creado por AgentConfig"]
-    CC --> T1["ViajeAgentTools"]
-    CC --> T2["RutaAgentTools"]
-    CC --> T3["MetodoCompensacionAgentTools"]
-    T1 --> SV1["BusquedaService<br/>SolicitudService<br/>ViajeService<br/>RutaService<br/>UsuarioService"]
-    T2 --> SV1
-    T3 --> SV2["MetodoCompensacionService"]
-    SV1 --> R["Repositorios JPA"]
-    SV2 --> R
-```
-
-## 4. Flujo completo de una petición
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as Usuario
-    participant F as JwtAuthFilter
-    participant C as AgentController
-    participant S as AgentService
-    participant CC as ChatClient
-    participant M as GoogleGenAiChatModel
-    participant G as Gemini
-    participant T as Tools
-    participant SV as Servicios y repositorios
-
-    U->>F: POST /api/agent/chat<br/>Authorization: Bearer token
-    F->>F: Valida el JWT y llena el SecurityContext
-    F->>C: Petición autenticada
-    C->>S: chat(correo, mensaje)
-    S->>S: Agrega fecha, hora y rol activo al mensaje
-    S->>CC: prompt().user(...).advisors(memoria).call().entity(...)
-    CC->>M: Envía system prompt, mensaje y definiciones de tools
-    M->>G: Llamada al modelo
-    loop Mientras Gemini pida tools
-        G-->>M: tool_call
-        M->>T: Invoca el método anotado con @Tool
-        T->>SV: Llama al servicio del proyecto
-        SV-->>T: DTO o resultado de negocio
-        T-->>M: Resultado serializado
-        M->>G: Devuelve el resultado de la tool
-    end
-    G-->>M: JSON final de ChatResponse
-    M-->>CC: Respuesta del modelo
-    CC->>CC: BeanOutputConverter convierte el JSON a ChatResponse
-    CC-->>S: ChatResponse
-    S-->>C: ChatResponse
-    C-->>U: 200 OK con el JSON
-```
-
-## 5. Ejemplo de petición y respuesta
+## Conversación
 
 ```http
 POST /api/agent/chat
@@ -170,189 +49,128 @@ Content-Type: application/json
 ```
 
 ```json
-{
-  "message": "¿Hay viajes el viernes a las 7?"
-}
+{"message":"¿Cuáles son mis rutas?"}
 ```
+
+Respuesta de consulta (IDs y contenidos son ilustrativos):
 
 ```json
 {
-  "message": "Encontré un viaje el viernes a las 07:00 de Surco a UPC.",
-  "viajes": [
-    {
-      "viajeId": 12,
-      "rutaId": 3,
-      "origen": "Surco",
-      "destino": "UPC",
-      "dia": "Viernes",
-      "fecha": "2026-11-20",
-      "hora": "07:00",
-      "puntosReferencia": "Parque",
-      "conductorNombre": "Juan",
-      "capacidadMaxima": 4,
-      "estado": null,
-      "estadoSolicitud": null
-    }
-  ],
-  "rutas": [],
-  "metodosCompensacion": [],
-  "operacion": null
+  "message":"Se encontró 1 resultado en las páginas consultadas.",
+  "viajes":[],
+  "rutas":[{"rutaId":13,"origen":"Surco","destino":"UPC","puntosReferencia":"Parque","zonasSinParada":null,"capacidadMaxima":4,"estado":"ACTIVA"}],
+  "metodosCompensacion":[],
+  "operacion":null,
+  "resultados":[{"tipo":"consultarMisRutas","datos":{"items":[{"rutaId":13,"origen":"Surco","destino":"UPC","puntosReferencia":"Parque","zonasSinParada":null,"capacidadMaxima":4,"estado":"ACTIVA"}],"pagina":0,"tamano":10,"total":1,"hayMas":false}}],
+  "advertencia":null,
+  "conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"
 }
 ```
 
-## 6. Detalles de comportamiento
+Los cinco campos originales se conservan. `resultados` es un sobre extensible: `tipo` identifica la herramienta y `datos` contiene su resultado Java. Las listas originales siguen disponibles para los clientes existentes. Las futuras tools pueden agregar tipos sin crear campos vacíos de funcionalidades que aún no existen.
 
-- **Seguridad:** `SecurityConfig` deja `/agent/**` dentro de `anyRequest().authenticated()`. No hay `permitAll` para el agente.
-- **Identidad:** el correo sale del `Authentication` que construyó `JwtAuthFilter`. Se usa para la memoria de conversación y para que `UsuarioService.usuarioActual()` resuelva al usuario.
-- **Memoria:** `MessageWindowChatMemory` guarda los últimos 20 mensajes por correo. Vive en RAM y se pierde al reiniciar.
-- **Unirse a un viaje:** `solicitarUnirse` llama directamente a `SolicitudService.crear`. La solicitud queda `PENDIENTE` y el conductor decide si la acepta o rechaza. El agente no confirma ni acepta solicitudes.
-- **Errores de negocio:** las tools de escritura capturan `BusinessException`, `CamposInvalidosException`, `ResourceNotFoundException` y `NoPermitidoException`, y devuelven `OperacionResumen(ERROR, ...)` para que el modelo lo explique.
-- **Respuesta inválida del modelo:** si Gemini responde texto en vez del JSON esperado, `BeanOutputConverter` lanza `JacksonException` y `GlobalExceptionHandler` responde `502 BAD_GATEWAY`.
-- **Tests:** `src/test/resources/application.yml` define una `api-key` dummy para que el contexto de pruebas no dependa de `GEMINI_API_KEY`.
+Continuar sesión:
 
-## 7. Cómo probarlo desde Postman
+```json
+{"message":"Muéstrame la página siguiente","conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"}
+```
 
-### 7.1 Preparación
+Omitir `conversationId` inicia una sesión independiente. El ID es aleatorio y está vinculado al usuario; uno ajeno o desconocido devuelve 404. La sesión vive en RAM, conserva como máximo 20 mensajes (diez intercambios), admite 100 peticiones y expira tras 30 minutos sin actividad. Limpieza cada minuto. Se permiten cinco sesiones por usuario (se desplaza la más antigua libre) y mil en total por instancia. Un mensaje simultáneo en la misma sesión devuelve 409. El cambio de rol invalida su contexto (409). Reiniciar la instancia elimina la memoria, sin afectar confirmaciones persistidas. No hay endpoint para recuperar historias ajenas. No enviar contraseñas, JWT ni claves; los patrones de credenciales reconocidos se rechazan antes de llamar al proveedor.
 
-1. Arranca la aplicación con `GEMINI_API_KEY` configurada en el `.env`.
-2. En Postman crea un entorno con estas variables:
+Las herramientas devuelven diez elementos por página y `hayMas`; la primera página es cero. Se admite hasta la página 10000 por protección de coste. No se carga toda la base. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido: el agente no dispara la sincronización de estados del endpoint tradicional.
 
-| Variable | Valor inicial |
-|---|---|
-| `baseUrl` | `http://localhost:8080/api` |
-| `token` | vacío |
-| `tokenConductor` | vacío |
-| `tokenPasajero` | vacío |
-| `correoConductor` | correo de una cuenta con rol conductor |
-| `correoPasajero` | correo de una cuenta con rol pasajero |
+## Preparación y confirmación
 
-3. Usa cuentas **verificadas**. El login rechaza cuentas con `cuentaVerificada = false`. Si necesitas crear una, primero llama a `POST /auth/registro` y luego a `POST /auth/verificar` con el código de seis dígitos.
+```json
+{"message":"Crea un viaje el 25 de noviembre de 2026 a las 08:00 en mi ruta de Surco"}
+```
 
-### 7.2 Obtener el token (login)
+Si faltan datos o hay varias coincidencias, no se crea ninguna operación de negocio. El servidor puede devolver `operacion.estado` como `DATOS_FALTANTES`, `AMBIGUO`, `NO_ENCONTRADO` o `ERROR`. Una pregunta sin tool conserva listas vacías y `operacion:null`.
 
-Request:
+Cuando los datos son válidos, `operacion` es:
+
+```json
+{
+  "estado":"CONFIRMACION_REQUERIDA",
+  "id":null,
+  "detalle":"Programar un viaje desde Surco hacia UPC el 2026-11-25 a las 08:00, capacidad 4. Referencias: Parque. ¿Confirmas esta operación?",
+  "confirmacion":{
+    "id":"f081920f-85ea-4f48-aafa-5abb11ae0077",
+    "tipo":"CREAR_VIAJE",
+    "estado":"PENDIENTE",
+    "resumen":"Programar un viaje desde Surco hacia UPC el 2026-11-25 a las 08:00, capacidad 4. Referencias: Parque.",
+    "parametros":{"fecha":"2026-11-25","hora":"08:00:00"},
+    "expira":"2026-11-21T17:10:00Z",
+    "resultado":null
+  }
+}
+```
+
+El frontend muestra `resumen` y botones Confirmar/Cancelar. El identificador y la expiración proceden del backend. La confirmación caduca a los diez minutos; se permiten veinte pendientes vigentes por usuario. Preparar solamente inserta metadatos de confirmación, sin rutas, viajes, solicitudes, métodos ni notificaciones de negocio.
 
 ```http
-POST {{baseUrl}}/auth/login
-Content-Type: application/json
+POST /api/agent/confirmaciones/f081920f-85ea-4f48-aafa-5abb11ae0077/confirmar
+Authorization: Bearer <token>
 ```
+
+No enviar cuerpo ni query parameters. El servidor utiliza exclusivamente los parámetros guardados; cualquier cuerpo no vacío, incluso `{}`, se rechaza con 400. Decir «sí» al modelo no ejecuta nada.
+
+La respuesta es `ConfirmacionResumen`:
 
 ```json
 {
-  "correo": "{{correoConductor}}",
-  "contrasena": "TuPassword1"
+  "id":"f081920f-85ea-4f48-aafa-5abb11ae0077",
+  "tipo":"CREAR_VIAJE",
+  "estado":"EJECUTADA",
+  "resumen":"Programar un viaje desde Surco hacia UPC el 2026-11-25 a las 08:00, capacidad 4. Referencias: Parque.",
+  "parametros":{"fecha":"2026-11-25","hora":"08:00:00"},
+  "expira":"2026-11-21T17:10:00Z",
+  "resultado":{"estado":"EXITO","id":42,"detalle":"Viaje programado para el 2026-11-25 a las 08:00.","confirmacion":null}
 }
 ```
 
-En la pestaña **Tests** de Postman:
-
-```javascript
-const respuesta = pm.response.json();
-
-pm.test("Login correcto", () => {
-  pm.response.to.have.status(200);
-});
-
-pm.environment.set("tokenConductor", respuesta.token);
-```
-
-Repite el login con la cuenta pasajera y guarda el token en `tokenPasajero`. Para pruebas rápidas de un solo usuario puedes usar `token`.
-
-### 7.3 Llamar al agente
-
-Request:
+Se bloquea la confirmación propia y se ejecuta negocio más recibo en una sola transacción. Repetir el mismo ID ejecutado devuelve el resultado almacenado. No se crea una segunda operación. No hay reintentos automáticos de escrituras. Ante un fallo de conexión con resultado incierto, consultar primero el mismo ID; no preparar una acción nueva suponiendo que falló.
 
 ```http
-POST {{baseUrl}}/agent/chat
-Authorization: Bearer {{token}}
-Content-Type: application/json
+GET /api/agent/confirmaciones/{id}
+POST /api/agent/confirmaciones/{id}/cancelar
 ```
 
-Body (raw → JSON):
+Ambos requieren JWT del propietario. Cancelar no recibe cuerpo ni parámetros. Devuelve el mismo sobre con `estado:"CANCELADA"`, `resultado:null`; cancelar otra vez no ejecuta nada. Cancelar una ejecutada o confirmar una cancelada devuelve 409. Una confirmación expirada devuelve 410 y su sobre con `estado:"EXPIRADA"`, `resultado:null`. Una ajena/inexistente da 404. Cambio de rol incompatible: 403. Cambio de ruta, destino de perfil, horario o estado frente al resumen: 409, preparar de nuevo. Fallo de reglas de negocio: 400/409 según la regla, rollback conjunto y confirmación pendiente.
+
+Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE` y `REGISTRAR_METODO`. No se incorporan herramientas de perfil, horarios, reportes ni coordinación.
+
+## Errores y recuperación
+
+Error de proveedor sin resultados previos:
 
 ```json
-{
-  "message": "¿Hay viajes el viernes a las 7?"
-}
+{"mensaje":"El proveedor rechazó la respuesta o la llamada a una herramienta. No se reintentó la conversación.","campos":{"codigo":"PROVIDER_REJECTED"}}
 ```
 
-En la pestaña **Tests**:
-
-```javascript
-const respuesta = pm.response.json();
-
-pm.test("HTTP 200", () => {
-  pm.response.to.have.status(200);
-});
-
-pm.test("El agente respondió", () => {
-  pm.expect(respuesta.message).to.be.a("string").and.not.empty;
-});
-
-if (respuesta.operacion) {
-  pm.test("Operación exitosa", () => {
-    pm.expect(respuesta.operacion.estado).to.eql("EXITO");
-  });
-}
-```
-
-`operacion` es `null` en consultas y tiene valor en escrituras. Los errores de negocio no cambian el HTTP: llegan como `operacion.estado = "ERROR"` y un `detalle` explicando el motivo.
-
-### 7.4 Mensajes de ejemplo por objetivo
-
-| Objetivo | Token | `message` sugerido |
-|---|---|---|
-| Buscar viajes | pasajero o conductor | `"¿Qué viajes hay el viernes a las 7?"` |
-| Consultar mis viajes | conductor | `"Muéstrame mis viajes como conductor"` |
-| Consultar mis solicitudes | pasajero | `"¿Cuáles son mis solicitudes de viaje?"` |
-| Consultar mis rutas | conductor | `"¿Cuáles son mis rutas?"` |
-| Consultar mis métodos | cualquiera | `"¿Qué métodos de compensación tengo?"` |
-| Crear ruta | conductor | `"Crea una ruta desde Surco con capacidad 4 y puntos de referencia el parque"` |
-| Crear viaje | conductor | `"Crea un viaje en mi ruta Surco para el 20/11/2026 a las 07:00"` |
-| Unirse a un viaje | pasajero | `"Quiero unirme al viaje del viernes a las 7 de Surco a UPC, compenso con GASOLINA"` |
-| Registrar método | cualquiera | `"Registra mi método GASOLINA: Yape 999888777"` |
-
-Notas:
-
-- `crearViaje` exige una fecha futura con al menos 12 horas de anticipación.
-- `crearRuta` exige que el conductor tenga una universidad registrada en su perfil.
-- Un conductor no puede unirse a un viaje de su propia ruta; para probar el flujo de unión usa dos cuentas.
-- Para unirse, el agente pedirá `DINERO`, `GASOLINA` o `FAVOR` si no lo mencionaste.
-- `solicitarUnirse` envía la solicitud y queda `PENDIENTE`; el conductor la acepta o rechaza desde la aplicación. El agente no la acepta.
-
-### 7.5 Flujo completo con dos usuarios
-
-1. Login con la cuenta conductora → guarda `tokenConductor`.
-2. Chat con `Authorization: Bearer {{tokenConductor}}` para crear una ruta y un viaje.
-3. Login con la cuenta pasajera → guarda `tokenPasajero`.
-4. Chat con `Authorization: Bearer {{tokenPasajero}}` para buscar el viaje y unirse.
-5. Login nuevamente como conductor, consulta `GET /api/viajes/{viajeId}/solicitudes` y acepta con `PUT /api/solicitudes/{id}/aceptar`.
-
-### 7.6 Probar desde la terminal
-
-```bash
-curl -X POST http://localhost:8080/api/agent/chat \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"¿Qué viajes hay el viernes a las 7?"}'
-```
-
-### 7.7 Errores comunes
-
-| Respuesta | Causa probable |
+| HTTP | Situación |
 |---|---|
-| `401 Unauthorized` | Falta el header `Authorization` o el token expiró. |
-| `400 Bad Request` | `message` vacío o supera 1000 caracteres. |
-| `502 Bad Gateway` | El modelo respondió algo que no era el JSON de `ChatResponse`. Reintenta. |
-| `200` con `operacion.estado = "DATOS_FALTANTES"` | El agente necesita más datos; responde en el siguiente mensaje. |
-| `200` con `operacion.estado = "AMBIGUO"` | Varios viajes o rutas coinciden; indica fecha, hora o destino exacto. |
-| `200` con `operacion.estado = "ERROR"` | Regla de negocio: rol incorrecto, sin cupo, sin perfil, duplicado, etc. Revisa `detalle`. |
+| 400 | Mensaje vacío/mayor a 1000, UUID mal formado, parámetros inválidos o credenciales en texto |
+| 403 | JWT ausente/inválido/expirado o permiso insuficiente |
+| 404 | Sesión/confirmación ajena, desconocida o sesión caducada |
+| 409 | Sesión ocupada/cambio de rol, confirmación cancelada o datos/reglas cambiados |
+| 410 | Confirmación expirada |
+| 429 | Cuota del proveedor o límite de conversaciones |
+| 502 | Herramienta desconocida/rechazada, respuesta inválida/vacía/incompleta |
+| 503 | Proveedor no disponible, credencial Groq rechazada o conexión fallida |
+| 504 | Timeout del proveedor |
 
-## 8. Cuándo habría que importar `AgentConfig`
+Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelve HTTP 200 con los datos existentes y `advertencia:{"codigo":"PROVIDER_REJECTED","mensaje":"..."}`. La confirmación pendiente sigue disponible en `operacion.confirmacion`. El cliente debe mostrar la advertencia y usar el estado real del backend. Nunca inferir éxito de escritura a partir de `message`. Cada turno permite como máximo ocho llamadas y una preparación; las llamadas idénticas del mismo turno usan su recibo. El cliente Groq no reintenta automáticamente; el timeout de cada solicitud es 30 segundos.
 
-Mientras `AgentConfig` esté dentro de `com.uniride` o un subpaquete, no hay que importarlo. Si se mueve a otro paquete fuera del escaneo, habría que:
+## Swagger y Postman
 
-- agregar `@Import(AgentConfig.class)` en una configuración, o
-- ampliar el `@ComponentScan` para incluir el nuevo paquete.
+1. Arrancar con configuración privada de PostgreSQL, JWT y `GROQ_API_KEY`, tras revisar migraciones.
+2. Iniciar sesión con una cuenta verificada mediante `/api/auth/login` y copiar el token de su respuesta al botón Authorize de Swagger (`/api/swagger-ui.html`) o al Bearer de Postman.
+3. CONDUCTOR: «Consulta mis rutas», «Consulta mis viajes».
+4. PASAJERO: «Busca viajes disponibles el viernes a las 07:00», «Consulta mis solicitudes».
+5. Ambos: «Consulta mis métodos de compensación».
+6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
+7. Preparar una escritura en una base local aislada, revisar el resumen y confirmar/cancelar mediante sus endpoints.
+8. Para una prueba real con Groq sobre Supabase, utilizar únicamente consultas. No confirmar escrituras ni cambiar datos.
 
-Sin ese paso, Spring no ejecutaría el método `@Bean`, no existiría el bean `ChatClient` y `AgentService` fallaría al arrancar por no poder inyectar su dependencia.
+Pruebas automáticas sin Groq ni Supabase: `mvnw.cmd clean test`, `mvnw.cmd verify`. PostgreSQL temporal: `powershell -File scripts/test-agent-postgres.ps1` (requiere binarios PostgreSQL; acepta `-PostgresBin`). El script crea una base nueva limitada a loopback, fuerza la configuración de pruebas, ejecuta `-Ppostgres-it test`, detiene el clúster y conserva sus archivos temporales para inspección. Nunca ejecutar `flyway clean`.

@@ -3,13 +3,18 @@ spring:
     name: uniride
 
   ai:
+    retry:
+      max-attempts: 1
     openai:
       api-key: ${GROQ_API_KEY}
       base-url: https://api.groq.com/openai/v1
+      max-retries: 0
+      timeout: 30s
       chat:
         model: openai/gpt-oss-120b
         temperature: 0.1
         replay-reasoning-content: false
+        parallel-tool-calls: false
 
   datasource:
     driver-class-name: org.postgresql.Driver
@@ -19,7 +24,7 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     open-in-view: false
     show-sql: false
     properties:

@@ -16,6 +16,13 @@ import org.springframework.data.repository.query.Param;
 
 public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
+    @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
+            + "AND v.estado = COALESCE(:estado, v.estado) "
+            + "ORDER BY v.fecha DESC, v.hora DESC, v.id DESC")
+    Page<Viaje> consultarViajesAgente(@Param("conductorId") Long conductorId,
+            @Param("estado") EstadoViaje estado, Pageable pageable);
+
     Page<Viaje> findByRutaIdOrderByFechaAscHoraAsc(Long rutaId, Pageable pageable);
 
     Optional<Viaje> findByIdAndRutaConductorId(Long id, Long conductorId);
@@ -86,6 +93,7 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
      * No se muestran viajes llenos, rutas eliminadas o salidas ya ocurridas.
      * Se preserva buscarViajes() para los consumidores y tests existentes.
      */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
     @Query("SELECT v FROM Viaje v JOIN v.ruta r "
             + "WHERE (v.fecha > :hoy OR (v.fecha = :hoy AND v.hora > :horaActual)) "
             + "AND v.estado = :estado "
@@ -95,19 +103,29 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             + "AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') "
             + "AND LOWER(v.dia) = COALESCE(:dia, LOWER(v.dia)) "
             + "AND v.hora = COALESCE(:hora, v.hora) "
+            + "AND v.fecha = COALESCE(:fecha, v.fecha) "
             + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:distrito, ''), '%') "
             + "ORDER BY "
             + "(CASE WHEN COALESCE(:origen, '') = '' OR LOWER(r.origen) = :origen THEN 0 ELSE 4 END "
             + "+ CASE WHEN COALESCE(:destino, '') = '' OR LOWER(r.destino) = :destino THEN 0 ELSE 3 END "
             + "+ CASE WHEN COALESCE(:distrito, '') = '' OR LOWER(r.origen) = :distrito THEN 0 ELSE 1 END) ASC, "
             + "v.fecha ASC, v.hora ASC, v.id ASC")
-    Page<Viaje> buscarViajesRelevantes(
+    Page<Viaje> buscarViajesRelevantesPorFecha(
             @Param("origen") String origen, @Param("destino") String destino,
             @Param("dia") String dia, @Param("hora") LocalTime hora,
             @Param("distrito") String distrito, @Param("estado") EstadoViaje estado,
             @Param("rutaEliminada") com.uniride.enums.EstadoRuta rutaEliminada,
             @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual,
+            @Param("fecha") LocalDate fecha,
             Pageable pageable);
+
+    /** Preserve existing consumers while sharing the exact same availability predicates. */
+    default Page<Viaje> buscarViajesRelevantes(String origen, String destino, String dia, LocalTime hora,
+            String distrito, EstadoViaje estado, com.uniride.enums.EstadoRuta rutaEliminada,
+            LocalDate hoy, LocalTime horaActual, Pageable pageable) {
+        return buscarViajesRelevantesPorFecha(origen, destino, dia, hora, distrito,
+                estado, rutaEliminada, hoy, horaActual, null, pageable);
+    }
 
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta"})
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "

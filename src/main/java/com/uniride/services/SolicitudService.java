@@ -91,32 +91,7 @@ public class SolicitudService {
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
         Usuario conductor = viaje.getRuta().getConductor();
-        if (conductor.getId().equals(pasajero.getId())) {
-            throw new BusinessException("No puedes solicitar un viaje de tu propia ruta");
-        }
-        validarSalidaFutura(viaje);
-        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
-            throw new BusinessException("No puedes solicitar viajes de una ruta eliminada");
-        }
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException(
-                    "El viaje ya no acepta solicitudes; estado actual: " + viaje.getEstado());
-        }
-        if (solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
-                viajeId, pasajero.getId(), ESTADOS_BLOQUEANTES)) {
-            notificacionService.notificarAccionYaRealizada(pasajero,
-                    "Solicitud ya registrada",
-                    "Ya habias enviado una solicitud para el viaje del "
-                            + viaje.getFecha() + " a las " + viaje.getHora()
-                            + ". No se creo una solicitud duplicada.");
-            throw new BusinessException("Ya enviaste una solicitud para este viaje");
-        }
-
-        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
-            throw new BusinessException("La ruta ya no tiene cupos disponibles");
-        }
-
-        MetodoCompensacion metodo = validarMetodoCompensacion(request, pasajero);
+        MetodoCompensacion metodo = validarCreacion(viaje, pasajero, request, true);
 
         Solicitud solicitud = solicitudMapper.toSolicitud(request);
         solicitud.setViaje(viaje);
@@ -131,6 +106,47 @@ public class SolicitudService {
 
         return solicitudMapper.toSolicitudRespuesta(guardada,
                 advertenciaPreferencia(pasajero, conductor, request), null, null);
+    }
+
+    /** Validates the same business rules without notifications, locks or writes. */
+    @Transactional(readOnly = true)
+    public Viaje validarCreacion(Long viajeId, SolicitudRequest request) {
+        Usuario pasajero = usuarioService.usuarioActual();
+        Viaje viaje = viajeRepository.findById(viajeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+        validarCreacion(viaje, pasajero, request, false);
+        return viaje;
+    }
+
+    private MetodoCompensacion validarCreacion(Viaje viaje, Usuario pasajero,
+            SolicitudRequest request, boolean notificarDuplicado) {
+        Usuario conductor = viaje.getRuta().getConductor();
+        if (conductor.getId().equals(pasajero.getId())) {
+            throw new BusinessException("No puedes solicitar un viaje de tu propia ruta");
+        }
+        validarSalidaFutura(viaje);
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No puedes solicitar viajes de una ruta eliminada");
+        }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje ya no acepta solicitudes; estado actual: " + viaje.getEstado());
+        }
+        if (solicitudRepository.existsByViajeIdAndPasajeroIdAndEstadoIn(
+                viaje.getId(), pasajero.getId(), ESTADOS_BLOQUEANTES)) {
+            if (notificarDuplicado) notificacionService.notificarAccionYaRealizada(pasajero,
+                    "Solicitud ya registrada",
+                    "Ya habias enviado una solicitud para el viaje del "
+                            + viaje.getFecha() + " a las " + viaje.getHora()
+                            + ". No se creo una solicitud duplicada.");
+            throw new BusinessException("Ya enviaste una solicitud para este viaje");
+        }
+
+        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
+            throw new BusinessException("La ruta ya no tiene cupos disponibles");
+        }
+
+        return validarMetodoCompensacion(request, pasajero);
     }
 
     @Transactional(readOnly = true)
