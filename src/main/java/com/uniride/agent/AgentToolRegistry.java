@@ -1,5 +1,8 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
+import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
+
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import java.util.*;
@@ -32,9 +35,12 @@ public class AgentToolRegistry {
         this.callbacks = callbacks;
     }
 
-    public Turn newTurn() { return new Turn(); }
+    public Turn newTurn() { return newTurn(null); }
+
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) { return new Turn(historialPdf); }
 
     public final class Turn {
+        private final HistorialPdfIntent.Solicitud historialPdf;
         private int calls;
         private final List<ResultadoAgente> results = new ArrayList<>();
         private final Map<String, String> receipts = new HashMap<>();
@@ -43,6 +49,10 @@ public class AgentToolRegistry {
         private final List<MetodoCompensacionResumen> metodos = new ArrayList<>();
         private OperacionResumen operation;
         private boolean prepared;
+
+        private Turn(HistorialPdfIntent.Solicitud historialPdf) {
+            this.historialPdf = historialPdf;
+        }
 
         public ToolCallback[] callbacks() {
             return Arrays.stream(AgentToolRegistry.this.callbacks).map(delegate -> new ToolCallback() {
@@ -57,30 +67,43 @@ public class AgentToolRegistry {
 
         synchronized void recoverReports(Set<AgentReportIntent> requested) {
             for (AgentReportIntent report : requested) {
-                String name = report.toolName();
-                if (receipts.containsKey(name + NO_ARGUMENTS)) continue;
-
-                ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
-                        .filter(candidate -> candidate.getToolDefinition().name().equals(name))
-                        .findFirst()
-                        .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
-                execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
+                recoverRead(report.toolName());
             }
+            if (historialPdf != null && historialPdf.filtros() != null) recoverRead(DESCARGA_HISTORIAL_PDF);
+        }
+
+        private void recoverRead(String name) {
+            if (receipts.containsKey(name + NO_ARGUMENTS)) return;
+
+            ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
+                    .filter(candidate -> candidate.getToolDefinition().name().equals(name))
+                    .findFirst()
+                    .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
+            execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
         }
 
         private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
             Object arguments = mapper.readValue(input, Object.class);
-            boolean report = AgentReportIntent.isReportTool(name);
-            // The report callbacks take no arguments. Extra model fields cannot change the query or its receipt.
-            String key = name + (report ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
+            boolean pdf = DESCARGA_HISTORIAL_PDF.equals(name);
+            boolean noArguments = pdf || AgentReportIntent.isReportTool(name);
+            // Extra model fields cannot change a report's filters or its receipt.
+            String key = name + (noArguments ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
             if (PREPARATIONS.contains(name) && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
+            if (pdf && (historialPdf == null || historialPdf.filtros() == null)) {
+                String detalle = historialPdf == null ? "La descarga requiere una solicitud explícita del usuario."
+                        : historialPdf.aclaracion();
+                String output = mapper.writeValueAsString(Map.of("mensaje", detalle));
+                receipts.put(key, output);
+                return output;
+            }
+            if (pdf) context = new ToolContext(Map.of(CONTEXTO_FILTROS_PDF, historialPdf.filtros()));
             String output;
             try {
-                output = delegate.call(report ? NO_ARGUMENTS : input, context);
+                output = delegate.call(noArguments ? NO_ARGUMENTS : input, context);
             } catch (RuntimeException failure) {
                 // Spring AI's default processor returns ToolExecutionException.message to the model.
                 // Unwrap permitted public errors; never let database/SDK exception details reach it.
@@ -138,15 +161,24 @@ public class AgentToolRegistry {
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)
                     .toList();
-            if (reports.isEmpty()) {
+            String download = results.stream().filter(result -> DESCARGA_HISTORIAL_PDF.equals(result.tipo()))
+                    .map(result -> mapper.treeToValue(result.datos(), DescargaHistorialPdfRespuesta.class).mensaje())
+                    .findFirst().orElse(historialPdf == null ? null : historialPdf.aclaracion());
+            if (reports.isEmpty() && download == null) {
                 return primary != null ? primary : hasResults() ? querySummary() : clarification(text);
             }
-            String reportSummary = String.join(" ", reports)
-                    + " Los reportes consultan todo tu historial y no admiten filtros por fechas.";
+            List<String> sections = new ArrayList<>();
+            if (primary != null) sections.add(primary);
             if (results.stream().anyMatch(result -> result.datos().has("hayMas") || result.datos().isArray())) {
-                reportSummary = querySummary() + " " + reportSummary;
+                sections.add(querySummary());
             }
-            return primary == null ? reportSummary : primary + " " + reportSummary;
+            if (!reports.isEmpty()) {
+                sections.add(String.join(" ", reports) + (download == null
+                        ? " Los reportes consultan todo tu historial y no admiten filtros por fechas."
+                        : " Las estadísticas de viajes consultan todo tu historial y no admiten filtros por fechas."));
+            }
+            if (download != null) sections.add(download);
+            return String.join(" ", sections);
         }
 
         private String querySummary() {

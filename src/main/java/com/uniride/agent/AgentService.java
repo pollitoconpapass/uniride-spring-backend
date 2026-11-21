@@ -58,7 +58,7 @@ public class AgentService {
                 + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
                 + "Mensaje del usuario: " + message;
 
-        var turn = tools.newTurn();
+        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock));
         try {
             var response = chatClient.prompt()
                     .messages(history)
