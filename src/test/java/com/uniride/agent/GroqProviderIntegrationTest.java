@@ -1,5 +1,6 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,6 +48,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -148,14 +150,151 @@ class GroqProviderIntegrationTest {
         assertThat(request.path("model").asText()).isEqualTo("openai/gpt-oss-120b");
         assertThat(request.has("response_format")).isFalse();
         assertThat(request.path("tools").isArray()).isTrue();
-        assertThat(java.util.stream.StreamSupport.stream(request.path("tools").spliterator(), false)
+        assertThat(StreamSupport.stream(request.path("tools").spliterator(), false)
                 .map(tool -> tool.path("function").path("name").asText()).toList())
                 .contains("consultarMisRutas", "buscarViajes", "consultarMisViajes", "consultarMisMetodosCompensacion",
-                        "consultarMisEstadisticas", "consultarMiFrecuenciaViajes", "consultarRankingMisRutas")
+                        "consultarMisEstadisticas", "consultarMiFrecuenciaViajes", "consultarRankingMisRutas",
+                        DESCARGA_HISTORIAL_PDF)
                 .doesNotContain("json");
         assertThat(request.path("messages").toString())
                 .doesNotContain("$schema", "JSON Schema", "Your response should be in JSON format");
         assertThat(request.has("disable_tool_validation")).isFalse();
+    }
+
+    @Test
+    void recoversHistoryDescriptorWhenProviderStopsWithoutToolsAndKeepsConversation() {
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse first = service.chat("Quiero descargar todo mi historial de viajes en PDF", (UUID) null);
+        DescargaHistorialPdfRespuesta todo = pdfDescriptor(first);
+        assertThat(todo.nombreArchivo()).isEqualTo("historial-viajes.pdf");
+        assertThat(todo.urlDescarga()).isEqualTo("/api/historial/pdf?tipo=todos");
+        assertThat(todo.tipo()).isEqualTo("todos");
+        assertThat(todo.desde()).isNull();
+        assertThat(todo.hasta()).isNull();
+        assertThat(first.message()).isEqualTo(todo.mensaje())
+                .contains("El PDF se generará cuando solicites la descarga autenticada")
+                .doesNotContain("no admiten filtros por fechas", GENERIC_COMPLETION);
+        assertThat(first.conversationId()).isNotNull();
+
+        ChatResponse next = service.chat("Descarga mi historial como pasajero", first.conversationId());
+        assertThat(next.conversationId()).isEqualTo(first.conversationId());
+        assertThat(pdfDescriptor(next).urlDescarga()).isEqualTo("/api/historial/pdf?tipo=pasajero");
+        assertThat(requests).hasSize(2);
+        assertThat(requests.getLast().path("messages").toString()).contains(first.message());
+        assertThat(simulatedTools.executions).hasValue(0);
+        verifyNoInteractions(reports);
+    }
+
+    @Test
+    void usesVerifiedHistoryFiltersAndDoesNotRepeatAProviderSelectedPdfTool() {
+        enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF, """
+                {"usuarioId":999,"desde":"2024-01-01","hasta":"2024-12-31","tipo":"pasajero",
+                 "urlDescarga":"https://example.invalid/historial.pdf"}
+                """));
+        enqueue(200, completion("Ya descargué tu archivo de https://example.invalid/historial.pdf.", "stop"));
+
+        ChatResponse response = service.chat("Exporta mis viajes de octubre de 2026 como conductor", (UUID) null);
+        DescargaHistorialPdfRespuesta descarga = pdfDescriptor(response);
+
+        assertThat(descarga.desde()).isEqualTo("2026-10-01");
+        assertThat(descarga.hasta()).isEqualTo("2026-10-31");
+        assertThat(descarga.tipo()).isEqualTo("conductor");
+        assertThat(descarga.urlDescarga())
+                .isEqualTo("/api/historial/pdf?desde=2026-10-01&hasta=2026-10-31&tipo=conductor");
+        assertThat(response.message()).isEqualTo(descarga.mensaje())
+                .doesNotContain("Ya descargué", "example.invalid");
+        assertThat(requests).hasSize(2);
+        assertThat(providerToolContent()).contains(descarga.urlDescarga(), descarga.nombreArchivo())
+                .doesNotContain("%PDF-", "JVBERi0", "example.invalid", "usuarioId", "2024-01-01");
+        verify(users, times(2)).usuarioActual();
+        verifyNoInteractions(reports);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void asksForPeriodClarificationWithoutPreparingPdfEvenIfProviderCallsTool(boolean providerCallsTool) {
+        if (providerCallsTool) enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF, "{\"desde\":\"2026-10-01\"}"));
+        enqueue(200, completion("Ya descargué tu historial.", "stop"));
+
+        ChatResponse response = service.chat("Genera mi historial del último mes", (UUID) null);
+
+        assertThat(response.message()).contains("mes calendario pasado", "últimos 30 días")
+                .doesNotContain("/api/historial/pdf", "Ya descargué");
+        assertThat(response.resultados()).isEmpty();
+        assertThat(response.operacion()).isNull();
+        assertThat(requests).hasSize(providerCallsTool ? 2 : 1);
+        if (providerCallsTool) assertThat(providerToolContent()).doesNotContain("urlDescarga", "2026-10-01");
+        verify(users).usuarioActual();
+        verifyNoInteractions(reports);
+    }
+
+    @Test
+    void recoversCombinedStatisticsAndFilteredPdfWithoutASecondProviderRequest() {
+        when(reports.resumen()).thenReturn(new EstadisticasRespuesta(7, 5, 2, 1));
+        enqueue(200, completion("Viajaste 999 veces.", "stop"));
+
+        ChatResponse response = service.chat(
+                "¿Cuántos viajes he completado? Exporta mis viajes del mes pasado.", (UUID) null);
+
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("consultarMisEstadisticas", DESCARGA_HISTORIAL_PDF);
+        assertThat(response.resultados().getFirst().datos().path("viajesComoConductor").asLong()).isEqualTo(7);
+        assertThat(response.resultados().getLast().datos().path("urlDescarga").asText())
+                .isEqualTo("/api/historial/pdf?desde=2026-10-01&hasta=2026-10-31&tipo=todos");
+        assertThat(response.message()).contains("12 viajes", "Las estadísticas de viajes consultan todo tu historial",
+                        "El PDF se generará cuando solicites la descarga autenticada")
+                .doesNotContain("999");
+        assertThat(response.operacion()).isNull();
+        assertThat(requests).hasSize(1);
+        verify(reports).resumen();
+        verifyNoMoreInteractions(reports);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"¿Cómo descargo mi historial en PDF?", "Muéstrame mi historial de viajes."})
+    void ignoresAPdfToolCallWithoutAnExplicitExportRequest(String question) {
+        enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse response = service.chat(question, (UUID) null);
+
+        assertThat(response.resultados()).isEmpty();
+        assertThat(response.operacion()).isNull();
+        assertThat(requests).hasSize(2);
+        assertThat(providerToolContent()).doesNotContain("urlDescarga", "/api/historial/pdf");
+        verify(users).usuarioActual();
+        verifyNoInteractions(reports);
+    }
+
+    @Test
+    void statisticsRequestDoesNotAuthorizeTheProviderToPrepareADownload() {
+        when(reports.resumen()).thenReturn(new EstadisticasRespuesta(7, 5, 2, 1));
+        enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse response = service.chat("¿Cuántos viajes he completado?", (UUID) null);
+
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisEstadisticas");
+        assertThat(response.message()).contains("12 viajes").doesNotContain("/api/historial/pdf");
+        assertThat(response.operacion()).isNull();
+        assertThat(requests).hasSize(2);
+        verify(users).usuarioActual();
+        verify(reports).resumen();
+        verifyNoMoreInteractions(reports);
+    }
+
+    private DescargaHistorialPdfRespuesta pdfDescriptor(ChatResponse response) {
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly(DESCARGA_HISTORIAL_PDF);
+        return mapper.treeToValue(response.resultados().getFirst().datos(), DescargaHistorialPdfRespuesta.class);
+    }
+
+    private String providerToolContent() {
+        return StreamSupport.stream(requests.get(1).path("messages").spliterator(), false)
+                .filter(message -> "tool".equals(message.path("role").asText()))
+                .findFirst().orElseThrow().path("content").toString();
     }
 
     @ParameterizedTest

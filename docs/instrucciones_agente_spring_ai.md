@@ -25,7 +25,8 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
 | AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
 | ReportesAgentTools | Consultas personales de solo lectura y validación del rol activo para el ranking |
-| EstadisticasService | Totales de actividad, frecuencia histórica y ranking de rutas |
+| EstadisticasService | Totales de actividad, frecuencia histórica, ranking de rutas y generación del historial en PDF |
+| HistorialController | Descarga autenticada del PDF mediante `GET /api/historial/pdf` |
 | ConfirmationService | Guardar propuesta, validar propietario/estado/expiración y ejecutar negocio una sola vez |
 | ConfirmationController | Confirmación explícita recibida fuera del modelo |
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
@@ -52,14 +53,17 @@ Spring descubre los componentes por `@ComponentScan`; usar inyección por constr
 | `consultarMisEstadisticas` | `resumen()` → `EstadisticasRespuesta` | Totales completados por rol, cancelaciones o penalidades acumuladas |
 | `consultarMiFrecuenciaViajes` | `analisisSemanal()` → `AnalisisSemanalRespuesta` | Frecuencia histórica, días más frecuentes, viajes de un día concreto y cancelaciones propias o de terceros |
 | `consultarRankingMisRutas` | `rankingRutas()` → `RankingRutasRespuesta` | Rutas más usadas o penalidades por ruta del conductor autenticado |
+| `prepararDescargaHistorialPdf` | Descriptor para `GET /api/historial/pdf`, que invoca `exportarHistorialPDF()` | Descarga del historial en PDF con filtros de fechas y tipo de viaje |
 
-Los tres métodos de `EstadisticasService` obtienen la identidad a partir de `UsuarioService.usuarioActual()`. Las herramientas se invocan sin argumentos, le permiten al agente consultar el historial propio y consumen el mismo presupuesto por turno que las demás consultas. El ranking requiere el rol activo `CONDUCTOR`, validado en el callback antes de llamar al servicio. Resumen y frecuencia admiten a `CONDUCTOR` y `PASAJERO`.
+Los métodos de `EstadisticasService` obtienen la identidad a partir de `UsuarioService.usuarioActual()`. Las herramientas consumen el mismo presupuesto por turno que las demás consultas. El ranking requiere el rol activo `CONDUCTOR`, validado en el callback antes de llamar al servicio. Resumen, frecuencia y descarga PDF están disponibles para `CONDUCTOR` y `PASAJERO`.
 
 La frecuencia se habilita a partir de cinco viajes completados y conserva los siete días, los recuentos de cancelaciones y los días con cero viajes. El ranking requiere cinco viajes completados como conductor. Si cualquiera de los dos devuelve `suficientesDatos: false`, se conserva el mensaje de negocio. El prompt orienta la selección de la herramienta y describe el alcance histórico sin filtros temporales.
 
-Groq puede devolver texto válido con `STOP` y omitir uno o varios reportes. Después de validar esa respuesta, `AgentService` identifica peticiones explícitas de reportes en el mensaje actual. Solo los tres callbacks de la tabla son elegibles para completar resultados faltantes. El servidor selecciona el nombre desde ese conjunto y usa `{}` como argumento. La ejecución pasa por `AgentToolRegistry` y comparte el presupuesto por turno, los recibos, la verificación de permisos y la captura en `resultados`. Si se agota el presupuesto, se aplica el manejo habitual de `TOOL_LIMIT`. El backend utiliza los datos capturados para componer `message` sin una segunda petición al proveedor.
+Groq puede devolver texto válido con `STOP` y omitir uno o varios reportes. Después de validar esa respuesta, `AgentService` identifica peticiones explícitas de reportes en el mensaje actual. Los cuatro callbacks de la tabla pueden completar resultados faltantes. El servidor selecciona el nombre desde ese conjunto y usa `{}` como argumento. La ejecución pasa por `AgentToolRegistry` y comparte el presupuesto por turno, los recibos, la verificación de permisos y la captura en `resultados`. Si se agota el presupuesto, se aplica el manejo habitual de `TOOL_LIMIT`. El backend utiliza los datos capturados para componer `message` sin una segunda petición al proveedor.
 
-La detección se limita a expresiones explícitas en español. Las referencias que solo se entienden por la memoria de conversación, las peticiones ambiguas, los listados, las búsquedas y las escrituras siguen el flujo habitual. El manejo de errores del proveedor y el protocolo de confirmación siguen aplicándose en sus respectivas rutas. El contrato HTTP y los ejemplos de Swagger están en [Reportes de viajes por chat](agente_flujo.md#reportes-de-viajes-por-chat).
+El esquema de `prepararDescargaHistorialPdf` está vacío para el modelo. Java resuelve `desde`, `hasta` y `tipo` a partir del mensaje actual y pasa los filtros en un `ToolContext` interno. Si la petición de PDF es ambigua o inválida, el chat pide aclaración y conserva los demás resultados válidos del turno. El descriptor solo contiene metadatos y una ruta relativa. El endpoint autenticado aplica los filtros, consulta el historial del usuario y devuelve el PDF al cliente.
+
+La detección se limita a expresiones explícitas en español. Las referencias que solo se entienden por la memoria de conversación, los listados, las búsquedas y las escrituras siguen el flujo habitual. El manejo de errores del proveedor y el protocolo de confirmación siguen aplicándose en sus respectivas rutas. El contrato HTTP y los ejemplos de Swagger están en [Reportes de viajes por chat](agente_flujo.md#reportes-de-viajes-por-chat).
 
 ## Agregar una herramienta de escritura
 
@@ -78,7 +82,7 @@ La aplicación confirma por `POST /api/agent/confirmaciones/{id}/confirmar`, sin
 
 ## Salida y errores
 
-La salida del LLM es texto no confiable. El servidor valida que conserve contenido y que respete el formato esperado. Las listas, operaciones, confirmaciones, cifras y sus IDs proceden exclusivamente de callbacks Java y persistencia. El mensaje de una operación usa el resumen o resultado del backend. En los reportes, Java compone `message` a partir de las respuestas registradas en `resultados`, incluso si un turno combina varias consultas de estadísticas.
+La salida del LLM es texto no confiable. El servidor valida que conserve contenido y que respete el formato esperado. Las listas, operaciones, confirmaciones, cifras, descriptores de descarga e IDs proceden exclusivamente de callbacks Java y persistencia. El mensaje de una operación usa el resumen o resultado del backend. En los reportes, Java compone `message` a partir de las respuestas registradas en `resultados`, incluso si un turno combina estadísticas y una descarga PDF.
 
 Un fallo antes de resultados se traduce a ErrorRespuesta con HTTP apropiado y código estable: 429 cuota, 502 formato/herramienta rechazada, 503 indisponibilidad/credencial del proveedor y 504 timeout. No exponer cuerpos de error Groq, prompts ni secretos en mensajes o logs. Si existen recibos, se devuelven con `advertencia` sin repetir llamadas. Ninguna solución debe crear una herramienta ficticia `json` ni desactivar la validación.
 

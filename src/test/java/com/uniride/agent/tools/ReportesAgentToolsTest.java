@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.uniride.agent.HistorialPdfIntent.Filtros;
 import com.uniride.dto.responses.DiaCantidadRespuesta;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.dto.responses.RutaFrecuenteRespuesta;
@@ -15,6 +16,7 @@ import com.uniride.entities.Usuario;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.Rol;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.NoAutorizadoException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.mappers.UsuarioMapper;
@@ -25,12 +27,16 @@ import com.uniride.repositories.ViajeRepository;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.PerfilRolService;
 import com.uniride.services.UsuarioService;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -188,7 +194,54 @@ class ReportesAgentToolsTest {
         assertThatThrownBy(tools::consultarMisEstadisticas).isInstanceOf(NoAutorizadoException.class);
         assertThatThrownBy(tools::consultarMiFrecuenciaViajes).isInstanceOf(NoAutorizadoException.class);
         assertThatThrownBy(tools::consultarRankingMisRutas).isInstanceOf(NoAutorizadoException.class);
+        assertThatThrownBy(() -> tools.prepararDescargaHistorialPdf(contextoPdf(null, null, "todos")))
+                .isInstanceOf(NoAutorizadoException.class);
         verifyNoInteractions(usuarios, viajes, solicitudes, penalidades);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            | | | /api/historial/pdf?tipo=todos | todos
+            | | CoNdUcToR | /api/historial/pdf?tipo=conductor | conductor
+            | | pasajero | /api/historial/pdf?tipo=pasajero | pasajero
+            2026-10-01 | | todos | /api/historial/pdf?desde=2026-10-01&tipo=todos | todos
+            | 2026-10-31 | todos | /api/historial/pdf?hasta=2026-10-31&tipo=todos | todos
+            2026-10-01 | 2026-10-31 | conductor | /api/historial/pdf?desde=2026-10-01&hasta=2026-10-31&tipo=conductor | conductor
+            """)
+    void preparaDescriptorSinConsultarNiGenerarHistorial(String desde, String hasta, String tipo,
+                                                        String url, String tipoEsperado) {
+        autenticar(Rol.PASAJERO, Rol.PASAJERO);
+
+        var descriptor = tools.prepararDescargaHistorialPdf(contextoPdf(
+                desde == null ? null : LocalDate.parse(desde), hasta == null ? null : LocalDate.parse(hasta), tipo));
+
+        assertThat(descriptor.nombreArchivo()).isEqualTo("historial-viajes.pdf");
+        assertThat(descriptor.urlDescarga()).isEqualTo(url);
+        assertThat(descriptor.desde()).isEqualTo(desde);
+        assertThat(descriptor.hasta()).isEqualTo(hasta);
+        assertThat(descriptor.tipo()).isEqualTo(tipoEsperado);
+        assertThat(descriptor.mensaje()).contains("Preparé la solicitud", "se generará", "descarga autenticada");
+        verify(usuarios).findByCorreoInstitucional(CORREO);
+        verifyNoMoreInteractions(usuarios);
+        verifyNoInteractions(viajes, solicitudes, penalidades);
+    }
+
+    @Test
+    void rechazaRangoInvertidoTipoInvalidoYContextoSinFiltros() {
+        autenticar(Rol.CONDUCTOR, Rol.CONDUCTOR);
+
+        assertThatThrownBy(() -> tools.prepararDescargaHistorialPdf(
+                contextoPdf(LocalDate.of(2026, 11, 1), LocalDate.of(2026, 10, 31), "todos")))
+                .isInstanceOf(CamposInvalidosException.class).hasMessageContaining("posterior");
+        assertThatThrownBy(() -> tools.prepararDescargaHistorialPdf(contextoPdf(null, null, "conductor&usuarioId=999")))
+                .isInstanceOf(CamposInvalidosException.class).hasMessageContaining("tipo");
+        assertThatThrownBy(() -> tools.prepararDescargaHistorialPdf(new ToolContext(Map.of())))
+                .isInstanceOf(CamposInvalidosException.class).hasMessageContaining("período");
+        verifyNoInteractions(viajes, solicitudes, penalidades);
+    }
+
+    private ToolContext contextoPdf(LocalDate desde, LocalDate hasta, String tipo) {
+        return new ToolContext(Map.of(ReportesAgentTools.CONTEXTO_FILTROS_PDF, new Filtros(desde, hasta, tipo)));
     }
 
     private void autenticar(Rol rolActivo, Rol autoridad) {

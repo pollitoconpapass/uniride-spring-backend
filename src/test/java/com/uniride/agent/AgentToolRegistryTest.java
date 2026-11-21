@@ -16,8 +16,10 @@ import com.uniride.enums.Rol;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
+import java.time.LocalDate;
 import java.util.*;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import tools.jackson.databind.ObjectMapper;
 
@@ -37,7 +39,7 @@ class AgentToolRegistryTest {
                 .containsExactlyInAnyOrder("buscarViajes", "consultarMisViajes", "consultarMisSolicitudes",
                         "consultarMisRutas", "consultarMisMetodosCompensacion", "crearRuta", "crearViaje",
                         "solicitarUnirse", "registrarMetodoCompensacion", "consultarMisEstadisticas",
-                        "consultarMiFrecuenciaViajes", "consultarRankingMisRutas");
+                        "consultarMiFrecuenciaViajes", "consultarRankingMisRutas", "prepararDescargaHistorialPdf");
         verifyNoInteractions(confirmations, queries, users, statistics);
     }
 
@@ -111,6 +113,45 @@ class AgentToolRegistryTest {
         verify(statistics).resumen();
         verifyNoMoreInteractions(statistics);
         verifyNoInteractions(confirmations);
+    }
+
+    @Test void pdfReceiptUsesVerifiedFiltersAndSharesRecoveryWithTheModelCallback() {
+        var filters = new HistorialPdfIntent.Filtros(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 31), "conductor");
+        var turn = registry.newTurn(new HistorialPdfIntent.Solicitud(filters, null));
+        var pdf = callback(turn, "prepararDescargaHistorialPdf");
+        var mapper = new ObjectMapper();
+        assertThat(mapper.readTree(pdf.getToolDefinition().inputSchema()).path("properties").isEmpty()).isTrue();
+        var untrustedContext = new ToolContext(Map.of(ReportesAgentTools.CONTEXTO_FILTROS_PDF,
+                new HistorialPdfIntent.Filtros(null, null, "pasajero")));
+        String first = pdf.call("{\"desde\":\"2030-01-01\",\"usuarioId\":999}", untrustedContext);
+        assertThat(pdf.call("{}")).isEqualTo(first);
+        turn.recoverReports(Set.of());
+
+        var response = turn.response("El historial de otro usuario ya se descargó.");
+        assertThat(response.resultados()).singleElement().satisfies(result -> {
+            assertThat(result.tipo()).isEqualTo("prepararDescargaHistorialPdf");
+            assertThat(result.datos().path("urlDescarga").asText()).isEqualTo(
+                    "/api/historial/pdf?desde=2026-10-01&hasta=2026-10-31&tipo=conductor");
+        });
+        assertThat(response.operacion()).isNull();
+        assertThat(response.message()).contains("solicitud", "octubre de 2026").doesNotContain("otro usuario", "no admiten filtros");
+        verify(users).usuarioActual();
+        verifyNoMoreInteractions(users);
+        verifyNoInteractions(confirmations, statistics);
+    }
+
+    @Test void pdfRecoveryCannotExceedTheSharedBudget() {
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(), 0, 10, 0, false));
+        var turn = registry.newTurn(new HistorialPdfIntent.Solicitud(new HistorialPdfIntent.Filtros(null, null, "todos"), null));
+        var methods = callback(turn, "consultarMisMetodosCompensacion");
+        for (int i = 0; i < 8; i++) methods.call("{}");
+
+        assertThatThrownBy(() -> turn.recoverReports(Set.of()))
+                .isInstanceOfSatisfying(AgentProviderException.class, error -> assertThat(error.code()).isEqualTo("TOOL_LIMIT"));
+        assertThat(turn.response("Fin del turno.").resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("consultarMisMetodosCompensacion");
+        verify(queries).metodos(null);
+        verifyNoInteractions(users, confirmations, statistics);
     }
 
     @Test void reportReadsKeepReceiptsAndComposeWithExistingPagedResults() {

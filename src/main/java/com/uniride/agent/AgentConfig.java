@@ -33,6 +33,7 @@ public class AgentConfig {
             - consultarMisEstadisticas: totales propios de viajes completados por rol, cancelaciones y penalidades acumuladas.
             - consultarMiFrecuenciaViajes: frecuencia histórica propia por día de la semana y cancelaciones propias y de terceros.
             - consultarRankingMisRutas: ranking de rutas propias por viajes completados con penalidades del conductor por ruta.
+            - prepararDescargaHistorialPdf: prepara la solicitud de descarga del historial propio en PDF. Java obtiene los filtros del mensaje actual.
             - crearRuta: prepara publicar una ruta, solo conductor.
             - crearViaje: prepara una salida en una ruta propia, solo conductor.
             - solicitarUnirse: prepara una solicitud al conductor, solo pasajero.
@@ -46,6 +47,8 @@ public class AgentConfig {
             - Estas consultas no reciben argumentos. Si piden la semana actual, los últimos siete días u otro período, usa el reporte histórico que corresponda e indica que no se puede filtrar por fechas.
             - Si suficientesDatos es false, conserva el mensaje del servicio y evita atribuir valores a la frecuencia o al ranking.
             - Para varias preguntas de reportes, llama a todas las herramientas que correspondan. Java presenta los valores comprobados.
+            - Para un pedido explícito de exportación del historial, usa prepararDescargaHistorialPdf sin argumentos. El historial PDF admite fechas inclusivas y filtro por rol.
+            - El servidor valida las fechas y pide aclaración cuando es necesario. Comunica que la descarga requiere autenticación y que el archivo se genera al solicitarlo. Nunca inventes una URL ni afirmes que el PDF se generó o se descargó.
 
             # FLUJO DE SOLICITUD
             1. Para unirse, reúne origen, destino, día, fecha u hora y la preferencia de compensación.
