@@ -69,11 +69,7 @@ public class ViajeService {
     public ViajeRespuesta crear(Long rutaId, ViajeRequest request) {
         Usuario conductor = usuarioService.usuarioActual();
         Ruta ruta = buscarRutaPropia(rutaId, conductor);
-        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
-            throw new BusinessException("No se pueden crear viajes en una ruta eliminada");
-        }
-
-        validarNuevaSalida(request);
+        validarCreacion(ruta, request);
 
         Viaje viaje = viajeMapper.toViaje(request);
         viaje.setRuta(ruta);
@@ -87,6 +83,24 @@ public class ViajeService {
                         + ruta.getOrigen() + " → " + ruta.getDestino() + ".");
 
         return viajeMapper.toViajeRespuesta(guardado);
+    }
+
+    /** Read-only preparation; deliberately avoids the locking and state synchronization APIs. */
+    @Transactional(readOnly = true)
+    public Ruta validarCreacion(Long rutaId, ViajeRequest request) {
+        Usuario conductor = usuarioService.usuarioActual();
+        Ruta ruta = rutaRepository.findById(rutaId)
+                .filter(r -> r.getConductor().getId().equals(conductor.getId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
+        validarCreacion(ruta, request);
+        return ruta;
+    }
+
+    private void validarCreacion(Ruta ruta, ViajeRequest request) {
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se pueden crear viajes en una ruta eliminada");
+        }
+        validarNuevaSalida(request);
     }
 
     /** US07: reprogramar fecha/hora de un viaje sin borrar solicitudes ni historial. */

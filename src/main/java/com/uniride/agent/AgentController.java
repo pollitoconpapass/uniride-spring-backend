@@ -19,6 +19,6 @@ public class AgentController {
 
     @PostMapping("/chat")
     public ChatResponse chat(@Valid @RequestBody ChatRequest request, Authentication auth) {
-        return agentService.chat(auth.getName(), request.message());
+        return agentService.chat(request.message(), request.conversationId());
     }
 }

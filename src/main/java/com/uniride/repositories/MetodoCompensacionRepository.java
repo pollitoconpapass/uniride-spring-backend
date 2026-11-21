@@ -13,6 +13,9 @@ public interface MetodoCompensacionRepository extends JpaRepository<MetodoCompen
 
     List<MetodoCompensacion> findByUsuarioIdOrderByIdDesc(Long usuarioId);
 
+    org.springframework.data.domain.Page<MetodoCompensacion> findByUsuarioIdOrderByIdDesc(
+            Long usuarioId, org.springframework.data.domain.Pageable pageable);
+
     Optional<MetodoCompensacion> findByIdAndUsuarioId(Long id, Long usuarioId);
 
     boolean existsByUsuarioIdAndTipoAndDescripcionIgnoreCase(

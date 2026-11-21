@@ -40,7 +40,7 @@ class PostgresMigracionIntegrationTest {
         Flyway flyway=Flyway.configure().dataSource(url,user,password).schemas(schema).defaultSchema(schema)
                 .baselineVersion("1").cleanDisabled(true).load();
         flyway.baseline();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(5);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(6);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         try(var connection=DriverManager.getConnection(url,user,password);var statement=connection.createStatement();
             var result=statement.executeQuery("SELECT correo_institucional,telefono,intentos_otp FROM "+schema+".usuarios")) {

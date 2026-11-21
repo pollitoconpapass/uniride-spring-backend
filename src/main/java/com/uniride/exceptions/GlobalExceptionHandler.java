@@ -22,6 +22,12 @@ import tools.jackson.core.JacksonException;
 @Slf4j
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(com.uniride.agent.AgentProviderException.class)
+    public ResponseEntity<ErrorRespuesta> proveedorAgente(com.uniride.agent.AgentProviderException e) {
+        return ResponseEntity.status(e.status())
+                .body(new ErrorRespuesta(e.getMessage(), Map.of("codigo", e.code())));
+    }
+
     private final MensajeService mensajeService;
 
     public GlobalExceptionHandler(MensajeService mensajeService) {
