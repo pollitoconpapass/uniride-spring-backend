@@ -16,6 +16,7 @@ import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.confirmation.TipoOperacion;
 import com.uniride.agent.dto.*;
+import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.agent.tools.RutaAgentTools;
 import com.uniride.dto.responses.AnalisisSemanalRespuesta;
@@ -27,6 +28,7 @@ import com.uniride.entities.Usuario;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
+import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
@@ -185,6 +187,139 @@ class GroqProviderIntegrationTest {
         assertThat(requests.getLast().path("messages").toString()).contains(first.message());
         assertThat(simulatedTools.executions).hasValue(0);
         verifyNoInteractions(reports);
+    }
+
+    @Test
+    void compensationUpdateUsesThePreparationReceiptAndAcceptsNoResourceId() {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        String detalle = "Cambiar la descripción de Yape a Yape personal. ¿Confirmas esta operación?";
+        when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal"))
+                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, detalle));
+        enqueue(200, toolCall("actualizarMetodoCompensacion", """
+                {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
+                """));
+        enqueue(200, toolCall("actualizarMetodoCompensacion", """
+                {"nuevaDescripcion":"Yape personal","descripcionActual":"Yape"}
+                """));
+        enqueue(200, completion("Actualicé el método directamente.", "stop"));
+
+        ChatResponse response = service.chat("owner", "Cambia la descripción de mi método Yape a Yape personal");
+
+        assertThat(response.message()).isEqualTo(detalle);
+        assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
+        assertThat(requests).hasSize(3);
+        var registered = StreamSupport.stream(requests.getFirst().path("tools").spliterator(), false)
+                .map(tool -> tool.path("function")).toList();
+        assertThat(registered.stream().map(tool -> tool.path("name").asText())).contains(
+                "consultarMisMetodosCompensacion", "registrarMetodoCompensacion", "actualizarMetodoCompensacion",
+                "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion")
+                .doesNotContain("confirmar", "json");
+        assertThat(registered.stream().filter(tool -> "actualizarMetodoCompensacion".equals(tool.path("name").asText()))
+                .findFirst().orElseThrow().path("parameters").path("properties").propertyNames())
+                .containsExactlyInAnyOrder("tipoActual", "descripcionActual", "nuevoTipo", "nuevaDescripcion");
+        verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(queries);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void compensationStateStaysPendingFollowingTheSelectedBoolean(boolean active) {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        String detalle = (active ? "Activar" : "Desactivar") + " el método de gasolina. ¿Confirmas esta operación?";
+        when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active))
+                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, detalle));
+        enqueue(200, toolCall("cambiarEstadoMetodoCompensacion",
+                "{\"tipoActual\":\"GASOLINA\",\"activo\":" + active + "}"));
+        enqueue(200, completion("El cambio ya se realizó.", "stop"));
+
+        ChatResponse response = service.chat("owner", active ? "Activa mi método de gasolina" : "Desactiva mi método de gasolina");
+
+        assertThat(response.message()).isEqualTo(detalle);
+        assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("cambiarEstadoMetodoCompensacion");
+        assertThat(requests).hasSize(2);
+        verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(queries);
+    }
+
+    @Test
+    void associatedCompensationMethodCannotBeDeletedOrAutomaticallyDeactivated() {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        String detalle = "No puedes eliminar este método porque tiene solicitudes asociadas. Puedes desactivarlo.";
+        when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes"))
+                .thenThrow(new BusinessException(detalle));
+        enqueue(200, toolCall("eliminarMetodoCompensacion", """
+                {"tipoActual":"FAVOR","descripcionActual":"Favor con apuntes"}
+                """));
+        enqueue(200, completion("Método eliminado.", "stop"));
+
+        ChatResponse response = service.chat("owner", "Elimina mi método Favor con apuntes");
+
+        assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.ERROR);
+        assertThat(response.operacion().confirmacion()).isNull();
+        assertThat(response.message()).isEqualTo(detalle);
+        assertThat(requests).hasSize(2);
+        verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes");
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(queries);
+    }
+
+    @Test
+    void erroneousProviderToolCannotPrepareDeletionOnAnInformativeTurn() {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
+        enqueue(200, completion("Eliminé el método.", "stop"));
+
+        ChatResponse response = service.chat("owner", "¿Cómo elimino un método?");
+
+        assertThat(response.operacion()).isNull();
+        assertThat(response.message()).doesNotContain("Eliminé el método");
+        assertThat(requests).hasSize(2);
+        verifyNoInteractions(confirmations, queries);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Elimina mi método Yape", "Desactiva mi método Yape"})
+    void modelOmittedCompensationWriteIsNeverPreparedOrRecovered(String message) {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        enqueue(200, completion("Eliminé el método.", "stop"));
+
+        ChatResponse response = service.chat("owner", message);
+
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).isEmpty();
+        assertThat(response.message()).doesNotContain("Eliminé el método");
+        assertThat(requests).hasSize(1);
+        verifyNoInteractions(confirmations, queries);
+    }
+
+    @Test
+    void rejectsCompensationTypeOutsideTheToolEnumWithoutPreparingAnything() {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        enqueue(200, toolCall("actualizarMetodoCompensacion", """
+                {"descripcionActual":"Yape","nuevoTipo":"BITCOIN"}
+                """));
+
+        assertThatThrownBy(() -> service.chat("owner", "Cambia mi método Yape al tipo BITCOIN"))
+                .isInstanceOf(AgentProviderException.class);
+        assertThat(requests).hasSize(1);
+        verifyNoInteractions(confirmations, queries);
     }
 
     @Test

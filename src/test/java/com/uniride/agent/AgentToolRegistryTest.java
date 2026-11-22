@@ -13,6 +13,7 @@ import com.uniride.dto.responses.RankingRutasRespuesta;
 import com.uniride.dto.responses.RutaFrecuenteRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
+import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
@@ -39,7 +40,8 @@ class AgentToolRegistryTest {
                 .containsExactlyInAnyOrder("buscarViajes", "consultarMisViajes", "consultarMisSolicitudes",
                         "consultarMisRutas", "consultarMisMetodosCompensacion", "crearRuta", "crearViaje",
                         "solicitarUnirse", "registrarMetodoCompensacion", "consultarMisEstadisticas",
-                        "consultarMiFrecuenciaViajes", "consultarRankingMisRutas", "prepararDescargaHistorialPdf");
+                        "consultarMiFrecuenciaViajes", "consultarRankingMisRutas", "prepararDescargaHistorialPdf",
+                        "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion");
         verifyNoInteractions(confirmations, queries, users, statistics);
     }
 
@@ -68,6 +70,26 @@ class AgentToolRegistryTest {
         assertThat(response.message()).doesNotContain("programado", "08:00");
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
+    }
+
+    @Test void methodEditsShareTheOnePreparationRuleAndCanonicalReceipt() {
+        when(confirmations.prepararActualizacionMetodo(null, "Yape", TipoCompensacion.DINERO, null))
+                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma el cambio."));
+        var turn = registry.newTurn();
+        var edit = callback(turn, "actualizarMetodoCompensacion");
+        String receipt = edit.call("{\"descripcionActual\":\"Yape\",\"nuevoTipo\":\"DINERO\"}");
+        assertThat(edit.call("{\"nuevoTipo\":\"DINERO\",\"descripcionActual\":\"Yape\"}")).isEqualTo(receipt);
+
+        assertThatThrownBy(() -> callback(turn, "cambiarEstadoMetodoCompensacion")
+                .call("{\"descripcionActual\":\"Yape\",\"activo\":false}"))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("ONE_OPERATION_PER_TURN"));
+        assertThatThrownBy(() -> callback(turn, "eliminarMetodoCompensacion").call("{\"descripcionActual\":\"Yape\"}"))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("ONE_OPERATION_PER_TURN"));
+
+        assertThat(turn.response("Ya actualicé tu método.").resultados()).extracting(ResultadoAgente::tipo)
+                .containsExactly("actualizarMetodoCompensacion");
+        verify(confirmations).prepararActualizacionMetodo(null, "Yape", TipoCompensacion.DINERO, null);
+        verifyNoMoreInteractions(confirmations);
     }
 
     @Test void toolBudgetStopsAnUnboundedLoopWithoutRepeatingARead() {

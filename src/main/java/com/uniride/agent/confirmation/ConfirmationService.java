@@ -3,8 +3,10 @@ package com.uniride.agent.confirmation;
 import com.uniride.agent.AgentConversationStore;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
+import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.entities.*;
 import com.uniride.enums.Rol;
+import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.*;
 import com.uniride.repositories.*;
 import com.uniride.services.*;
@@ -25,6 +27,8 @@ import tools.jackson.databind.ObjectMapper;
 @RequiredArgsConstructor
 public class ConfirmationService {
     private static final Duration TTL = Duration.ofMinutes(10);
+    private static final String SNAPSHOT_OBSOLETO =
+            "Los datos cambiaron desde la preparación. Cancela esta confirmación y prepara una nueva operación.";
     private final ConfirmationRepository confirmations;
     private final UsuarioService usuarios;
     private final RutaService rutas;
@@ -85,6 +89,77 @@ public class ConfirmationService {
     }
 
     @Transactional(timeout = 10)
+    public OperacionResumen prepararActualizacionMetodo(TipoCompensacion tipoActual, String descripcionActual,
+            TipoCompensacion nuevoTipo, String nuevaDescripcion) {
+        return prepararGestionMetodo(TipoOperacion.ACTUALIZAR_METODO, tipoActual, descripcionActual,
+                new MetodoCompensacionRequest(nuevoTipo, nuevaDescripcion, null));
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEstadoMetodo(TipoCompensacion tipoActual, String descripcionActual, Boolean activo) {
+        return prepararGestionMetodo(TipoOperacion.CAMBIAR_ESTADO_METODO, tipoActual, descripcionActual,
+                new MetodoCompensacionRequest(null, null, activo));
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEliminacionMetodo(TipoCompensacion tipoActual, String descripcionActual) {
+        return prepararGestionMetodo(TipoOperacion.ELIMINAR_METODO, tipoActual, descripcionActual, null);
+    }
+
+    private OperacionResumen prepararGestionMetodo(TipoOperacion tipo, TipoCompensacion tipoActual,
+            String descripcionActual, MetodoCompensacionRequest cambios) {
+        Usuario usuario = autorizado(tipo);
+        if (tipoActual == null && (descripcionActual == null || descripcionActual.isBlank())) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "Indica el tipo o la descripción del método de compensación.");
+        }
+        if (tipo == TipoOperacion.ACTUALIZAR_METODO && cambios.tipo() == null && cambios.descripcion() == null) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "¿Qué quieres cambiar en tu método de compensación? Indica el nuevo tipo o la nueva descripción.");
+        }
+        if (tipo == TipoOperacion.CAMBIAR_ESTADO_METODO && cambios.activo() == null) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "¿Quieres activar o desactivar el método de compensación?");
+        }
+
+        // Serialize selection and snapshot with both REST and confirmed method changes.
+        entityManager.refresh(usuario, LockModeType.PESSIMISTIC_WRITE);
+        exigirRol(usuario, tipo);
+        var coincidencias = metodos.buscarCoincidenciasPropias(tipoActual, descripcionActual);
+        if (coincidencias.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No encontré un método de compensación propio que coincida.");
+        }
+        if (coincidencias.size() > 1) {
+            return new OperacionResumen(EstadoOperacion.AMBIGUO, null,
+                    "Tienes varios métodos de compensación que coinciden. Indica el tipo y la descripción exacta del que deseas cambiar.");
+        }
+        MetodoCompensacionRespuesta actual = coincidencias.getFirst();
+        JsonNode snapshot = snapshotMetodo(actual.id(), usuario.getId(), actual.tipo(), actual.descripcion(), actual.activo());
+        String anterior = describirMetodo(actual.tipo(), actual.descripcion(), actual.activo());
+
+        if (tipo == TipoOperacion.ELIMINAR_METODO) {
+            metodos.validarEliminacion(actual.id());
+            return guardarBajoBloqueo(usuario, tipo, actual.id(), mapper.createObjectNode(), snapshot,
+                    "Eliminar tu método " + anterior + ".");
+        }
+
+        var request = new MetodoCompensacionRequest(cambios.tipo() == null ? actual.tipo() : cambios.tipo(),
+                cambios.descripcion() == null ? actual.descripcion() : cambios.descripcion().trim(),
+                cambios.activo() == null ? actual.activo() : cambios.activo());
+        validar(request);
+        if (request.tipo() == actual.tipo() && request.descripcion().equals(actual.descripcion())
+                && request.activo() == actual.activo()) {
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null,
+                    "Tu método de compensación ya tiene los valores solicitados.");
+        }
+        metodos.validarActualizacion(actual.id(), request);
+        String accion = tipo == TipoOperacion.ACTUALIZAR_METODO ? "Actualizar" : request.activo() ? "Activar" : "Desactivar";
+        String posterior = describirMetodo(request.tipo(), request.descripcion(), request.activo());
+        return guardarBajoBloqueo(usuario, tipo, actual.id(), request, snapshot,
+                accion + " tu método. Antes era " + anterior + ". Quedará como " + posterior + ".");
+    }
+
+    @Transactional(timeout = 10)
     public ConfirmacionResumen obtener(UUID id) {
         PendingConfirmation pending = propia(id);
         expirarSiCorresponde(pending);
@@ -113,9 +188,10 @@ public class ConfirmationService {
 
         Usuario usuario = usuarios.usuarioActual();
         // FOR SHARE keeps the current role stable while remaining compatible with notification FKs.
-        // Method registration needs an exclusive user lock: its existing duplicate check has no
-        // unique DB constraint. Choose it before acquiring a shared lock to avoid lock upgrades.
+        // Compensation changes share an exclusive owner lock with REST before any method lock.
+        // Acquire it directly to avoid lock upgrades and serialize checks across different methods.
         entityManager.refresh(usuario, pending.getTipo() == TipoOperacion.REGISTRAR_METODO
+                || pending.getTipo().modificaMetodoExistente()
                 ? LockModeType.PESSIMISTIC_WRITE : LockModeType.PESSIMISTIC_READ);
         exigirRol(usuario, pending.getTipo());
         OperacionResumen result = ejecutar(pending, usuario);
@@ -175,8 +251,28 @@ public class ConfirmationService {
                 return new OperacionResumen(EstadoOperacion.EXITO, created.id(),
                         "Método " + created.tipo() + ": " + created.descripcion() + " registrado.");
             }
+            case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO -> {
+                return ejecutarGestionMetodo(pending);
+            }
         }
         throw new IllegalStateException("Tipo de operación no soportado");
+    }
+
+    private OperacionResumen ejecutarGestionMetodo(PendingConfirmation pending) {
+        MetodoCompensacion metodo = metodos.bloquearMetodoPropio(pending.getRecursoId())
+                .orElseThrow(() -> new BusinessException(SNAPSHOT_OBSOLETO));
+        comprobarSnapshot(pending, snapshotMetodo(metodo.getId(), metodo.getUsuario().getId(), metodo.getTipo(),
+                metodo.getDescripcion(), metodo.isActivo()));
+
+        if (pending.getTipo() == TipoOperacion.ELIMINAR_METODO) {
+            var eliminado = metodos.eliminar(metodo.getId());
+            return new OperacionResumen(EstadoOperacion.EXITO, metodo.getId(), eliminado.get("mensaje"));
+        }
+        var request = mapper.readValue(pending.getParametros(), MetodoCompensacionRequest.class);
+        validar(request);
+        var actualizado = metodos.actualizar(metodo.getId(), request);
+        return new OperacionResumen(EstadoOperacion.EXITO, actualizado.id(),
+                "Método " + describirMetodo(actualizado.tipo(), actualizado.descripcion(), actualizado.activo()) + " actualizado.");
     }
 
     private OperacionResumen guardar(Usuario usuario, TipoOperacion tipo, Long recursoId,
@@ -184,6 +280,11 @@ public class ConfirmationService {
         // Only preparation takes an exclusive user lock. It calls no notifying/write business service.
         entityManager.refresh(usuario, LockModeType.PESSIMISTIC_WRITE);
         exigirRol(usuario, tipo);
+        return guardarBajoBloqueo(usuario, tipo, recursoId, parameters, snapshot, description);
+    }
+
+    private OperacionResumen guardarBajoBloqueo(Usuario usuario, TipoOperacion tipo, Long recursoId,
+            Object parameters, JsonNode snapshot, String description) {
         if (confirmations.countByUsuarioIdAndEstadoAndExpiraAfter(usuario.getId(),
                 EstadoConfirmacion.PENDIENTE, clock.instant()) >= 20)
             throw new BusinessException("Tienes 20 operaciones pendientes. Confirma, cancela o espera su expiración.");
@@ -234,6 +335,10 @@ public class ConfirmationService {
             case CREAR_RUTA, CREAR_VIAJE -> Rol.CONDUCTOR;
             case SOLICITAR_UNIRSE -> Rol.PASAJERO;
             case REGISTRAR_METODO -> null;
+            case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO -> {
+                if (usuario.getRolPrincipal() == null) throw new NoPermitidoException("La operación requiere un rol activo.");
+                yield null;
+            }
         };
         if (requerido != null && usuario.getRolPrincipal() != requerido)
             throw new NoPermitidoException("La operación requiere el rol " + requerido + ".");
@@ -273,11 +378,20 @@ public class ConfirmationService {
         return data;
     }
 
+    private JsonNode snapshotMetodo(Long id, Long usuarioId, TipoCompensacion tipo, String descripcion, boolean activo) {
+        return mapper.createObjectNode().put("metodoId", id).put("usuarioId", usuarioId).put("tipo", tipo.name())
+                .put("descripcion", descripcion).put("activo", activo);
+    }
+
+    private String describirMetodo(TipoCompensacion tipo, String descripcion, boolean activo) {
+        return tipo + " «" + descripcion + "» (" + (activo ? "activo" : "inactivo") + ")";
+    }
+
     private void comprobarSnapshot(PendingConfirmation pending, JsonNode actual) {
         // JsonNode numeric subtypes may differ before/after persistence (LongNode versus IntNode).
         // Parse both representations identically; values and all fields are still compared exactly.
         if (!mapper.readTree(pending.getSnapshot()).equals(mapper.readTree(actual.toString())))
-            throw new BusinessException("Los datos cambiaron desde la preparación. Cancela esta confirmación y prepara una nueva operación.");
+            throw new BusinessException(SNAPSHOT_OBSOLETO);
     }
 
     private String opcional(String prefix, String value) {

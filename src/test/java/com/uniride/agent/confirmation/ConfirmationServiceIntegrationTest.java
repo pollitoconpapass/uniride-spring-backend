@@ -15,12 +15,17 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 /** Runs against the isolated test datasource only, with no model/provider calls. */
 @SpringBootTest
@@ -33,6 +38,9 @@ class ConfirmationServiceIntegrationTest {
     @Autowired ViajeRepository trips;
     @Autowired SolicitudRepository requests;
     @Autowired MetodoCompensacionRepository methods;
+    @Autowired MetodoCompensacionService methodService;
+    @Autowired TransactionTemplate transaction;
+    @Autowired ObjectMapper mapper;
     @Autowired PerfilRolService roles;
     @Autowired Clock clock;
     @MockitoBean NotificacionService notifications;
@@ -122,6 +130,205 @@ class ConfirmationServiceIntegrationTest {
 
         assertThat(methods.count()).isEqualTo(before + 1);
         assertThat(executed.resultado().estado()).isEqualTo(EstadoOperacion.EXITO);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Rol.class)
+    void editsOnlyDescriptionAndPersistsExactSnapshotForEitherRole(Rol role) {
+        Usuario owner = role == Rol.CONDUCTOR ? driver : passenger;
+        authenticate(owner);
+        var original = metodo(owner, TipoCompensacion.DINERO, "Yape", false);
+        long before = methods.count();
+
+        var proposal = service.prepararActualizacionMetodo(null, " yApE ", null, " Yape personal ");
+
+        assertThat(proposal.estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(proposal.id()).isNull();
+        var pending = proposal.confirmacion();
+        assertThat(pending.tipo()).isEqualTo(TipoOperacion.ACTUALIZAR_METODO);
+        assertThat(pending.estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(pending.resumen()).contains("DINERO «Yape» (inactivo)", "DINERO «Yape personal» (inactivo)");
+        assertThat(pending.parametros().path("tipo").asText()).isEqualTo("DINERO");
+        assertThat(pending.parametros().path("descripcion").asText()).isEqualTo("Yape personal");
+        assertThat(pending.parametros().path("activo").asBoolean(true)).isFalse();
+        transaction.executeWithoutResult(status -> {
+            var stored = confirmations.findById(pending.id()).orElseThrow();
+            assertThat(stored.getUsuario().getId()).isEqualTo(owner.getId());
+            assertThat(stored.getRecursoId()).isEqualTo(original.getId());
+            var snapshot = mapper.readTree(stored.getSnapshot());
+            assertThat(snapshot.path("metodoId").asLong()).isEqualTo(original.getId());
+            assertThat(snapshot.path("usuarioId").asLong()).isEqualTo(owner.getId());
+            assertThat(snapshot.path("tipo").asText()).isEqualTo("DINERO");
+            assertThat(snapshot.path("descripcion").asText()).isEqualTo("Yape");
+            assertThat(snapshot.path("activo").asBoolean(true)).isFalse();
+        });
+        assertThat(methods.count()).isEqualTo(before);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape", false);
+        verifyNoInteractions(notifications);
+
+        var executed = service.confirmar(pending.id());
+        assertThat(executed.estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertThat(executed.resultado().id()).isEqualTo(original.getId());
+        assertThat(service.confirmar(pending.id())).isEqualTo(executed);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape personal", false);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void editsOnlyTypeAndRejectsDuplicatesThatAppearBeforeConfirmation() {
+        var original = metodo(driver, TipoCompensacion.FAVOR, "Apuntes", false);
+        var proposal = service.prepararActualizacionMetodo(TipoCompensacion.FAVOR, "Apuntes",
+                TipoCompensacion.DINERO, null);
+        UUID id = proposal.confirmacion().id();
+        var duplicate = metodo(driver, TipoCompensacion.DINERO, "APUNTES", true);
+
+        assertThatThrownBy(() -> service.confirmar(id))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("mismo tipo y descripción");
+        assertThatThrownBy(() -> service.prepararActualizacionMetodo(TipoCompensacion.FAVOR, "Apuntes",
+                TipoCompensacion.DINERO, null))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("mismo tipo y descripción");
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertMetodo(original.getId(), TipoCompensacion.FAVOR, "Apuntes", false);
+        verifyNoInteractions(notifications);
+
+        methods.deleteById(duplicate.getId());
+        assertThat(service.confirmar(id).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Apuntes", false);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void changesOnlyActiveStateAndDoesNotPrepareANoop(boolean active) {
+        var original = metodo(driver, TipoCompensacion.GASOLINA, "Combustible", !active);
+        var proposal = service.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active);
+        assertThat(proposal.confirmacion().tipo()).isEqualTo(TipoOperacion.CAMBIAR_ESTADO_METODO);
+        assertThat(proposal.confirmacion().parametros().path("activo").asBoolean()).isEqualTo(active);
+        assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "Combustible", !active);
+        verifyNoInteractions(notifications);
+
+        service.confirmar(proposal.confirmacion().id());
+        assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "Combustible", active);
+        long before = confirmations.count();
+        assertThat(service.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active).estado())
+                .isEqualTo(EstadoOperacion.SIN_CAMBIOS);
+        assertThat(service.prepararActualizacionMetodo(null, "Combustible", null, "Combustible").estado())
+                .isEqualTo(EstadoOperacion.SIN_CAMBIOS);
+        assertThat(confirmations.count()).isEqualTo(before);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void looksUpOnlyOwnedMethodsAcrossPagesAndReportsAmbiguity() {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Yape 100%_literal", true);
+        for (int i = 0; i < 15; i++) metodo(driver, TipoCompensacion.GASOLINA, "Combustible " + i, true);
+        metodo(passenger, TipoCompensacion.DINERO, "Yape 100%_literal", true);
+        metodo(passenger, TipoCompensacion.FAVOR, "Solo ajeno", true);
+
+        long before = confirmations.count();
+        assertThat(service.prepararEliminacionMetodo(null, "Solo ajeno").estado())
+                .isEqualTo(EstadoOperacion.NO_ENCONTRADO);
+        assertThat(service.prepararEliminacionMetodo(TipoCompensacion.GASOLINA, null).estado())
+                .isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(confirmations.count()).isEqualTo(before);
+
+        metodo(driver, TipoCompensacion.DINERO, "Yape 100XXliteral", true);
+        var pending = service.prepararEliminacionMetodo(null, "100%_").confirmacion();
+        assertThat(pending.tipo()).isEqualTo(TipoOperacion.ELIMINAR_METODO);
+        assertThat(confirmations.findById(pending.id()).orElseThrow().getRecursoId()).isEqualTo(original.getId());
+        assertThat(methods.findById(original.getId())).isPresent();
+        verifyNoInteractions(notifications);
+
+        authenticate(passenger);
+        assertThatThrownBy(() -> service.obtener(pending.id())).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service.cancelar(pending.id())).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service.confirmar(pending.id())).isInstanceOf(ResourceNotFoundException.class);
+        assertThat(methods.findById(original.getId())).isPresent();
+    }
+
+    @Test void deletesOnlyAfterConfirmationAndReturnsTheCommittedReceiptOnReplay() {
+        var original = metodo(driver, TipoCompensacion.FAVOR, "Favor con apuntes", true);
+        var pending = service.prepararEliminacionMetodo(null, "Favor con apuntes").confirmacion();
+        assertThat(pending.resumen()).contains("FAVOR", "Favor con apuntes");
+        assertThat(methods.findById(original.getId())).isPresent();
+        verifyNoInteractions(notifications);
+
+        var executed = service.confirmar(pending.id());
+
+        assertThat(executed.estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertThat(executed.resultado().estado()).isEqualTo(EstadoOperacion.EXITO);
+        assertThat(methods.findById(original.getId())).isEmpty();
+        assertThat(service.confirmar(pending.id())).isEqualTo(executed);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @ParameterizedTest
+    @EnumSource(EstadoSolicitud.class)
+    void anyLateRequestAssociationPreventsDeletionAndKeepsConfirmationPending(EstadoSolicitud status) {
+        var original = metodo(passenger, TipoCompensacion.FAVOR, "Favor", true);
+        var trip = trip();
+        authenticate(passenger);
+        UUID id = service.prepararEliminacionMetodo(null, "Favor").confirmacion().id();
+        requests.save(Solicitud.builder().viaje(trip).pasajero(passenger).estado(status)
+                .preferenciaCompensacion(TipoCompensacion.FAVOR).metodoCompensacion(original).build());
+
+        assertThatThrownBy(() -> service.prepararEliminacionMetodo(null, "Favor"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("solicitudes asociadas", "desactivarlo");
+        assertThatThrownBy(() -> service.confirmar(id))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("solicitudes asociadas");
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertMetodo(original.getId(), TipoCompensacion.FAVOR, "Favor", true);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void cancelledAndExpiredMethodConfirmationsLeaveTheMethodIntact() {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Efectivo", true);
+        UUID cancel = service.prepararEstadoMetodo(null, "Efectivo", false).confirmacion().id();
+        UUID expire = service.prepararEliminacionMetodo(null, "Efectivo").confirmacion().id();
+        assertThat(service.cancelar(cancel).estado()).isEqualTo(EstadoConfirmacion.CANCELADA);
+        var expired = confirmations.findById(expire).orElseThrow();
+        expired.setCreada(clock.instant().minusSeconds(1200));
+        expired.setExpira(clock.instant().minusSeconds(1));
+        confirmations.save(expired);
+
+        assertThatThrownBy(() -> service.confirmar(cancel)).isInstanceOf(BusinessException.class).hasMessageContaining("cancelada");
+        assertThat(service.confirmar(expire).estado()).isEqualTo(EstadoConfirmacion.EXPIRADA);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Efectivo", true);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void methodConfirmationRevalidatesTheActiveRoleBeforeTakingEffect() {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Efectivo", true);
+        UUID pending = service.prepararEstadoMetodo(null, "Efectivo", false).confirmacion().id();
+        driver.setRolPrincipal(null);
+        users.save(driver);
+
+        assertThatThrownBy(() -> service.confirmar(pending)).isInstanceOf(NoPermitidoException.class);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Efectivo", true);
+        assertThat(service.obtener(pending).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        verifyNoInteractions(notifications);
+
+        driver.setRolPrincipal(Rol.PASAJERO);
+        users.save(driver);
+        assertThat(service.confirmar(pending).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Efectivo", false);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void failureDuringMethodUpdateRollsBackBothTheChangeAndItsReceipt() {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Efectivo", true);
+        UUID id = service.prepararActualizacionMetodo(null, "Efectivo", null, "Pago en efectivo").confirmacion().id();
+        doThrow(new BusinessException("Fallo transaccional de prueba"))
+                .when(notifications).notificar(any(), any(), anyString(), anyString());
+
+        assertThatThrownBy(() -> service.confirmar(id)).isInstanceOf(BusinessException.class);
+
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Efectivo", true);
+        var pending = service.obtener(id);
+        assertThat(pending.estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(pending.resultado()).isNull();
+        reset(notifications);
+        var executed = service.confirmar(id);
+        assertThat(service.confirmar(id)).isEqualTo(executed);
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Pago en efectivo", true);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
     }
 
     @Test void passengerCannotPrepareDriverOperations() {
@@ -319,6 +526,185 @@ class ConfirmationServiceIntegrationTest {
         verify(notifications, times(1)).notificar(any(), any(), anyString(), anyString());
     }
 
+    @Test void concurrentMethodConfirmationsForOneUuidOnlyUpdateOnce() throws Exception {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Yape", true);
+        UUID id = service.prepararEstadoMetodo(null, "Yape", false).confirmacion().id();
+        var start = new CountDownLatch(1);
+        Callable<ConfirmacionResumen> confirm = () -> {
+            authenticate(driver);
+            try {
+                await(start);
+                return service.confirmar(id);
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        };
+
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(confirm);
+            var second = pool.submit(confirm);
+            start.countDown();
+            assertThat(first.get(10, TimeUnit.SECONDS)).isEqualTo(second.get(10, TimeUnit.SECONDS));
+        }
+
+        assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape", false);
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void differentConfirmationsForTheSameMethodCannotSilentlyOverwriteOneAnother() throws Exception {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Yape", true);
+        UUID edit = service.prepararActualizacionMetodo(null, "Yape", null, "Yape personal").confirmacion().id();
+        UUID remove = service.prepararEliminacionMetodo(null, "Yape").confirmacion().id();
+
+        confirmaConUnConflicto(edit, remove, "nueva");
+
+        if (service.obtener(edit).estado() == EstadoConfirmacion.EJECUTADA) {
+            assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape personal", true);
+        } else {
+            assertThat(methods.findById(original.getId())).isEmpty();
+        }
+    }
+
+    @Test void differentMethodsOfOneOwnerCannotConcurrentlyAcquireTheSameTypeAndDescription() throws Exception {
+        var first = metodo(driver, TipoCompensacion.DINERO, "Efectivo", true);
+        var second = metodo(driver, TipoCompensacion.FAVOR, "Apuntes", true);
+        UUID editFirst = service.prepararActualizacionMetodo(null, "Efectivo", TipoCompensacion.FAVOR, "Compartir")
+                .confirmacion().id();
+        UUID editSecond = service.prepararActualizacionMetodo(null, "Apuntes", null, "compartir")
+                .confirmacion().id();
+
+        confirmaConUnConflicto(editFirst, editSecond, "mismo tipo y descripción");
+
+        if (service.obtener(editFirst).estado() == EstadoConfirmacion.EJECUTADA) {
+            assertMetodo(first.getId(), TipoCompensacion.FAVOR, "Compartir", true);
+            assertMetodo(second.getId(), TipoCompensacion.FAVOR, "Apuntes", true);
+        } else {
+            assertMetodo(first.getId(), TipoCompensacion.DINERO, "Efectivo", true);
+            assertMetodo(second.getId(), TipoCompensacion.FAVOR, "compartir", true);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void waitsForATraditionalWriteAndThenRejectsTheStaleMethodSnapshot(boolean delete) throws Exception {
+        var original = metodo(driver, TipoCompensacion.DINERO, "Yape", true);
+        UUID pending = service.prepararEliminacionMetodo(null, "Yape").confirmacion().id();
+        var written = new CountDownLatch(1);
+        var commit = new CountDownLatch(1);
+        var confirmStarted = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var writer = pool.submit(() -> {
+                authenticate(driver);
+                try {
+                    transaction.executeWithoutResult(status -> {
+                        if (delete) methodService.eliminar(original.getId());
+                        else methodService.actualizar(original.getId(),
+                                new MetodoCompensacionRequest(TipoCompensacion.DINERO, "Yape REST", true));
+                        written.countDown();
+                        await(commit);
+                    });
+                } finally {
+                    SecurityContextHolder.clearContext();
+                }
+            });
+            try {
+                await(written);
+                var confirm = pool.submit(() -> {
+                    authenticate(driver);
+                    try {
+                        confirmStarted.countDown();
+                        return service.confirmar(pending);
+                    } finally {
+                        SecurityContextHolder.clearContext();
+                    }
+                });
+                await(confirmStarted);
+                assertThatThrownBy(() -> confirm.get(200, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                commit.countDown();
+                writer.get(10, TimeUnit.SECONDS);
+                assertThatThrownBy(() -> confirm.get(10, TimeUnit.SECONDS))
+                        .isInstanceOf(ExecutionException.class).hasCauseInstanceOf(BusinessException.class);
+            } finally {
+                commit.countDown();
+            }
+        }
+
+        if (delete) assertThat(methods.findById(original.getId())).isEmpty();
+        else assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape REST", true);
+        assertThat(service.obtener(pending).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void differentOwnersCanConfirmMethodsIndependently() throws Exception {
+        var first = metodo(driver, TipoCompensacion.DINERO, "Yape", true);
+        var second = metodo(passenger, TipoCompensacion.DINERO, "Yape", true);
+        UUID driverPending = service.prepararEstadoMetodo(null, "Yape", false).confirmacion().id();
+        authenticate(passenger);
+        UUID passengerPending = service.prepararEstadoMetodo(null, "Yape", false).confirmacion().id();
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var driverResult = pool.submit(() -> confirmarConcurrente(driver, driverPending, start, null));
+            var passengerResult = pool.submit(() -> confirmarConcurrente(passenger, passengerPending, start, null));
+            start.countDown();
+            assertThat(driverResult.get(10, TimeUnit.SECONDS)).isEqualTo("EJECUTADA");
+            assertThat(passengerResult.get(10, TimeUnit.SECONDS)).isEqualTo("EJECUTADA");
+        }
+        assertMetodo(first.getId(), TipoCompensacion.DINERO, "Yape", false);
+        assertMetodo(second.getId(), TipoCompensacion.DINERO, "Yape", false);
+        verify(notifications, times(2)).notificar(any(), any(), anyString(), anyString());
+    }
+
+    private void confirmaConUnConflicto(UUID firstId, UUID secondId, String message) throws Exception {
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> confirmarConcurrente(driver, firstId, start, message));
+            var second = pool.submit(() -> confirmarConcurrente(driver, secondId, start, message));
+            start.countDown();
+            assertThat(List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder("EJECUTADA", "CONFLICTO");
+        }
+        assertThat(List.of(service.obtener(firstId).estado(), service.obtener(secondId).estado()))
+                .containsExactlyInAnyOrder(EstadoConfirmacion.EJECUTADA, EstadoConfirmacion.PENDIENTE);
+        verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    private String confirmarConcurrente(Usuario owner, UUID id, CountDownLatch start, String conflictMessage) {
+        authenticate(owner);
+        try {
+            await(start);
+            return service.confirmar(id).estado().name();
+        } catch (BusinessException conflict) {
+            if (conflictMessage == null) throw conflict;
+            assertThat(conflict).hasMessageContaining(conflictMessage);
+            return "CONFLICTO";
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    static void await(CountDownLatch signal) {
+        try {
+            assertThat(signal.await(5, TimeUnit.SECONDS)).isTrue();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+
+    MetodoCompensacion metodo(Usuario owner, TipoCompensacion type, String description, boolean active) {
+        return methods.save(MetodoCompensacion.builder().usuario(owner).tipo(type).descripcion(description)
+                .activo(active).build());
+    }
+
+    private void assertMetodo(Long id, TipoCompensacion type, String description, boolean active) {
+        assertThat(methods.findById(id)).hasValueSatisfying(method -> {
+            assertThat(method.getTipo()).isEqualTo(type);
+            assertThat(method.getDescripcion()).isEqualTo(description);
+            assertThat(method.isActivo()).isEqualTo(active);
+        });
+    }
+
     private Usuario user(Rol role) {
         Usuario user = users.save(Usuario.builder().correoInstitucional(UUID.randomUUID() + "@upc.edu.pe")
                 .telefono("fixture-" + UUID.randomUUID()).nombre("Ana").apellidos("Prueba")
@@ -327,7 +713,7 @@ class ConfirmationServiceIntegrationTest {
         return user;
     }
 
-    private void authenticate(Usuario user) {
+    void authenticate(Usuario user) {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 user.getCorreoInstitucional(), null, List.of(new SimpleGrantedAuthority("ROLE_" + user.getRolPrincipal()))));
     }
@@ -340,7 +726,7 @@ class ConfirmationServiceIntegrationTest {
         return routes.save(Ruta.builder().conductor(driver).origen("Surco").destino("UPC")
                 .capacidadMaxima(4).puntosReferencia("Parque").estado(EstadoRuta.ACTIVA).build());
     }
-    private Viaje trip() {
+    Viaje trip() {
         return trips.save(Viaje.builder().ruta(route()).fecha(tripRequest().fecha()).hora(tripRequest().hora())
                 .dia("Lunes").estado(EstadoViaje.PROGRAMADO).build());
     }

@@ -27,6 +27,7 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | ReportesAgentTools | Consultas personales de solo lectura y validación del rol activo para el ranking |
 | EstadisticasService | Totales de actividad, frecuencia histórica, ranking de rutas y generación del historial en PDF |
 | HistorialController | Descarga autenticada del PDF mediante `GET /api/historial/pdf` |
+| MetodoCompensacionAgentTools | Consulta de métodos propios y preparación de registro, edición, cambio de estado o eliminación |
 | ConfirmationService | Guardar propuesta, validar propietario/estado/expiración y ejecutar negocio una sola vez |
 | ConfirmationController | Confirmación explícita recibida fuera del modelo |
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
@@ -79,6 +80,14 @@ Una tool de escritura debe **preparar**, nunca ejecutar el servicio de negocio d
 8. Añadir tests de preparación sin efectos, rol cambiado, propiedad ajena, expiración, cancelación, snapshot cambiado, reglas revalidadas, rollback, confirmación duplicada y concurrencia PostgreSQL.
 
 La aplicación confirma por `POST /api/agent/confirmaciones/{id}/confirmar`, sin parámetros ni cuerpo. El modelo no puede fabricar una aprobación. Repetir el mismo UUID ejecutado devuelve su recibo; si el resultado de red es incierto, consultar primero ese UUID. `GET` y `/cancelar` completan el protocolo. Ver [contratos completos](agente_flujo.md).
+
+### Gestión de métodos de compensación
+
+`MetodoCompensacionAgentTools` expone `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. El modelo describe el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
+
+`ConfirmationService` guarda el estado del método al preparar la operación y compara ese estado al confirmar. Los tres tipos nuevos reutilizan `MetodoCompensacionService` para aplicar los cambios, validar duplicados y conservar las solicitudes vinculadas. Flyway V8 amplía la restricción `CHECK` del tipo en `agent_confirmaciones`. El protocolo conserva el límite de una preparación por turno y utiliza los mismos endpoints autenticados de confirmación.
+
+Ante una pregunta de procedimiento explícita como «¿Cómo elimino un método?», `AgentToolRegistry` intercepta cualquier preparación de compensación sugerida por el modelo y devuelve ayuda. Las peticiones de cambio siguen el protocolo de confirmación explícita. La ejecución, la notificación y el recibo se guardan en una transacción. Para las pruebas manuales, consulta [Gestión de métodos de compensación en Swagger](agente_flujo.md#probar-la-gestión-de-métodos-de-compensación).
 
 ## Salida y errores
 

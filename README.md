@@ -110,7 +110,7 @@ inicia una conversación independiente. Las sesiones viven en RAM, expiran tras
 El agente utiliza herramientas Java mediante Spring AI y la API compatible de
 Groq. El backend construye los datos estructurados a partir de sus resultados;
 no combina Structured Outputs con tool calling ni registra una herramienta `json`.
-Las cuatro operaciones de escritura únicamente preparan confirmaciones. Para
+Las operaciones de escritura únicamente preparan confirmaciones. Para
 ejecutarlas se necesita un endpoint autenticado explícito, independiente del modelo.
 
 El chat admite estadísticas personales y frecuencia histórica por día de la semana
@@ -118,6 +118,8 @@ para ambos roles. Los conductores también pueden consultar el ranking de sus ru
 con las penalidades asociadas. Los reportes se devuelven en `resultados`.
 El chat también prepara la descarga del historial en PDF para ambos roles. El
 archivo se descarga con el JWT del usuario mediante `GET /api/historial/pdf`.
+Ambos roles pueden preparar el registro, la edición, la activación, la
+desactivación y la eliminación de sus métodos de compensación desde el chat.
 
 Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md) y el

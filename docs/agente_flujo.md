@@ -28,7 +28,7 @@ flowchart TD
     B --> DB
 ```
 
-El modelo elige entre las trece herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las escrituras preparan confirmaciones que se ejecutan mediante una petición HTTP explícita. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+El modelo elige entre las dieciséis herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las escrituras preparan confirmaciones que se ejecutan mediante una petición HTTP explícita. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -41,6 +41,7 @@ Todas las rutas `/api/agent/**` requieren Bearer JWT válido de una cuenta verif
 | consultarMisRutas, consultarMisViajes, crearRuta, crearViaje | CONDUCTOR |
 | buscarViajes, consultarMisSolicitudes, solicitarUnirse | PASAJERO |
 | consultarMisMetodosCompensacion, registrarMetodoCompensacion | Ambos |
+| actualizarMetodoCompensacion, cambiarEstadoMetodoCompensacion, eliminarMetodoCompensacion | Ambos |
 | consultarMisEstadisticas, consultarMiFrecuenciaViajes | Ambos |
 | consultarRankingMisRutas | CONDUCTOR |
 | prepararDescargaHistorialPdf | Ambos |
@@ -176,7 +177,7 @@ La integración pendiente de Angular podrá mostrar un botón «Descargar PDF» 
 {"message":"Crea un viaje el 25 de noviembre de 2026 a las 08:00 en mi ruta de Surco"}
 ```
 
-Si faltan datos o hay varias coincidencias, no se crea ninguna operación de negocio. El servidor puede devolver `operacion.estado` como `DATOS_FALTANTES`, `AMBIGUO`, `NO_ENCONTRADO` o `ERROR`. Una pregunta sin tool conserva listas vacías y `operacion:null`.
+Si faltan datos o hay varias coincidencias, no se crea ninguna operación de negocio. El servidor puede devolver `operacion.estado` como `DATOS_FALTANTES`, `AMBIGUO`, `NO_ENCONTRADO`, `SIN_CAMBIOS` o `ERROR`. Una pregunta sin tool conserva listas vacías y `operacion:null`.
 
 Cuando los datos son válidos, `operacion` es:
 
@@ -229,7 +230,33 @@ POST /api/agent/confirmaciones/{id}/cancelar
 
 Ambos requieren JWT del propietario. Cancelar no recibe cuerpo ni parámetros. Devuelve el mismo sobre con `estado:"CANCELADA"`, `resultado:null`; cancelar otra vez no ejecuta nada. Cancelar una ejecutada o confirmar una cancelada devuelve 409. Una confirmación expirada devuelve 410 y su sobre con `estado:"EXPIRADA"`, `resultado:null`. Una ajena/inexistente da 404. Cambio de rol incompatible: 403. Cambio de ruta, destino de perfil, horario o estado frente al resumen: 409, preparar de nuevo. Fallo de reglas de negocio: 400/409 según la regla, rollback conjunto y confirmación pendiente.
 
-Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE` y `REGISTRAR_METODO`.
+Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE`, `REGISTRAR_METODO`, `ACTUALIZAR_METODO`, `CAMBIAR_ESTADO_METODO` y `ELIMINAR_METODO`.
+
+### Gestión de métodos de compensación (US26–US28)
+
+Los conductores y pasajeros pueden listar sus métodos y preparar el registro, la edición, el cambio de estado o la eliminación de un método. El chat permite identificar un método propio por su tipo (`DINERO`, `GASOLINA` o `FAVOR`), su descripción o ambos. La búsqueda por descripción ignora mayúsculas y prioriza las coincidencias exactas. Si no hay coincidencia exacta, busca el fragmento literal. Si hay varias coincidencias, se solicita una descripción más precisa. Un método ajeno se trata como inexistente.
+
+| Herramienta | Acción disponible | Tipo de confirmación | Endpoint tradicional equivalente |
+|---|---|---|---|
+| `consultarMisMetodosCompensacion` | Consultar métodos propios | Consulta | `GET /api/metodos-compensacion` |
+| `registrarMetodoCompensacion` | Registrar un método activo | `REGISTRAR_METODO` | `POST /api/metodos-compensacion` |
+| `actualizarMetodoCompensacion` | Cambiar el tipo, la descripción o ambos y conservar el estado activo | `ACTUALIZAR_METODO` | `PUT /api/metodos-compensacion/{id}` |
+| `cambiarEstadoMetodoCompensacion` | Activar o desactivar y conservar el tipo y la descripción | `CAMBIAR_ESTADO_METODO` | `PUT /api/metodos-compensacion/{id}` |
+| `eliminarMetodoCompensacion` | Eliminar un método propio | `ELIMINAR_METODO` | `DELETE /api/metodos-compensacion/{id}` |
+
+Una propuesta válida identifica el método actual, muestra los valores anteriores y propuestos cuando corresponda, y devuelve `operacion.estado: "CONFIRMACION_REQUERIDA"`. En una edición o cambio de estado, `operacion.confirmacion.parametros` contiene los valores propuestos de `tipo`, `descripcion` y `activo`. Para eliminar, `parametros` contiene `{}`. El servidor guarda internamente el método seleccionado y su estado al preparar. Al confirmar mediante HTTP, el backend compara ese estado con los datos actuales y vuelve a validar la propiedad y las reglas de negocio. Si el método cambió después de preparar la propuesta, el endpoint devuelve `409` y el usuario debe volver a solicitar el cambio. Repetir una confirmación ejecutada devuelve su recibo.
+
+| `operacion.estado` | Motivo para omitir la confirmación |
+|---|---|
+| `DATOS_FALTANTES` | La petición carece de un selector o de un dato necesario para el cambio |
+| `AMBIGUO` | Coinciden varios métodos propios |
+| `NO_ENCONTRADO` | El usuario carece de un método que coincida |
+| `SIN_CAMBIOS` | El cambio solicitado coincide con los valores actuales |
+| `ERROR` | La edición duplicaría el tipo y la descripción de otro método propio o la eliminación afectaría a un método vinculado a cualquier solicitud |
+
+Si un duplicado o un vínculo aparece entre la preparación y la confirmación, el endpoint devuelve `409`. La desactivación permite dejar de usar un método vinculado y conservarlo junto con su historial. El contrato tradicional se detalla en [Pagos y compensación](endpoints.md#módulo-7--pagos-y-compensación).
+
+Una pregunta de procedimiento como «¿Cómo elimino un método?» recibe instrucciones. Incluso si Groq propone la herramienta de eliminación, el registro omite esa preparación y el chat devuelve `operacion: null`.
 
 ## Errores y recuperación
 
@@ -263,6 +290,74 @@ Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelv
 6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
 7. Preparar una escritura en una base local aislada, revisar el resumen y confirmar/cancelar mediante sus endpoints.
 8. Para una prueba real con Groq sobre Supabase, utilizar únicamente consultas. No confirmar escrituras ni cambiar datos.
+
+### Probar la gestión de métodos de compensación
+
+En una base local aislada, autoriza Swagger como conductor o pasajero. Consulta los métodos propios mediante `GET /api/metodos-compensacion` o con esta petición a `POST /api/agent/chat`.
+
+```json
+{"message":"Consulta mis métodos de compensación"}
+```
+
+Comprueba que `resultados` contenga `tipo: "consultarMisMetodosCompensacion"` con `datos.items` y que `operacion` sea `null`. Después, prueba cada cambio por separado con una descripción que identifique un único método.
+
+```json
+{"message":"Cambia la descripción de mi método Yape a Yape personal"}
+```
+
+```json
+{"message":"Desactiva mi método de compensación Yape"}
+```
+
+```json
+{"message":"Activa mi método de compensación Yape"}
+```
+
+```json
+{"message":"Elimina mi método de compensación Favor con apuntes"}
+```
+
+Si `Yape` es un método `DINERO` activo, `GET /api/agent/confirmaciones/{id}` devuelve una propuesta con esta forma. Los valores entre `<` y `>` representan valores que genera el backend.
+
+```json
+{
+  "id": "<uuid-devuelto>",
+  "tipo": "ACTUALIZAR_METODO",
+  "estado": "PENDIENTE",
+  "resumen": "Actualizar tu método. Antes era DINERO «Yape» (activo). Quedará como DINERO «Yape personal» (activo).",
+  "parametros": {"tipo":"DINERO","descripcion":"Yape personal","activo":true},
+  "expira": "<expiracion-devuelta>",
+  "resultado": null
+}
+```
+
+1. Comprueba que `operacion.estado` sea `CONFIRMACION_REQUERIDA` y que `operacion.confirmacion.resumen` describa el método y el cambio. Copia exactamente el UUID que devolvió `operacion.confirmacion.id` para usarlo en el path del GET o del POST.
+2. Repite `GET /api/metodos-compensacion` para comprobar que todavía están los datos originales. Decir «sí» en el chat tampoco aplica el cambio.
+3. Ejecuta `POST /api/agent/confirmaciones/{id}/confirmar` con el mismo JWT, sin cuerpo ni parámetros de consulta. Comprueba `estado: "EJECUTADA"` y `resultado.estado: "EXITO"`.
+4. Vuelve a listar los métodos para comprobar el cambio. Repite la confirmación con el mismo UUID y verifica que devuelve el resultado guardado.
+
+El POST de confirmación y las siguientes consultas GET devuelven el resultado ejecutado. En el ejemplo, `resultado.id` ilustra el identificador numérico del método que entrega el backend.
+
+```json
+{
+  "id": "<uuid-devuelto>",
+  "tipo": "ACTUALIZAR_METODO",
+  "estado": "EJECUTADA",
+  "resumen": "Actualizar tu método. Antes era DINERO «Yape» (activo). Quedará como DINERO «Yape personal» (activo).",
+  "parametros": {"tipo":"DINERO","descripcion":"Yape personal","activo":true},
+  "expira": "<expiracion-devuelta>",
+  "resultado": {
+    "estado": "EXITO",
+    "id": 17,
+    "detalle": "Método DINERO «Yape personal» (activo) actualizado.",
+    "confirmacion": null
+  }
+}
+```
+
+Para probar la cancelación, prepara otra operación y ejecuta `POST /api/agent/confirmaciones/{id}/cancelar`. Verifica `estado: "CANCELADA"` y que los métodos conservan sus datos. También puedes probar una descripción ambigua, un método vinculado a una solicitud o una edición duplicada y comprobar que el chat omite la confirmación.
+
+### Probar los reportes estadísticos
 
 Para probar reportes, abre `POST /api/agent/chat` en Swagger, elige **Try it out** y ejecuta cada cuerpo por separado. Comprueba `message`, `conversationId`, `operacion: null` y el contenido de `resultados`.
 

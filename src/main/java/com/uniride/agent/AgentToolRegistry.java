@@ -6,6 +6,7 @@ import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import java.util.*;
+import java.util.regex.Pattern;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
@@ -19,7 +20,14 @@ import tools.jackson.databind.ObjectMapper;
 /** Each turn owns its receipts and budget; nothing is shared between users or threads. */
 @Component
 public class AgentToolRegistry {
-    private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse", "registrarMetodoCompensacion");
+    private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
+            "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
+            "eliminarMetodoCompensacion");
+    private static final Pattern PREGUNTA_METODO = Pattern.compile("(?iu)^\\s*¿?\\s*c[oó]mo\\s+(?:(?:puedo|se)\\s+)?"
+            + "(?:registro|registrar|edito|editar|actualizo|actualizar|cambio|cambiar|activo|activar|"
+            + "desactivo|desactivar|elimino|eliminar|borro|borrar|quito|quitar)\\b[^.!?¿]+\\bm[eé]todos?\\b");
+    private static final String AYUDA_METODO = "Puedes pedir el cambio indicando el tipo o la descripción del método. "
+            + "La aplicación ejecutará la acción cuando confirmes el resumen. Solo puedes eliminar métodos sin solicitudes asociadas.";
     private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
@@ -37,10 +45,15 @@ public class AgentToolRegistry {
 
     public Turn newTurn() { return newTurn(null); }
 
-    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) { return new Turn(historialPdf); }
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) { return newTurn(historialPdf, null); }
+
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, String message) {
+        return new Turn(historialPdf, message != null && PREGUNTA_METODO.matcher(message).find());
+    }
 
     public final class Turn {
         private final HistorialPdfIntent.Solicitud historialPdf;
+        private final boolean preguntaMetodo;
         private int calls;
         private final List<ResultadoAgente> results = new ArrayList<>();
         private final Map<String, String> receipts = new HashMap<>();
@@ -50,8 +63,9 @@ public class AgentToolRegistry {
         private OperacionResumen operation;
         private boolean prepared;
 
-        private Turn(HistorialPdfIntent.Solicitud historialPdf) {
+        private Turn(HistorialPdfIntent.Solicitud historialPdf, boolean preguntaMetodo) {
             this.historialPdf = historialPdf;
+            this.preguntaMetodo = preguntaMetodo;
         }
 
         public ToolCallback[] callbacks() {
@@ -91,14 +105,16 @@ public class AgentToolRegistry {
             // Extra model fields cannot change a report's filters or its receipt.
             String key = name + (noArguments ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
-            if (PREPARATIONS.contains(name) && prepared)
+            boolean prepara = PREPARATIONS.contains(name);
+            if (preguntaMetodo && prepara && name.endsWith("MetodoCompensacion")) {
+                return responderSinEjecutar(key, AYUDA_METODO);
+            }
+            if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
             if (pdf && (historialPdf == null || historialPdf.filtros() == null)) {
                 String detalle = historialPdf == null ? "La descarga requiere una solicitud explícita del usuario."
                         : historialPdf.aclaracion();
-                String output = mapper.writeValueAsString(Map.of("mensaje", detalle));
-                receipts.put(key, output);
-                return output;
+                return responderSinEjecutar(key, detalle);
             }
             if (pdf) context = new ToolContext(Map.of(CONTEXTO_FILTROS_PDF, historialPdf.filtros()));
             String output;
@@ -121,7 +137,13 @@ public class AgentToolRegistry {
                 throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
             JsonNode data = mapper.readTree(output);
             capture(name, data);
-            if (PREPARATIONS.contains(name)) prepared = true;
+            if (prepara) prepared = true;
+            receipts.put(key, output);
+            return output;
+        }
+
+        private String responderSinEjecutar(String key, String mensaje) {
+            String output = mapper.writeValueAsString(Map.of("mensaje", mensaje));
             receipts.put(key, output);
             return output;
         }
@@ -156,7 +178,7 @@ public class AgentToolRegistry {
 
         private String message(String text, AdvertenciaAgente warning) {
             // The operation receipt or controlled warning takes precedence over model text.
-            String primary = operation != null ? operation.detalle() : warning != null ? text : null;
+            String primary = operation != null ? operation.detalle() : warning != null ? text : preguntaMetodo ? AYUDA_METODO : null;
             List<String> reports = results.stream()
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)
@@ -194,6 +216,9 @@ public class AgentToolRegistry {
             // The model selects a topic, never supplies an assertion of business success.
             String normalized = text.toLowerCase(Locale.ROOT);
             if (normalized.contains("¿") || normalized.endsWith("?")) {
+                if ((normalized.contains("método") || normalized.contains("metodo"))
+                        && (normalized.contains("cambiar") || normalized.contains("modificar")))
+                    return "¿Qué quieres cambiar en tu método de compensación? Indica el nuevo tipo o la nueva descripción.";
                 if (normalized.contains("fecha") || normalized.contains("hora"))
                     return "¿Qué fecha y hora deseas para el viaje?";
                 if (normalized.contains("compensa"))
