@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.confirmation.EstadoConfirmacion;
+import com.uniride.agent.dto.ChatResponse;
 import com.uniride.enums.Rol;
 import java.time.*;
 import java.util.*;
@@ -92,6 +94,8 @@ public class AgentConversationStore {
         return new AgentProviderException(HttpStatus.TOO_MANY_REQUESTS, "CONVERSATION_LIMIT", message);
     }
 
+    record ReferenciaConfirmacion(UUID id, Instant expira) { }
+
     private static final class Session {
         private final Long userId;
         private final Rol role;
@@ -99,6 +103,8 @@ public class AgentConversationStore {
         private final Deque<Message> messages = new ArrayDeque<>();
         private volatile Instant lastUsed;
         private int turns;
+        private CompensationIntent.Registro registro;
+        private ReferenciaConfirmacion confirmacion;
         private Session(Long userId, Rol role, Instant now) {
             this.userId = userId; this.role = role; this.lastUsed = now;
         }
@@ -111,6 +117,24 @@ public class AgentConversationStore {
         private Lease(UUID id, Session session) { this.id = id; this.session = session; }
         public UUID id() { return id; }
         public List<Message> history() { return List.copyOf(session.messages); }
+
+        CompensationIntent.Registro registro() { return session.registro; }
+
+        void guardarRegistro(CompensationIntent.Registro registro) {
+            if (registro != null) validateNoSecrets(registro.descripcion());
+            session.registro = registro;
+        }
+
+        ReferenciaConfirmacion confirmacion() { return session.confirmacion; }
+
+        void complete(String user, ChatResponse response) {
+            var confirmacion = response.operacion() == null ? null : response.operacion().confirmacion();
+            if (confirmacion != null && confirmacion.estado() == EstadoConfirmacion.PENDIENTE) {
+                session.confirmacion = new ReferenciaConfirmacion(confirmacion.id(), confirmacion.expira());
+            }
+            complete(user, response.message());
+        }
+
         public void complete(String user, String assistant) {
             // Credential-shaped output is never retained, even if an external provider echoes it.
             if (SECRET.matcher(assistant).find()) return;

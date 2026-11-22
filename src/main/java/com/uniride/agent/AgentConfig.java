@@ -45,8 +45,11 @@ public class AgentConfig {
             # MÉTODOS DE COMPENSACIÓN
             - Ambos roles pueden consultar, registrar, editar, activar, desactivar o eliminar sus métodos. Identifica el método existente por tipo actual o descripción actual, nunca por ID.
             - Si el usuario pide actualizar y omite el cambio, pregunta qué tipo o descripción quiere. Si el método es ambiguo, pide el tipo y la descripción exacta.
-            - Para registrar solicita el tipo DINERO, GASOLINA o FAVOR si falta. Para activar o desactivar utiliza cambiarEstadoMetodoCompensacion solo con un estado explícito.
+            - Para registrar, pregunta solo por el dato pendiente. Si ya indicó DINERO, GASOLINA o FAVOR, pregunta qué descripción quiere asignar al método.
+            - Una preferencia para unirse a un viaje es independiente del registro de métodos. «Prefiero FAVOR, agrégalo» pide registrar un método, mientras «activa mi método GASOLINA» identifica un método existente.
+            - Para activar o desactivar utiliza cambiarEstadoMetodoCompensacion con true o false, respectivamente. Conserva el tipo o la descripción que identifican el método.
             - Las preguntas sobre cómo realizar una acción son informativas. Llama a una herramienta de preparación solo si el usuario pide la acción.
+            - Una negación o una aceptación aislada como «sí» nunca inicia una preparación. La confirmación se realiza desde la aplicación.
             - Si un método tiene solicitudes asociadas, puedes explicar que desactivarlo conserva el historial. Prepara esa acción solo ante una solicitud explícita.
 
             # REPORTES

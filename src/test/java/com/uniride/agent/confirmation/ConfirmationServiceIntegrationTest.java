@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import com.uniride.agent.AgentService;
+import com.uniride.agent.AgentToolRegistry;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.entities.*;
@@ -14,10 +16,16 @@ import com.uniride.services.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -31,6 +39,8 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest
 class ConfirmationServiceIntegrationTest {
     @Autowired ConfirmationService service;
+    @Autowired AgentToolRegistry agentTools;
+    @Autowired UsuarioService userService;
     @Autowired ConfirmationRepository confirmations;
     @Autowired UsuarioRepository users;
     @Autowired PerfilRepository profiles;
@@ -58,6 +68,42 @@ class ConfirmationServiceIntegrationTest {
     }
 
     @AfterEach void clearIdentity() { SecurityContextHolder.clearContext(); }
+
+    @Test void recoveredActivationAndConversationalAcceptanceLeaveTheMethodUnchangedUntilExplicitConfirmation() {
+        var original = metodo(driver, TipoCompensacion.GASOLINA, "glp", false);
+        var providerCalls = new AtomicInteger();
+        ChatModel model = prompt -> {
+            providerCalls.incrementAndGet();
+            var generation = new Generation(new AssistantMessage("¿Prefieres compensar con DINERO, GASOLINA o FAVOR?"),
+                    ChatGenerationMetadata.builder().finishReason("STOP").build());
+            return new org.springframework.ai.chat.model.ChatResponse(List.of(generation));
+        };
+        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools);
+        long before = confirmations.count();
+
+        var proposal = agent.chat("Activa mi método de compensación gasolina", (UUID) null);
+        var pending = proposal.operacion().confirmacion();
+        assertThat(proposal.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(pending.tipo()).isEqualTo(TipoOperacion.CAMBIAR_ESTADO_METODO);
+        assertThat(pending.parametros().path("activo").asBoolean()).isTrue();
+        assertThat(proposal.resultados()).extracting(ResultadoAgente::tipo).containsExactly("cambiarEstadoMetodoCompensacion");
+        assertThat(proposal.message()).contains("glp", "Confirma desde la aplicación").doesNotContain("¿Prefieres");
+
+        var acceptance = agent.chat("sí", proposal.conversationId());
+        assertThat(acceptance.conversationId()).isEqualTo(proposal.conversationId());
+        assertThat(acceptance.operacion()).isNull();
+        assertThat(acceptance.message()).contains("POST /api/agent/confirmaciones/" + pending.id() + "/confirmar");
+        assertThat(providerCalls).hasValue(1);
+        assertThat(confirmations.count()).isEqualTo(before + 1);
+        assertThat(confirmations.findById(pending.id()).orElseThrow().getEstado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "glp", false);
+        verifyNoInteractions(notifications);
+
+        var confirmed = service.confirmar(pending.id());
+        assertThat(confirmed.estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "glp", true);
+        verify(notifications).notificar(any(), eq(TipoNotificacion.EXITO), eq("Método de compensación actualizado"), anyString());
+    }
 
     @Test void preparesRouteWithoutBusinessWritesAndKeepsExactParameters() {
         long before = routes.count();

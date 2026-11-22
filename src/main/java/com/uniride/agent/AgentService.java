@@ -7,7 +7,10 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import com.openai.errors.OpenAIServiceException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.exceptions.NoAutorizadoException;
@@ -45,20 +48,45 @@ public class AgentService {
         AgentConversationStore.validateMessage(message);
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
-            ChatResponse response = execute(usuario, message, lease.history()).withConversationId(lease.id());
-            lease.complete(message, response.message());
+            ChatResponse response;
+            if (lease.confirmacion() != null && CompensationIntent.isAffirmation(message)) {
+                lease.guardarRegistro(null);
+                response = orientarConfirmacion(lease.confirmacion());
+            } else {
+                var compensation = CompensationIntent.classify(message, lease.registro());
+                lease.guardarRegistro(compensation.draft());
+                response = execute(usuario, message, lease.history(), compensation);
+            }
+            response = response.withConversationId(lease.id());
+            lease.complete(message, response);
             return response;
         }
     }
 
-    private ChatResponse execute(Usuario usuario, String message,
-                                 java.util.List<org.springframework.ai.chat.messages.Message> history) {
+    private ChatResponse orientarConfirmacion(AgentConversationStore.ReferenciaConfirmacion confirmacion) {
+        String ruta = "/api/agent/confirmaciones/" + confirmacion.id();
+        String message = "La respuesta del chat no ejecuta cambios. ";
+        if (confirmacion.expira().isAfter(clock.instant())) {
+            message += "Si la operación sigue pendiente, confirma desde la aplicación o usa POST "
+                    + ruta + "/confirmar con tu JWT.";
+        } else {
+            message += "El plazo de confirmación de esa operación terminó. Consulta su estado en la aplicación o usa GET "
+                    + ruta + " con tu JWT.";
+        }
+        return new ChatResponse(message, List.of(), List.of(), List.of(), null);
+    }
+
+    private ChatResponse execute(Usuario usuario, String message, List<Message> history,
+                                 CompensationIntent.Decision compensation) {
         String contexto = "Contexto: hoy es " + LocalDate.now(clock) + " y son las "
                 + LocalTime.now(clock).format(FORMATO_HORA)
                 + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
                 + "Mensaje del usuario: " + message;
 
-        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock), message);
+        boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
+                && history.get(history.size() - 2) instanceof UserMessage anterior
+                && CompensationIntent.isTripRequest(anterior.getText()));
+        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock), compensation, solicitudViaje);
         try {
             var response = chatClient.prompt()
                     .messages(history)
@@ -76,6 +104,7 @@ public class AgentService {
                 throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta inválida.");
             }
             turn.recoverReports(AgentReportIntent.classify(message));
+            turn.recoverCompensation();
             return turn.response(text.trim());
         } catch (RuntimeException failure) {
             // No model retries: an earlier tool may already have completed.

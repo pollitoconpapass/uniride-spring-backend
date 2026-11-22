@@ -6,7 +6,6 @@ import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import java.util.*;
-import java.util.regex.Pattern;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
@@ -23,11 +22,7 @@ public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
             "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "eliminarMetodoCompensacion");
-    private static final Pattern PREGUNTA_METODO = Pattern.compile("(?iu)^\\s*¿?\\s*c[oó]mo\\s+(?:(?:puedo|se)\\s+)?"
-            + "(?:registro|registrar|edito|editar|actualizo|actualizar|cambio|cambiar|activo|activar|"
-            + "desactivo|desactivar|elimino|eliminar|borro|borrar|quito|quitar)\\b[^.!?¿]+\\bm[eé]todos?\\b");
-    private static final String AYUDA_METODO = "Puedes pedir el cambio indicando el tipo o la descripción del método. "
-            + "La aplicación ejecutará la acción cuando confirmes el resumen. Solo puedes eliminar métodos sin solicitudes asociadas.";
+    private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion");
     private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
@@ -45,15 +40,18 @@ public class AgentToolRegistry {
 
     public Turn newTurn() { return newTurn(null); }
 
-    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) { return newTurn(historialPdf, null); }
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) {
+        return newTurn(historialPdf, CompensationIntent.classify("", null), false);
+    }
 
-    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, String message) {
-        return new Turn(historialPdf, message != null && PREGUNTA_METODO.matcher(message).find());
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
+        return new Turn(historialPdf, compensation, solicitudViaje);
     }
 
     public final class Turn {
         private final HistorialPdfIntent.Solicitud historialPdf;
-        private final boolean preguntaMetodo;
+        private final CompensationIntent.Decision compensation;
+        private final boolean solicitudViaje;
         private int calls;
         private final List<ResultadoAgente> results = new ArrayList<>();
         private final Map<String, String> receipts = new HashMap<>();
@@ -63,9 +61,10 @@ public class AgentToolRegistry {
         private OperacionResumen operation;
         private boolean prepared;
 
-        private Turn(HistorialPdfIntent.Solicitud historialPdf, boolean preguntaMetodo) {
+        private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
             this.historialPdf = historialPdf;
-            this.preguntaMetodo = preguntaMetodo;
+            this.compensation = compensation;
+            this.solicitudViaje = solicitudViaje;
         }
 
         public ToolCallback[] callbacks() {
@@ -88,29 +87,43 @@ public class AgentToolRegistry {
 
         private void recoverRead(String name) {
             if (receipts.containsKey(name + NO_ARGUMENTS)) return;
+            execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
+        }
 
-            ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
+        synchronized void recoverCompensation() {
+            String name = compensation.allowedTool();
+            if (prepared || compensation.recoveryArgs() == null || name == null || !RECOVERABLE_COMPENSATION.contains(name)) return;
+            execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
+        }
+
+        private ToolCallback callback(String name) {
+            return Arrays.stream(AgentToolRegistry.this.callbacks)
                     .filter(candidate -> candidate.getToolDefinition().name().equals(name))
                     .findFirst()
-                    .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
-            execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
+                    .orElseThrow(() -> invalid("TOOL_UNAVAILABLE", "La herramienta solicitada no está disponible."));
         }
 
         private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
+            boolean prepara = PREPARATIONS.contains(name);
+            boolean coincide = name.equals(compensation.allowedTool());
+            // Provider and fallback share the same verified arguments and receipt.
+            if (prepara && coincide && compensation.recoveryArgs() != null) {
+                input = mapper.writeValueAsString(compensation.recoveryArgs());
+            }
             Object arguments = mapper.readValue(input, Object.class);
             boolean pdf = DESCARGA_HISTORIAL_PDF.equals(name);
             boolean noArguments = pdf || AgentReportIntent.isReportTool(name);
             // Extra model fields cannot change a report's filters or its receipt.
             String key = name + (noArguments ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
-            boolean prepara = PREPARATIONS.contains(name);
-            if (preguntaMetodo && prepara && name.endsWith("MetodoCompensacion")) {
-                return responderSinEjecutar(key, AYUDA_METODO);
-            }
             if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
+            if (prepara && (compensation.blockPreparations()
+                    || (!coincide && (compensation.allowedTool() != null || name.endsWith("MetodoCompensacion"))))) {
+                return responderSinEjecutar(key, "Usa únicamente la acción explícita y los datos indicados por el usuario.");
+            }
             if (pdf && (historialPdf == null || historialPdf.filtros() == null)) {
                 String detalle = historialPdf == null ? "La descarga requiere una solicitud explícita del usuario."
                         : historialPdf.aclaracion();
@@ -178,7 +191,7 @@ public class AgentToolRegistry {
 
         private String message(String text, AdvertenciaAgente warning) {
             // The operation receipt or controlled warning takes precedence over model text.
-            String primary = operation != null ? operation.detalle() : warning != null ? text : preguntaMetodo ? AYUDA_METODO : null;
+            String primary = operation != null ? operation.detalle() : warning != null ? text : compensation.message();
             List<String> reports = results.stream()
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)
@@ -221,7 +234,7 @@ public class AgentToolRegistry {
                     return "¿Qué quieres cambiar en tu método de compensación? Indica el nuevo tipo o la nueva descripción.";
                 if (normalized.contains("fecha") || normalized.contains("hora"))
                     return "¿Qué fecha y hora deseas para el viaje?";
-                if (normalized.contains("compensa"))
+                if (solicitudViaje && normalized.contains("compensa"))
                     return "¿Prefieres compensar con DINERO, GASOLINA o FAVOR?";
                 if (normalized.contains("capacidad") || normalized.contains("referencia"))
                     return "¿Cuál es el origen, la capacidad máxima y los puntos de referencia de la ruta?";

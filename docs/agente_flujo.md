@@ -93,7 +93,7 @@ Las herramientas de reportes permiten consultar estadísticas del usuario autent
 
 Groq puede finalizar correctamente con texto aunque haya omitido una herramienta solicitada. Antes de este ajuste, una petición explícita como «¿Cuáles son mis rutas más utilizadas como conductor?» podía terminar con la aclaración genérica y `resultados` vacío. Tras una respuesta final válida de Groq, Java reconoce intenciones explícitas de reportes en el mensaje actual y ejecuta los callbacks de reportes que falten. Conserva los recibos que ya existen, aplica el presupuesto y los permisos del mismo turno y arma la respuesta sin otra llamada a Groq.
 
-La detección admite expresiones en español con y sin tildes y combinaciones claras de reportes. Las peticiones ambiguas, las referencias que dependen solo de turnos anteriores, el listado de rutas, la búsqueda de viajes y las escrituras siguen el flujo habitual. Los fallos del proveedor siguen su propio manejo de errores.
+La detección de reportes admite expresiones en español con y sin tildes y combinaciones claras. Las peticiones de reportes ambiguas, las referencias que dependen solo de turnos anteriores, el listado de rutas y la búsqueda de viajes siguen el flujo habitual. Los fallos del proveedor siguen su propio manejo de errores.
 
 | Historia y herramienta | Servicio reutilizado | Endpoint tradicional | Roles activos |
 |---|---|---|---|
@@ -205,7 +205,9 @@ POST /api/agent/confirmaciones/f081920f-85ea-4f48-aafa-5abb11ae0077/confirmar
 Authorization: Bearer <token>
 ```
 
-No enviar cuerpo ni query parameters. El servidor utiliza exclusivamente los parámetros guardados; cualquier cuerpo no vacío, incluso `{}`, se rechaza con 400. Decir «sí» al modelo no ejecuta nada.
+La petición se envía sin cuerpo ni parámetros de consulta. El servidor utiliza exclusivamente los parámetros guardados. Cualquier cuerpo no vacío, incluso `{}`, recibe HTTP 400.
+
+Si en la misma conversación el usuario responde solamente «sí» a una preparación, el backend responde antes de llamar a Groq. Devuelve el mismo `conversationId`, `operacion: null` y `resultados: []`. El mensaje indica cómo usar el UUID original si la confirmación sigue pendiente, o avisa que se cumplió el plazo de la propuesta si su expiración ya pasó. Para verificar el estado efectivo de la confirmación, usa `GET /api/agent/confirmaciones/{id}`.
 
 La respuesta es `ConfirmacionResumen`:
 
@@ -256,7 +258,11 @@ Una propuesta válida identifica el método actual, muestra los valores anterior
 
 Si un duplicado o un vínculo aparece entre la preparación y la confirmación, el endpoint devuelve `409`. La desactivación permite dejar de usar un método vinculado y conservarlo junto con su historial. El contrato tradicional se detalla en [Pagos y compensación](endpoints.md#módulo-7--pagos-y-compensación).
 
-Una pregunta de procedimiento como «¿Cómo elimino un método?» recibe instrucciones. Incluso si Groq propone la herramienta de eliminación, el registro omite esa preparación y el chat devuelve `operacion: null`.
+Una pregunta de procedimiento como «¿Cómo elimino un método?» recibe instrucciones. También quedan fuera de la preparación las órdenes negadas, como «No desactives mi método Yape». Si Groq propone una herramienta de escritura de compensación ante estas frases, el registro omite esa preparación.
+
+Si el usuario pide claramente activar o desactivar un método, o da los datos completos para registrarlo, Java puede completar la preparación omitida por Groq después de una respuesta final válida. Se utiliza el callback habitual en el mismo turno, dentro del presupuesto de llamadas y del límite de una preparación. La selección del método y las validaciones de negocio siguen siendo las de `ConfirmationService`. La edición y la eliminación requieren una llamada a la herramienta correspondiente por parte del modelo. Ante datos incompletos, el chat pide una aclaración según la acción solicitada.
+
+El registro puede completarse en varios mensajes con el mismo `conversationId`. La sesión conserva un borrador de tipo y descripción a partir de una solicitud explícita y admite una respuesta breve con el dato que acaba de pedir. Un cambio de tema limpia ese borrador y el turno exige una intención actual para aceptar una preparación sugerida por Groq. El servidor prepara la confirmación al disponer de los datos completos y aplica las mismas reglas de propiedad, rol y caducidad de la sesión. Para precisar una activación, desactivación, edición o eliminación, vuelve a indicar la acción junto con el dato faltante.
 
 ## Errores y recuperación
 
@@ -306,11 +312,11 @@ Comprueba que `resultados` contenga `tipo: "consultarMisMetodosCompensacion"` co
 ```
 
 ```json
-{"message":"Desactiva mi método de compensación Yape"}
+{"message":"Desactiva mi método Yape"}
 ```
 
 ```json
-{"message":"Activa mi método de compensación Yape"}
+{"message":"Activa mi método de compensación gasolina"}
 ```
 
 ```json
@@ -332,7 +338,7 @@ Si `Yape` es un método `DINERO` activo, `GET /api/agent/confirmaciones/{id}` de
 ```
 
 1. Comprueba que `operacion.estado` sea `CONFIRMACION_REQUERIDA` y que `operacion.confirmacion.resumen` describa el método y el cambio. Copia exactamente el UUID que devolvió `operacion.confirmacion.id` para usarlo en el path del GET o del POST.
-2. Repite `GET /api/metodos-compensacion` para comprobar que todavía están los datos originales. Decir «sí» en el chat tampoco aplica el cambio.
+2. En ese mismo `conversationId`, envía «sí» al chat. Comprueba que `message` mencione la confirmación HTTP original, `operacion` sea `null` y `resultados` esté vacío. Repite `GET /api/metodos-compensacion` para comprobar que todavía están los datos originales.
 3. Ejecuta `POST /api/agent/confirmaciones/{id}/confirmar` con el mismo JWT, sin cuerpo ni parámetros de consulta. Comprueba `estado: "EJECUTADA"` y `resultado.estado: "EXITO"`.
 4. Vuelve a listar los métodos para comprobar el cambio. Repite la confirmación con el mismo UUID y verifica que devuelve el resultado guardado.
 
@@ -356,6 +362,30 @@ El POST de confirmación y las siguientes consultas GET devuelven el resultado e
 ```
 
 Para probar la cancelación, prepara otra operación y ejecuta `POST /api/agent/confirmaciones/{id}/cancelar`. Verifica `estado: "CANCELADA"` y que los métodos conservan sus datos. También puedes probar una descripción ambigua, un método vinculado a una solicitud o una edición duplicada y comprobar que el chat omite la confirmación.
+
+#### Registro en dos turnos
+
+Envía este cuerpo a `POST /api/agent/chat` y comprueba que el agente pida la descripción.
+
+```json
+{"message":"Registra un método FAVOR"}
+```
+
+Copia el `conversationId` devuelto por el chat en la segunda petición.
+
+```json
+{"message":"Apuntes de clase","conversationId":"<conversationId-devuelto>"}
+```
+
+Comprueba que la confirmación corresponda a un método `FAVOR` llamado «Apuntes de clase». También puedes iniciar con `{"message":"Prefiero FAVOR, agrégalo"}` para que el chat pida la descripción antes de preparar la confirmación.
+
+Después de recibir la propuesta, puedes comprobar el comportamiento de una afirmación aislada.
+
+```json
+{"message":"sí","conversationId":"<conversationId-devuelto>"}
+```
+
+Para ejecutar el registro, sigue el paso de confirmación HTTP con el UUID original de la propuesta.
 
 ### Probar los reportes estadísticos
 

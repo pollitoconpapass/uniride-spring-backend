@@ -75,7 +75,7 @@ class AgentToolRegistryTest {
     @Test void methodEditsShareTheOnePreparationRuleAndCanonicalReceipt() {
         when(confirmations.prepararActualizacionMetodo(null, "Yape", TipoCompensacion.DINERO, null))
                 .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma el cambio."));
-        var turn = registry.newTurn();
+        var turn = registry.newTurn(null, CompensationIntent.classify("Cambia mi método Yape al tipo DINERO", null), false);
         var edit = callback(turn, "actualizarMetodoCompensacion");
         String receipt = edit.call("{\"descripcionActual\":\"Yape\",\"nuevoTipo\":\"DINERO\"}");
         assertThat(edit.call("{\"nuevoTipo\":\"DINERO\",\"descripcionActual\":\"Yape\"}")).isEqualTo(receipt);
@@ -89,6 +89,27 @@ class AgentToolRegistryTest {
         assertThat(turn.response("Ya actualicé tu método.").resultados()).extracting(ResultadoAgente::tipo)
                 .containsExactly("actualizarMetodoCompensacion");
         verify(confirmations).prepararActualizacionMetodo(null, "Yape", TipoCompensacion.DINERO, null);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test void compensationRecoverySharesCallBudgetAndDoesNotAcceptProviderSubstitutions() {
+        var intent = CompensationIntent.classify("Activa mi método GASOLINA", null);
+        when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true))
+                .thenReturn(new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "El método ya está activo."));
+        var turn = registry.newTurn(null, intent, false);
+        var state = callback(turn, "cambiarEstadoMetodoCompensacion");
+        String first = state.call("{\"tipoActual\":\"FAVOR\",\"activo\":false}");
+        assertThat(state.call("{}")).isEqualTo(first);
+        turn.recoverCompensation();
+        verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true);
+        assertThat(turn.response("Listo.").resultados()).hasSize(1);
+
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(), 0, 10, 0, false));
+        var fullTurn = registry.newTurn(null, intent, false);
+        var methods = callback(fullTurn, "consultarMisMetodosCompensacion");
+        for (int i = 0; i < 8; i++) methods.call("{}");
+        assertThatThrownBy(fullTurn::recoverCompensation)
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("TOOL_LIMIT"));
         verifyNoMoreInteractions(confirmations);
     }
 

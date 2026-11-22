@@ -40,7 +40,7 @@ public class MetodoCompensacionAgentTools {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
                     "Indica el tipo de compensación y una descripción.");
         try {
-            return confirmaciones.prepararMetodo(new MetodoCompensacionRequest(tipo, descripcion, true));
+            return orientarConfirmacion(confirmaciones.prepararMetodo(new MetodoCompensacionRequest(tipo, descripcion, true)));
         } catch (BusinessException | CamposInvalidosException | ResourceNotFoundException | NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
@@ -81,11 +81,18 @@ public class MetodoCompensacionAgentTools {
 
     private OperacionResumen prepararGestion(Supplier<OperacionResumen> preparar) {
         try {
-            return preparar.get();
+            return orientarConfirmacion(preparar.get());
         } catch (ResourceNotFoundException e) {
             return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No encontré un método de compensación propio que coincida.");
         } catch (BusinessException | CamposInvalidosException | NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
+    }
+
+    private OperacionResumen orientarConfirmacion(OperacionResumen propuesta) {
+        if (propuesta.estado() != EstadoOperacion.CONFIRMACION_REQUERIDA || propuesta.confirmacion() == null) return propuesta;
+        return new OperacionResumen(propuesta.estado(), propuesta.id(),
+                "Preparé la operación. " + propuesta.confirmacion().resumen()
+                        + " Confirma desde la aplicación para aplicar el cambio.", propuesta.confirmacion());
     }
 }
