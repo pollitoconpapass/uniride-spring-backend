@@ -5,6 +5,8 @@ import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.dto.responses.MetodoCompensacionRespuesta;
 import com.uniride.entities.*;
+import com.uniride.enums.EstadoRuta;
+import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.*;
@@ -15,6 +17,12 @@ import jakarta.persistence.LockModeType;
 import jakarta.validation.Validator;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -77,6 +85,84 @@ public class ConfirmationService {
                         + ", compensación " + request.preferenciaCompensacion()
                         + opcional(". Mensaje: ", request.mensaje())
                         + ". La solicitud quedará PENDIENTE de aceptación por el conductor.");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEdicionRuta(Long rutaId, String nuevoOrigen, Integer capacidadMaxima,
+            String puntosReferencia, String zonasSinParada, String notaContribucion) {
+        Usuario usuario = autorizado(TipoOperacion.EDITAR_RUTA);
+        Ruta ruta = rutaPropia(rutaId, usuario.getId());
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA)
+            throw new BusinessException("No se puede editar una ruta eliminada");
+        RutaRequest request = new RutaRequest(
+                nuevoOrigen == null ? ruta.getOrigen() : nuevoOrigen,
+                capacidadMaxima == null ? ruta.getCapacidadMaxima() : capacidadMaxima,
+                puntosReferencia == null ? ruta.getPuntosReferencia() : puntosReferencia,
+                zonasSinParada == null ? ruta.getZonasSinParada() : zonasSinParada,
+                notaContribucion == null ? ruta.getNotaContribucion() : notaContribucion);
+        validar(request);
+
+        List<String> cambios = new ArrayList<>();
+        if (!Objects.equals(ruta.getOrigen(), request.origen())) cambios.add("origen " + request.origen());
+        if (ruta.getCapacidadMaxima() != request.capacidadMaxima())
+            cambios.add("capacidad " + request.capacidadMaxima());
+        if (!Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia()))
+            cambios.add("puntos de referencia " + request.puntosReferencia());
+        if (!Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada()))
+            cambios.add("zonas sin parada " + (request.zonasSinParada() == null ? "vacías" : request.zonasSinParada()));
+        if (!Objects.equals(ruta.getNotaContribucion(), request.notaContribucion()))
+            cambios.add("nota de contribución " + (request.notaContribucion() == null ? "vacía" : request.notaContribucion()));
+        if (cambios.isEmpty())
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "La ruta ya tiene los valores solicitados.");
+
+        return guardar(usuario, TipoOperacion.EDITAR_RUTA, rutaId, request, snapshot(ruta),
+                "Actualizar tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino() + ": "
+                        + String.join(", ", cambios) + ". Los pasajeros aceptados serán notificados.");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEliminacionRuta(Long rutaId) {
+        Usuario usuario = autorizado(TipoOperacion.ELIMINAR_RUTA);
+        Ruta ruta = rutaPropia(rutaId, usuario.getId());
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA)
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "La ruta ya estaba eliminada.");
+        return guardar(usuario, TipoOperacion.ELIMINAR_RUTA, rutaId, mapper.createObjectNode(), snapshot(ruta),
+                "Eliminar tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino()
+                        + ". Los viajes programados futuros se cancelarán y el historial se conserva.");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararReprogramacionViaje(Long viajeId, LocalDate fecha, LocalTime hora) {
+        Usuario usuario = autorizado(TipoOperacion.REPROGRAMAR_VIAJE);
+        Viaje viaje = viajeRepository.findByIdAndRutaConductorId(viajeId, usuario.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA)
+            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO)
+            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
+        ViajeRequest request = new ViajeRequest(fecha, hora);
+        validar(request);
+        if (!LocalDateTime.of(fecha, hora).isAfter(LocalDateTime.now(clock)))
+            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
+        if (viaje.getFecha().equals(fecha) && viaje.getHora().equals(hora))
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "El horario no cambió.");
+        return guardar(usuario, TipoOperacion.REPROGRAMAR_VIAJE, viajeId, request, snapshot(viaje),
+                "Reprogramar tu viaje del " + viaje.getDia() + " " + viaje.getFecha() + " a las " + viaje.getHora()
+                        + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino()
+                        + ") para el " + fecha + " a las " + hora + ". Los pasajeros aceptados serán notificados.");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararCancelacionSolicitudes(List<SolicitudResumen> solicitudes) {
+        Usuario usuario = autorizado(TipoOperacion.CANCELAR_SOLICITUD);
+        if (solicitudes == null || solicitudes.isEmpty())
+            return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No tienes solicitudes pendientes que cancelar.");
+        List<Long> ids = solicitudes.stream().map(SolicitudResumen::id).toList();
+        String detalle = String.join("; ", solicitudes.stream()
+                .map(s -> s.origen() + " → " + s.destino() + " (" + s.fecha() + " " + s.hora() + ")").toList());
+        return guardar(usuario, TipoOperacion.CANCELAR_SOLICITUD, null, ids, mapper.createObjectNode(),
+                "Cancelar " + (ids.size() == 1 ? "tu solicitud pendiente: " : ids.size() + " solicitudes pendientes: ")
+                        + detalle + ".");
     }
 
     @Transactional(timeout = 10)
@@ -271,6 +357,40 @@ public class ConfirmationService {
                 return new OperacionResumen(EstadoOperacion.EXITO, created.id(),
                         "Solicitud enviada. Queda PENDIENTE de aceptación por el conductor.");
             }
+            case EDITAR_RUTA -> {
+                RutaRequest request = mapper.readValue(pending.getParametros(), RutaRequest.class);
+                validar(request);
+                Ruta ruta = rutaRepository.findByIdAndConductorId(pending.getRecursoId(), usuario.getId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
+                comprobarSnapshot(pending, snapshot(ruta));
+                var actualizada = rutas.actualizar(ruta.getId(), request, true);
+                return new OperacionResumen(EstadoOperacion.EXITO, actualizada.id(),
+                        "Ruta " + actualizada.origen() + " → " + actualizada.destino() + " actualizada.");
+            }
+            case ELIMINAR_RUTA -> {
+                Ruta ruta = rutaRepository.findByIdAndConductorId(pending.getRecursoId(), usuario.getId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
+                comprobarSnapshot(pending, snapshot(ruta));
+                String detalle = "Ruta " + ruta.getOrigen() + " → " + ruta.getDestino() + " eliminada.";
+                rutas.eliminar(ruta.getId(), true);
+                return new OperacionResumen(EstadoOperacion.EXITO, ruta.getId(), detalle);
+            }
+            case REPROGRAMAR_VIAJE -> {
+                ViajeRequest request = mapper.readValue(pending.getParametros(), ViajeRequest.class);
+                validar(request);
+                Viaje viaje = viajeRepository.bloquearParaConductor(pending.getRecursoId(), usuario.getId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+                comprobarSnapshot(pending, snapshot(viaje));
+                var actualizado = viajes.actualizar(viaje.getId(), request, true);
+                return new OperacionResumen(EstadoOperacion.EXITO, actualizado.id(),
+                        "Viaje reprogramado para el " + actualizado.fecha() + " a las " + actualizado.hora() + ".");
+            }
+            case CANCELAR_SOLICITUD -> {
+                Long[] ids = mapper.readValue(pending.getParametros(), Long[].class);
+                for (Long id : ids) solicitudes.cancelar(id);
+                return new OperacionResumen(EstadoOperacion.EXITO, null,
+                        ids.length == 1 ? "Cancelé tu solicitud pendiente." : "Cancelé " + ids.length + " solicitudes pendientes.");
+            }
             case REGISTRAR_METODO -> {
                 MetodoCompensacionRequest request = mapper.readValue(pending.getParametros(), MetodoCompensacionRequest.class);
                 validar(request);
@@ -341,6 +461,12 @@ public class ConfirmationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Confirmación no encontrada"));
     }
 
+    private Ruta rutaPropia(Long id, Long usuarioId) {
+        return rutaRepository.findById(id)
+                .filter(ruta -> ruta.getConductor().getId().equals(usuarioId))
+                .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
+    }
+
     private void expirarSiCorresponde(PendingConfirmation pending) {
         if (pending.getEstado() == EstadoConfirmacion.PENDIENTE && !pending.getExpira().isAfter(clock.instant()))
             pending.setEstado(EstadoConfirmacion.EXPIRADA);
@@ -360,8 +486,8 @@ public class ConfirmationService {
 
     private void exigirRol(Usuario usuario, TipoOperacion tipo) {
         Rol requerido = switch (tipo) {
-            case CREAR_RUTA, CREAR_VIAJE -> Rol.CONDUCTOR;
-            case SOLICITAR_UNIRSE -> Rol.PASAJERO;
+            case CREAR_RUTA, CREAR_VIAJE, EDITAR_RUTA, ELIMINAR_RUTA, REPROGRAMAR_VIAJE -> Rol.CONDUCTOR;
+            case SOLICITAR_UNIRSE, CANCELAR_SOLICITUD -> Rol.PASAJERO;
             case REGISTRAR_METODO -> null;
             case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO -> {
                 if (usuario.getRolPrincipal() == null) throw new NoPermitidoException("La operación requiere un rol activo.");

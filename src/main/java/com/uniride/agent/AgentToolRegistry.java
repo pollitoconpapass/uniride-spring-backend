@@ -22,7 +22,7 @@ import tools.jackson.databind.ObjectMapper;
 public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
             "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
-            "eliminarMetodoCompensacion");
+            "eliminarMetodoCompensacion", "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
     private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "actualizarMetodoCompensacion", "eliminarMetodoCompensacion");
     private static final String NO_ARGUMENTS = "{}";

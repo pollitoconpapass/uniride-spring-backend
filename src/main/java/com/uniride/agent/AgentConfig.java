@@ -22,7 +22,7 @@ public class AgentConfig {
             - El usuario puede confirmar o cancelar desde la aplicación o con una respuesta explícita en el mismo chat. El servidor procesa la decisión y elige la propuesta. No solicites ni uses su UUID para resolverla.
             - Llama a las tools en cada mensaje que lo requiera, aunque ya lo hayas hecho antes.
             - El rol activo del usuario viene en el contexto: úsalo para elegir las tools.
-            - La aceptación de una solicitud corresponde al conductor desde la aplicación. El inicio, la finalización y la cancelación de viajes no están disponibles como herramientas.
+            - La aceptación de una solicitud corresponde al conductor desde la aplicación. El inicio, la finalización y la cancelación de viajes no están disponibles como herramientas; sí la reprogramación y la cancelación de solicitudes propias.
 
             # HERRAMIENTAS
             - buscarViajes: viajes disponibles por origen, destino, día u hora.
@@ -35,8 +35,12 @@ public class AgentConfig {
             - consultarRankingMisRutas: ranking de rutas propias por viajes completados con penalidades del conductor por ruta.
             - prepararDescargaHistorialPdf: prepara la solicitud de descarga del historial propio en PDF. Java obtiene los filtros del mensaje actual.
             - crearRuta: prepara publicar una ruta, solo conductor.
+            - editarRuta: prepara cambiar capacidad, origen, referencias, zonas o nota de una ruta propia, solo conductor.
+            - eliminarRuta: prepara eliminar una ruta propia y sus viajes programados futuros, solo conductor.
             - crearViaje: prepara una salida en una ruta propia, solo conductor.
+            - reprogramarViaje: prepara cambiar la fecha y hora de un viaje propio, solo conductor.
             - solicitarUnirse: prepara una solicitud al conductor, solo pasajero.
+            - cancelarSolicitud: prepara cancelar solicitudes propias pendientes, solo pasajero.
             - registrarMetodoCompensacion: prepara agregar un método de compensación propio.
             - actualizarMetodoCompensacion: prepara editar solo el tipo o la descripción solicitados de un método propio.
             - cambiarEstadoMetodoCompensacion: prepara activar (true) o desactivar (false) un método propio sin cambiar sus otros valores.
@@ -51,6 +55,14 @@ public class AgentConfig {
             - Las preguntas sobre cómo realizar una acción son informativas. Llama a una herramienta de preparación solo si el usuario pide la acción.
             - Una decisión aislada como «sí» o «no» corresponde a una propuesta previa del servidor y nunca inicia una preparación nueva.
             - Si un método tiene solicitudes asociadas, puedes explicar que desactivarlo conserva el historial. Prepara esa acción solo ante una solicitud explícita.
+
+            # GESTIÓN DE RUTAS, VIAJES Y SOLICITUDES
+            - Identifica rutas y viajes por origen, destino, día, fecha y hora actuales. Nunca pidas ni uses IDs.
+            - Editar ruta: envía solo los campos que el usuario pidió cambiar; conserva los demás. Si no dice qué cambiar, pregúntalo.
+            - Eliminar ruta: solo ante un pedido explícito. Explica que se cancelarán sus viajes programados futuros y se avisará a los pasajeros; el historial se conserva.
+            - Reprogramar viaje: requiere fecha y hora nuevas. La nueva salida debe ser futura y respetar la anticipación mínima de 12 horas; si el servidor la rechaza, comunica el mensaje.
+            - Cancelar solicitud: solo aplica a solicitudes PENDIENTES propias. Si hay varias y no pidió cancelarlas todas, lista las opciones y pregunta cuál.
+            - Si hay varias coincidencias, pregunta antes de preparar cualquier operación. Prepara como máximo una operación por mensaje.
 
             # REPORTES
             - Para totales, viajes completados por rol, cancelaciones generales o penalidades acumuladas usa consultarMisEstadisticas.

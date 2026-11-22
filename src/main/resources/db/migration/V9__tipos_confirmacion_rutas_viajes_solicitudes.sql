@@ -1,0 +1,7 @@
+ALTER TABLE agent_confirmaciones
+    DROP CONSTRAINT agent_confirmaciones_tipo_check,
+    ADD CONSTRAINT agent_confirmaciones_tipo_check CHECK (tipo IN (
+        'CREAR_RUTA', 'CREAR_VIAJE', 'SOLICITAR_UNIRSE', 'REGISTRAR_METODO',
+        'ACTUALIZAR_METODO', 'CAMBIAR_ESTADO_METODO', 'ELIMINAR_METODO',
+        'EDITAR_RUTA', 'ELIMINAR_RUTA', 'REPROGRAMAR_VIAJE', 'CANCELAR_SOLICITUD'
+    ));

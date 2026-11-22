@@ -34,6 +34,22 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     Optional<Solicitud> findByIdAndPasajeroId(Long id, Long pasajeroId);
 
+    /** Agent identification: own requests still cancellable, ordered by trip to keep lock order stable. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta"})
+    @Query("SELECT s FROM Solicitud s "
+            + "WHERE s.pasajero.id = :pasajeroId AND s.estado = :estado "
+            + "AND s.viaje.estado = com.uniride.enums.EstadoViaje.PROGRAMADO "
+            + "AND LOWER(s.viaje.ruta.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') "
+            + "AND LOWER(s.viaje.ruta.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') "
+            + "AND LOWER(s.viaje.dia) = COALESCE(:dia, LOWER(s.viaje.dia)) "
+            + "AND s.viaje.hora = COALESCE(:hora, s.viaje.hora) "
+            + "AND s.viaje.fecha = COALESCE(:fecha, s.viaje.fecha) "
+            + "ORDER BY s.viaje.id ASC, s.id ASC")
+    Page<Solicitud> buscarPendientesCancelablesAgente(@Param("pasajeroId") Long pasajeroId,
+            @Param("estado") EstadoSolicitud estado, @Param("origen") String origen,
+            @Param("destino") String destino, @Param("dia") String dia,
+            @Param("hora") LocalTime hora, @Param("fecha") LocalDate fecha, Pageable pageable);
+
     // 11.3: consultar solo el ID, bloquear el viaje y despues releer la solicitud.
     @Query("SELECT s.viaje.id FROM Solicitud s "
             + "WHERE s.id = :solicitudId AND s.pasajero.id = :pasajeroId")
