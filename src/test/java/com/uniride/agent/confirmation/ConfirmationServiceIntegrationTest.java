@@ -184,10 +184,17 @@ class ConfirmationServiceIntegrationTest {
         "REGISTRAR_METODO, 'sí, confirmo'",
         "ACTUALIZAR_METODO, hazlo",
         "CAMBIAR_ESTADO_METODO, procede",
-        "ELIMINAR_METODO, confirmar"
+        "ELIMINAR_METODO, confirmar",
+        "EDITAR_RUTA, sí",
+        "ELIMINAR_RUTA, confirmo",
+        "REPROGRAMAR_VIAJE, sí",
+        "CANCELAR_SOLICITUD, adelante"
     })
     void acceptsAllPersistedOperationTypesInChat(TipoOperacion type, String response) throws Exception {
-        Usuario owner = type == TipoOperacion.SOLICITAR_UNIRSE ? passenger : driver;
+        Usuario owner = switch (type) {
+            case SOLICITAR_UNIRSE, CANCELAR_SOLICITUD -> passenger;
+            default -> driver;
+        };
         authenticate(owner);
         var original = switch (type) {
             case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO ->
@@ -204,6 +211,18 @@ class ConfirmationServiceIntegrationTest {
             case ACTUALIZAR_METODO -> service.prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
             case CAMBIAR_ESTADO_METODO -> service.prepararEstadoMetodo(null, "Yape", false);
             case ELIMINAR_METODO -> service.prepararEliminacionMetodo(null, "Yape");
+            case EDITAR_RUTA -> service.prepararEdicionRuta(route().getId(), null, 5, null, null, null);
+            case ELIMINAR_RUTA -> service.prepararEliminacionRuta(route().getId());
+            case REPROGRAMAR_VIAJE -> service.prepararReprogramacionViaje(trip().getId(),
+                    tripRequest().fecha().plusDays(1), LocalTime.of(9, 0));
+            case CANCELAR_SOLICITUD -> {
+                Viaje viaje = trip();
+                Solicitud solicitud = requests.save(Solicitud.builder().viaje(viaje).pasajero(passenger)
+                        .preferenciaCompensacion(TipoCompensacion.FAVOR).estado(EstadoSolicitud.PENDIENTE).build());
+                yield service.prepararCancelacionSolicitudes(List.of(new SolicitudResumen(solicitud.getId(),
+                        viaje.getId(), viaje.getRuta().getOrigen(), viaje.getRuta().getDestino(), viaje.getDia(),
+                        viaje.getFecha(), viaje.getHora(), EstadoSolicitud.PENDIENTE)));
+            }
         };
         UUID id = prepared.confirmacion().id();
         UUID conversation = bindProposal(owner, prepared);
@@ -227,6 +246,13 @@ class ConfirmationServiceIntegrationTest {
             case ACTUALIZAR_METODO -> assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape personal", true);
             case CAMBIAR_ESTADO_METODO -> assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape", false);
             case ELIMINAR_METODO -> assertThat(methods.existsById(original.getId())).isFalse();
+            case EDITAR_RUTA -> assertThat(routes.findById(resource).orElseThrow().getCapacidadMaxima()).isEqualTo(5);
+            case ELIMINAR_RUTA -> assertThat(routes.findById(resource).orElseThrow().getEstado())
+                    .isEqualTo(EstadoRuta.ELIMINADA);
+            case REPROGRAMAR_VIAJE -> assertThat(trips.findById(resource).orElseThrow().getFecha())
+                    .isEqualTo(tripRequest().fecha().plusDays(1));
+            case CANCELAR_SOLICITUD -> assertThat(requests.findById(persisted.parametros().get(0).asLong())
+                    .orElseThrow().getEstado()).isEqualTo(EstadoSolicitud.CANCELADA);
         }
     }
 

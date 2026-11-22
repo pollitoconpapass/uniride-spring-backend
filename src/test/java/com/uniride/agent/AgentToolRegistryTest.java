@@ -41,7 +41,8 @@ class AgentToolRegistryTest {
                         "consultarMisRutas", "consultarMisMetodosCompensacion", "crearRuta", "crearViaje",
                         "solicitarUnirse", "registrarMetodoCompensacion", "consultarMisEstadisticas",
                         "consultarMiFrecuenciaViajes", "consultarRankingMisRutas", "prepararDescargaHistorialPdf",
-                        "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion");
+                        "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion",
+                        "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
         verifyNoInteractions(confirmations, queries, users, statistics);
     }
 

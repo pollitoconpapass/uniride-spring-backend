@@ -23,6 +23,23 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
     Page<Viaje> consultarViajesAgente(@Param("conductorId") Long conductorId,
             @Param("estado") EstadoViaje estado, Pageable pageable);
 
+    /** Agent identification: conductor-owned, same filters the passenger search applies. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
+    @Query("SELECT v FROM Viaje v JOIN v.ruta r "
+            + "WHERE r.conductor.id = :conductorId AND v.estado = :estado AND r.estado <> :rutaEliminada "
+            + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') "
+            + "AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') "
+            + "AND LOWER(v.dia) = COALESCE(:dia, LOWER(v.dia)) "
+            + "AND v.hora = COALESCE(:hora, v.hora) "
+            + "AND v.fecha = COALESCE(:fecha, v.fecha) "
+            + "ORDER BY v.fecha ASC, v.hora ASC, v.id ASC")
+    Page<Viaje> identificarViajesAgente(@Param("conductorId") Long conductorId,
+            @Param("origen") String origen, @Param("destino") String destino,
+            @Param("dia") String dia, @Param("hora") LocalTime hora, @Param("fecha") LocalDate fecha,
+            @Param("estado") EstadoViaje estado,
+            @Param("rutaEliminada") com.uniride.enums.EstadoRuta rutaEliminada,
+            Pageable pageable);
+
     Page<Viaje> findByRutaIdOrderByFechaAscHoraAsc(Long rutaId, Pageable pageable);
 
     Optional<Viaje> findByIdAndRutaConductorId(Long id, Long conductorId);

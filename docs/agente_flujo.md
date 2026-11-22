@@ -29,7 +29,7 @@ flowchart TD
     B --> DB
 ```
 
-El modelo elige entre las dieciséis herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+El modelo elige entre las veinte herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -40,7 +40,9 @@ Todas las rutas `/api/agent/**` requieren Bearer JWT válido de una cuenta verif
 | Herramienta | Rol actual requerido |
 |---|---|
 | consultarMisRutas, consultarMisViajes, crearRuta, crearViaje | CONDUCTOR |
+| editarRuta, eliminarRuta, reprogramarViaje | CONDUCTOR |
 | buscarViajes, consultarMisSolicitudes, solicitarUnirse | PASAJERO |
+| cancelarSolicitud | PASAJERO |
 | consultarMisMetodosCompensacion, registrarMetodoCompensacion | Ambos |
 | actualizarMetodoCompensacion, cambiarEstadoMetodoCompensacion, eliminarMetodoCompensacion | Ambos |
 | consultarMisEstadisticas, consultarMiFrecuenciaViajes | Ambos |
@@ -296,7 +298,7 @@ POST /api/agent/confirmaciones/{id}/cancelar
 
 Ambos requieren JWT del propietario. Cancelar no recibe cuerpo ni parámetros. Devuelve el mismo sobre con `estado:"CANCELADA"`, `resultado:null`; cancelar otra vez no ejecuta nada. Cancelar una ejecutada o confirmar una cancelada devuelve 409. Una confirmación expirada devuelve 410 y su sobre con `estado:"EXPIRADA"`, `resultado:null`. Una ajena/inexistente da 404. Cambio de rol incompatible: 403. Cambio de ruta, destino de perfil, horario o estado frente al resumen: 409, preparar de nuevo. Fallo de reglas de negocio: 400/409 según la regla, rollback conjunto y confirmación pendiente.
 
-Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE`, `REGISTRAR_METODO`, `ACTUALIZAR_METODO`, `CAMBIAR_ESTADO_METODO` y `ELIMINAR_METODO`.
+Los tipos implementados son `CREAR_RUTA`, `CREAR_VIAJE`, `SOLICITAR_UNIRSE`, `REGISTRAR_METODO`, `ACTUALIZAR_METODO`, `CAMBIAR_ESTADO_METODO`, `ELIMINAR_METODO`, `EDITAR_RUTA`, `ELIMINAR_RUTA`, `REPROGRAMAR_VIAJE` y `CANCELAR_SOLICITUD`.
 
 ### Gestión de métodos de compensación (US26–US28)
 
@@ -327,6 +329,17 @@ El backend contesta directamente las preguntas que identifica sobre los tipos de
 Si la petición identifica con claridad una acción y contiene sus datos, Java puede completar una preparación de registro, edición, activación, desactivación o eliminación omitida por Groq después de una respuesta final válida. La llamada del modelo y la recuperación usan los argumentos comprobados en Java, el callback habitual, el presupuesto del turno y el límite de una preparación. `ConfirmationService` sigue seleccionando el método propio y aplicando las reglas de negocio. El cambio se aplica al confirmar por chat o desde la aplicación.
 
 El registro, la edición y la eliminación pueden completarse en varios mensajes con el mismo `conversationId`. Ante una solicitud explícita incompleta, la sesión conserva los campos ya identificados y admite una respuesta breve con el dato que acaba de pedir. Si una edición o eliminación tiene varias coincidencias, el usuario puede precisar el método en la misma conversación. Un cambio de tema limpia el borrador. Para precisar una activación o desactivación, vuelve a indicar la acción junto con el método.
+
+### Edición de rutas, reprogramación de viajes y cancelación de solicitudes
+
+| Herramienta | Acción disponible | Tipo de confirmación | Endpoint tradicional equivalente |
+|---|---|---|---|
+| `editarRuta` | Cambiar capacidad, origen, referencias, zonas sin parada o nota de una ruta propia | `EDITAR_RUTA` | `PUT /api/rutas/{id}` |
+| `eliminarRuta` | Eliminar una ruta propia; cancela sus viajes programados futuros | `ELIMINAR_RUTA` | `DELETE /api/rutas/{id}?confirmar=true` |
+| `reprogramarViaje` | Cambiar la fecha y hora de un viaje propio en estado `PROGRAMADO` | `REPROGRAMAR_VIAJE` | `PUT /api/viajes/{id}?confirmarImpacto=true` |
+| `cancelarSolicitud` | Cancelar una o varias solicitudes propias pendientes | `CANCELAR_SOLICITUD` | `PUT /api/solicitudes/{id}/cancelar` |
+
+Rutas y viajes se identifican por origen, destino, día, fecha y hora actuales; el agente nunca recibe ni usa IDs. Las solicitudes se filtran por esos mismos datos y solo se consideran las `PENDIENTE` de viajes activos. Si hay varias coincidencias, no se prepara nada y se pide precisión al usuario. `editarRuta` envía solo los campos indicados y conserva el resto. `cancelarSolicitud` admite varias solicitudes solo cuando el usuario pidió cancelarlas todas; en ese caso la propuesta las enumera y se ejecutan en una misma transacción. Al confirmar se comparan el resumen y el estado persistido: si la ruta, el viaje o las solicitudes cambiaron, se rechaza con `409` y se debe preparar de nuevo.
 
 ## Errores y recuperación
 

@@ -23,6 +23,7 @@ class AgentQueryServiceTest {
     @Mock RutaRepository rutas;
     @Mock ViajeRepository viajes;
     @Mock MetodoCompensacionRepository metodos;
+    @Mock SolicitudRepository solicitudesRepo;
     @Mock SolicitudService solicitudes;
     @Mock UsuarioService usuarios;
     @Mock RutaMapper rutaMapper;
@@ -30,7 +31,7 @@ class AgentQueryServiceTest {
     private AgentQueryService service;
 
     @BeforeEach void setup() {
-        service = new AgentQueryService(rutas, viajes, metodos, solicitudes, usuarios, rutaMapper, busquedaMapper,
+        service = new AgentQueryService(rutas, viajes, metodos, solicitudesRepo, solicitudes, usuarios, rutaMapper, busquedaMapper,
                 Clock.fixed(Instant.parse("2026-11-21T15:00:00Z"), ZoneId.of("America/Lima")));
     }
 

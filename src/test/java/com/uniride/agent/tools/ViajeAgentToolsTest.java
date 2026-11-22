@@ -134,6 +134,84 @@ class ViajeAgentToolsTest {
         verifyNoInteractions(confirmaciones);
     }
 
+    @Test
+    void reprogramarViajeRechazaAlPasajero() {
+        when(usuarioService.usuarioActual()).thenReturn(pasajero);
+        assertThat(tools.reprogramarViaje("Surco", null, null, null, null,
+                LocalDate.now().plusDays(2), LocalTime.of(9, 0)).estado()).isEqualTo(EstadoOperacion.ERROR);
+        verifyNoInteractions(consultas, confirmaciones);
+    }
+
+    @Test
+    void reprogramarViajeExigeLaNuevaSalida() {
+        when(usuarioService.usuarioActual()).thenReturn(conductor);
+        assertThat(tools.reprogramarViaje("Surco", null, null, null, null, null, null).estado())
+                .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        verifyNoInteractions(consultas, confirmaciones);
+    }
+
+    @Test
+    void reprogramarViajeNoPreparaSiHayVariasCoincidencias() {
+        when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(consultas.identificarViajesConductor("Surco", null, null, null, null)).thenReturn(
+                new PageImpl<>(List.of(resumen(7L), resumen(8L)), PageRequest.of(0, 2), 2));
+        assertThat(tools.reprogramarViaje("Surco", null, null, null, null,
+                LocalDate.now().plusDays(2), LocalTime.of(9, 0)).estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
+    void reprogramarViajePreparaLaCoincidenciaUnica() {
+        when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(consultas.identificarViajesConductor("Surco", null, null, null, null))
+                .thenReturn(new PageImpl<>(List.of(resumen(7L))));
+        LocalDate nueva = LocalDate.now().plusDays(2);
+        var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma el cambio.");
+        when(confirmaciones.prepararReprogramacionViaje(7L, nueva, LocalTime.of(9, 0))).thenReturn(pendiente);
+
+        assertThat(tools.reprogramarViaje("Surco", null, null, null, null, nueva, LocalTime.of(9, 0)))
+                .isSameAs(pendiente);
+    }
+
+    @Test
+    void cancelarSolicitudNoPreparaSiHayVariasYSoloSePidioUna() {
+        when(usuarioService.usuarioActual()).thenReturn(pasajero);
+        when(consultas.candidatasCancelacion(null, null, null, null, null))
+                .thenReturn(List.of(solicitud(1L), solicitud(2L)));
+        assertThat(tools.cancelarSolicitud(null, null, null, null, null, false).estado())
+                .isEqualTo(EstadoOperacion.AMBIGUO);
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
+    void cancelarSolicitudPreparaTodasLasPendientesCuandoSePide() {
+        when(usuarioService.usuarioActual()).thenReturn(pasajero);
+        var candidatas = List.of(solicitud(1L), solicitud(2L));
+        when(consultas.candidatasCancelacion(null, null, null, null, null)).thenReturn(candidatas);
+        var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma la cancelación.");
+        when(confirmaciones.prepararCancelacionSolicitudes(candidatas)).thenReturn(pendiente);
+
+        assertThat(tools.cancelarSolicitud(null, null, null, null, null, true)).isSameAs(pendiente);
+    }
+
+    @Test
+    void cancelarSolicitudRechazaAlConductor() {
+        when(usuarioService.usuarioActual()).thenReturn(conductor);
+        assertThat(tools.cancelarSolicitud(null, null, null, null, null, true).estado())
+                .isEqualTo(EstadoOperacion.ERROR);
+        verifyNoInteractions(consultas, confirmaciones);
+    }
+
+    private ViajeResumen resumen(Long id) {
+        return new ViajeResumen(id, 1L, "Surco", "UPC", "Lunes", LocalDate.of(2026, 12, 1),
+                LocalTime.of(7, 0), "Parque", "Ana", 4, EstadoViaje.PROGRAMADO, null);
+    }
+
+    private SolicitudResumen solicitud(Long id) {
+        return new SolicitudResumen(id, id + 100, "Surco", "UPC", "Lunes", LocalDate.of(2026, 12, 1),
+                LocalTime.of(7, 0), EstadoSolicitud.PENDIENTE);
+    }
+
     private BusquedaRespuesta viaje(Long id) {
         return new BusquedaRespuesta(id, LocalDate.of(2026, 12, 1), LocalTime.of(7, 0), "Lunes", 1L,
                 "Surco", "UPC", "Parque", null, null, 4, 10L, "Juan", null);

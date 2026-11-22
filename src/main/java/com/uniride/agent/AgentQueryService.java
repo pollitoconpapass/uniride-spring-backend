@@ -5,6 +5,7 @@ import com.uniride.dto.responses.BusquedaRespuesta;
 import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.dto.responses.SolicitudRespuesta;
 import com.uniride.entities.Ruta;
+import com.uniride.entities.Solicitud;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
 import com.uniride.enums.*;
@@ -14,6 +15,7 @@ import com.uniride.mappers.BusquedaMapper;
 import com.uniride.mappers.RutaMapper;
 import com.uniride.repositories.MetodoCompensacionRepository;
 import com.uniride.repositories.RutaRepository;
+import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.ViajeRepository;
 import com.uniride.services.SolicitudService;
 import com.uniride.services.UsuarioService;
@@ -22,6 +24,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -35,9 +38,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class AgentQueryService {
     private static final int PAGE_SIZE = 10;
+    // shortcut: one proposal covers up to 50 pending requests; raise if bulk cancellation must grow.
+    private static final int MAX_CANCELACIONES = 50;
     private final RutaRepository rutas;
     private final ViajeRepository viajes;
     private final MetodoCompensacionRepository metodos;
+    private final SolicitudRepository solicitudesRepo;
     private final SolicitudService solicitudes;
     private final UsuarioService usuarios;
     private final RutaMapper rutaMapper;
@@ -88,6 +94,34 @@ public class AgentQueryService {
         requireRole(Rol.PASAJERO);
         return buscarDisponibles(origen, destino, dia, fecha, hora, PageRequest.of(0, 2))
                 .map(busquedaMapper::toBusquedaRespuesta);
+    }
+
+    /** Conductor-scoped identification for rescheduling; two rows detect ambiguity. */
+    public Page<ViajeResumen> identificarViajesConductor(String origen, String destino, String dia,
+            LocalDate fecha, LocalTime hora) {
+        Usuario owner = requireRole(Rol.CONDUCTOR);
+        return viajes.identificarViajesAgente(owner.getId(), normalizar(origen), normalizar(destino),
+                normalizarDia(dia), hora, fecha, EstadoViaje.PROGRAMADO, EstadoRuta.ELIMINADA,
+                PageRequest.of(0, 2)).map(this::viajeResumen);
+    }
+
+    /** Own pending requests that are still cancellable, oldest trip first to keep lock order stable. */
+    public List<SolicitudResumen> candidatasCancelacion(String origen, String destino, String dia,
+            LocalDate fecha, LocalTime hora) {
+        Usuario owner = requireRole(Rol.PASAJERO);
+        LocalDateTime now = LocalDateTime.now(clock);
+        Page<Solicitud> pendientes = solicitudesRepo.buscarPendientesCancelablesAgente(owner.getId(),
+                EstadoSolicitud.PENDIENTE, normalizar(origen), normalizar(destino), normalizarDia(dia), hora, fecha,
+                PageRequest.of(0, MAX_CANCELACIONES));
+        if (pendientes.hasNext())
+            throw new CamposInvalidosException("Tienes más de " + MAX_CANCELACIONES
+                    + " solicitudes pendientes; indica un filtro para cancelarlas por partes.");
+        return pendientes.stream()
+                .filter(s -> LocalDateTime.of(s.getViaje().getFecha(), s.getViaje().getHora()).isAfter(now))
+                .map(s -> new SolicitudResumen(s.getId(), s.getViaje().getId(), s.getViaje().getRuta().getOrigen(),
+                        s.getViaje().getRuta().getDestino(), s.getViaje().getDia(), s.getViaje().getFecha(),
+                        s.getViaje().getHora(), s.getEstado()))
+                .toList();
     }
 
     private Page<Viaje> buscarDisponibles(String origen, String destino, String dia,

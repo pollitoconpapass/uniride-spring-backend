@@ -129,6 +129,70 @@ public class ViajeAgentTools {
         }
     }
 
+    @Tool(description = """
+            Prepara reprogramar la fecha y hora de un viaje propio del conductor. NO lo reprograma todavía.
+            Identifica el viaje por origen, destino, día, fecha y hora actuales, sin pedir IDs.
+            Si hay varias coincidencias pide más datos. El cambio se aplica al confirmar el resumen.
+            """)
+    public OperacionResumen reprogramarViaje(
+            @ToolParam(description = "Origen de la ruta", required = false) String origen,
+            @ToolParam(description = "Destino de la ruta", required = false) String destino,
+            @ToolParam(description = "Día actual del viaje", required = false) String dia,
+            @ToolParam(description = "Fecha actual yyyy-MM-dd", required = false) LocalDate fecha,
+            @ToolParam(description = "Hora actual HH:mm en 24 horas", required = false) LocalTime hora,
+            @ToolParam(description = "Nueva fecha yyyy-MM-dd", required = false) LocalDate nuevaFecha,
+            @ToolParam(description = "Nueva hora HH:mm en 24 horas", required = false) LocalTime nuevaHora) {
+        if (!rol(Rol.CONDUCTOR))
+            return new OperacionResumen(EstadoOperacion.ERROR, null, "Solo un conductor puede reprogramar viajes.");
+        if (nuevaFecha == null || nuevaHora == null)
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, "Indica la nueva fecha y la hora del viaje.");
+        try {
+            var viajes = consultas.identificarViajesConductor(origen, destino, dia, fecha, hora);
+            if (viajes.isEmpty())
+                return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No encontré un viaje propio con esos datos.");
+            if (viajes.getTotalElements() > 1)
+                return new OperacionResumen(EstadoOperacion.AMBIGUO, null,
+                        "Coinciden varios viajes: " + viajes.stream()
+                                .map(v -> v.fecha() + " " + v.hora() + " " + v.origen() + " → " + v.destino())
+                                .collect(Collectors.joining("; ")) + ". Indica cuál.");
+            return confirmaciones.prepararReprogramacionViaje(viajes.getContent().getFirst().viajeId(),
+                    nuevaFecha, nuevaHora);
+        } catch (BusinessException | CamposInvalidosException | ResourceNotFoundException | NoPermitidoException e) {
+            return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
+        }
+    }
+
+    @Tool(description = """
+            Prepara cancelar una o varias solicitudes propias pendientes del pasajero. NO las cancela todavía.
+            Filtra por origen, destino, día, fecha u hora si el usuario los indicó.
+            Si hay varias y el usuario no pidió cancelarlas todas, pregunta cuál.
+            La cancelación se aplica al confirmar el resumen.
+            """)
+    public OperacionResumen cancelarSolicitud(
+            @ToolParam(description = "Origen", required = false) String origen,
+            @ToolParam(description = "Destino", required = false) String destino,
+            @ToolParam(description = "Día de la semana", required = false) String dia,
+            @ToolParam(description = "Fecha yyyy-MM-dd", required = false) LocalDate fecha,
+            @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora,
+            @ToolParam(description = "true solo si pidió cancelar todas las solicitudes pendientes", required = false) Boolean todas) {
+        if (!rol(Rol.PASAJERO))
+            return new OperacionResumen(EstadoOperacion.ERROR, null, "Solo un pasajero puede cancelar solicitudes propias.");
+        try {
+            var candidatas = consultas.candidatasCancelacion(origen, destino, dia, fecha, hora);
+            if (candidatas.isEmpty())
+                return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null,
+                        "No encontré solicitudes pendientes propias con esos datos.");
+            if (candidatas.size() > 1 && !Boolean.TRUE.equals(todas))
+                return new OperacionResumen(EstadoOperacion.AMBIGUO, null,
+                        "Tienes varias solicitudes pendientes: " + candidatas.stream()
+                                .map(s -> s.origen() + " → " + s.destino() + " (" + s.fecha() + " " + s.hora() + ")")
+                                .collect(Collectors.joining("; ")) + ". Indica cuál o pide cancelarlas todas.");
+            return confirmaciones.prepararCancelacionSolicitudes(candidatas);
+        } catch (BusinessException | CamposInvalidosException | ResourceNotFoundException | NoPermitidoException e) {
+            return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
+        }
+    }
+
     private boolean rol(Rol role) { return usuarioService.usuarioActual().getRolPrincipal() == role; }
     private boolean blanco(String value) { return value == null || value.isBlank(); }
 }

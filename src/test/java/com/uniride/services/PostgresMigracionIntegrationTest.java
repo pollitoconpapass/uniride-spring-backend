@@ -44,7 +44,7 @@ class PostgresMigracionIntegrationTest {
         Flyway flyway=Flyway.configure().dataSource(url,user,password).schemas(schema).defaultSchema(schema)
                 .baselineVersion("1").cleanDisabled(true).load();
         flyway.baseline();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(7);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         try(var connection=DriverManager.getConnection(url,user,password);var statement=connection.createStatement();
             var result=statement.executeQuery("SELECT correo_institucional,telefono,intentos_otp FROM "+schema+".usuarios")) {
@@ -111,6 +111,17 @@ class PostgresMigracionIntegrationTest {
             for (String tipo : tiposNuevos) insertarPendiente(connection, table, owner, tipo);
             assertThat(filasConfirmacion(connection, table)).hasSize(11);
             assertThatThrownBy(() -> insertarPendiente(connection, table, owner, "OTRA_OPERACION"))
+                    .isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23514"));
+
+            Flyway v9 = configuration.target(MigrationVersion.fromVersion("9")).load();
+            assertThat(v9.migrate().migrationsExecuted).isEqualTo(1);
+            v9.validate();
+            assertThat(v9.info().current().getVersion().getVersion()).isEqualTo("9");
+            assertThat(filasConfirmacion(connection, table)).hasSize(11);
+            for (String tipo : new String[]{"EDITAR_RUTA", "ELIMINAR_RUTA", "REPROGRAMAR_VIAJE", "CANCELAR_SOLICITUD"})
+                insertarPendiente(connection, table, owner, tipo);
+            assertThat(filasConfirmacion(connection, table)).hasSize(15);
+            assertThatThrownBy(() -> insertarPendiente(connection, table, owner, "EDITAR_VIAJE"))
                     .isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23514"));
         }
     }
