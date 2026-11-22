@@ -36,7 +36,7 @@ public class RutaAgentTools {
     @Tool(description = """
             Prepara una ruta propia para confirmación. NO publica ni modifica datos de negocio.
             El destino es la universidad del perfil. Devuelve confirmacion con resumen e identificador.
-            Solo el usuario puede confirmar mediante el endpoint HTTP explícito, nunca en el chat.
+            La propuesta requiere una decisión explícita del usuario procesada por el servidor.
             """)
     public OperacionResumen crearRuta(
             @ToolParam(description = "Punto de salida", required = false) String origen,

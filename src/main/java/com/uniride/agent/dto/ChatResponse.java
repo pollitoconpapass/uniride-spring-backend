@@ -1,5 +1,6 @@
 package com.uniride.agent.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
 
 public record ChatResponse(
@@ -10,7 +11,14 @@ public record ChatResponse(
         OperacionResumen operacion,
         List<ResultadoAgente> resultados,
         AdvertenciaAgente advertencia,
-        java.util.UUID conversationId) {
+        java.util.UUID conversationId,
+        @JsonInclude(JsonInclude.Include.NON_NULL) ResolucionConfirmacion resolucionConfirmacion) {
+
+    public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,
+                        List<MetodoCompensacionResumen> metodosCompensacion, OperacionResumen operacion,
+                        List<ResultadoAgente> resultados, AdvertenciaAgente advertencia, java.util.UUID conversationId) {
+        this(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia, conversationId, null);
+    }
 
     public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,
                         List<MetodoCompensacionResumen> metodosCompensacion, OperacionResumen operacion,
@@ -19,7 +27,8 @@ public record ChatResponse(
     }
 
     public ChatResponse withConversationId(java.util.UUID id) {
-        return new ChatResponse(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia, id);
+        return new ChatResponse(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia, id,
+                resolucionConfirmacion);
     }
 
     public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,

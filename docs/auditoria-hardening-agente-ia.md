@@ -1,5 +1,7 @@
 # Auditoría y hardening del agente UniRide
 
+> Informe histórico de la fase de hardening. La [guía vigente del agente](agente_flujo.md#preparación-y-confirmación) describe también la confirmación y cancelación por chat incorporadas después de esta auditoría.
+
 Fecha: 2026-11-21. Rama inicial y de trabajo: `fix/ia-hardening-base`.
 Al comenzar había una modificación local del prompt en `AgentConfig.java`; se revisó y se integró su intención (JSON no es una herramienta) en la solución.
 

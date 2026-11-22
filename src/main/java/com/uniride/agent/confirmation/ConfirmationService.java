@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** The model can prepare operations. Only the authenticated HTTP confirmation executes them. */
+/** The model prepares operations. The authenticated user resolves the same persisted proposal from either channel. */
 @Service
 @RequiredArgsConstructor
 public class ConfirmationService {
@@ -168,7 +168,10 @@ public class ConfirmationService {
 
     @Transactional(timeout = 10)
     public ConfirmacionResumen cancelar(UUID id) {
-        PendingConfirmation pending = propia(id);
+        return cancelar(propia(id));
+    }
+
+    private ConfirmacionResumen cancelar(PendingConfirmation pending) {
         expirarSiCorresponde(pending);
         if (pending.getEstado() == EstadoConfirmacion.EJECUTADA)
             throw new BusinessException("La operación ya fue ejecutada; no se puede cancelar la confirmación.");
@@ -178,7 +181,32 @@ public class ConfirmationService {
 
     @Transactional(timeout = 10)
     public ConfirmacionResumen confirmar(UUID id) {
+        return confirmar(propia(id));
+    }
+
+    /** Reads the previous state and resolves under the same row lock, including when the app races the chat. */
+    @Transactional(timeout = 10)
+    public ResolucionConfirmacion resolverDesdeChat(UUID id, boolean confirmar) {
         PendingConfirmation pending = propia(id);
+        expirarSiCorresponde(pending);
+        return switch (pending.getEstado()) {
+            case EJECUTADA -> new ResolucionConfirmacion(ResolucionConfirmacion.Estado.YA_EJECUTADA, resumen(pending));
+            case CANCELADA -> new ResolucionConfirmacion(ResolucionConfirmacion.Estado.YA_CANCELADA, resumen(pending));
+            case EXPIRADA -> new ResolucionConfirmacion(ResolucionConfirmacion.Estado.EXPIRADA, resumen(pending));
+            case PENDIENTE -> {
+                ConfirmacionResumen resultado = confirmar ? confirmar(pending) : cancelar(pending);
+                var estado = switch (resultado.estado()) {
+                    case EJECUTADA -> ResolucionConfirmacion.Estado.EJECUTADA;
+                    case CANCELADA -> ResolucionConfirmacion.Estado.CANCELADA;
+                    case EXPIRADA -> ResolucionConfirmacion.Estado.EXPIRADA;
+                    case PENDIENTE -> throw new IllegalStateException("La decisión no resolvió la confirmación");
+                };
+                yield new ResolucionConfirmacion(estado, resultado);
+            }
+        };
+    }
+
+    private ConfirmacionResumen confirmar(PendingConfirmation pending) {
         // A replay returns the committed receipt, without invoking any business service.
         if (pending.getEstado() == EstadoConfirmacion.EJECUTADA) return resumen(pending);
         expirarSiCorresponde(pending);

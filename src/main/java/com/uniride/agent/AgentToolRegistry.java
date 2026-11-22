@@ -1,5 +1,6 @@
 package com.uniride.agent;
 
+import com.uniride.agent.confirmation.EstadoConfirmacion;
 import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
 import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 
@@ -197,6 +198,11 @@ public class AgentToolRegistry {
         private String message(String text, AdvertenciaAgente warning) {
             // The operation receipt or controlled warning takes precedence over model text.
             String primary = operation != null ? operation.detalle() : warning != null ? text : compensation.message();
+            if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
+                primary += " Puedes confirmar desde la aplicación o escribir «sí» o «confirmo» en este chat. "
+                        + "Para cancelar la propuesta, escribe «no» o «cancelar».";
+            }
             List<String> reports = results.stream()
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)

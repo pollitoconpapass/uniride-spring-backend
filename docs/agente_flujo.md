@@ -21,6 +21,7 @@ flowchart TD
     T --> P[ConfirmationService: preparar]
     D[HistorialController: descarga con JWT] --> A
     H[ConfirmationController: JWT y UUID] --> E[ConfirmationService: confirmar/cancelar/consultar]
+    S -->|Decisión explícita y UUID de la sesión| E
     E --> B[Services existentes: reglas de negocio]
     Q --> DB[Repositories]
     A --> DB
@@ -28,7 +29,7 @@ flowchart TD
     B --> DB
 ```
 
-El modelo elige entre las dieciséis herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las escrituras preparan confirmaciones que se ejecutan mediante una petición HTTP explícita. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+El modelo elige entre las dieciséis herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -75,7 +76,7 @@ Respuesta de consulta (IDs y contenidos son ilustrativos):
 }
 ```
 
-Los cinco campos originales se conservan. `resultados` es un sobre extensible: `tipo` identifica la herramienta y `datos` contiene su resultado Java. Las listas originales siguen disponibles para los clientes existentes. Las futuras tools pueden agregar tipos sin crear campos vacíos de funcionalidades que aún no existen.
+Los cinco campos originales se conservan. `resultados` es un sobre extensible: `tipo` identifica la herramienta y `datos` contiene su resultado Java. Las listas originales siguen disponibles para los clientes existentes. `resolucionConfirmacion` se usa al resolver una propuesta por chat y contiene el estado y, cuando está disponible, el recibo de la confirmación persistida.
 
 Continuar sesión:
 
@@ -198,7 +199,72 @@ Cuando los datos son válidos, `operacion` es:
 }
 ```
 
-El frontend muestra `resumen` y botones Confirmar/Cancelar. El identificador y la expiración proceden del backend. La confirmación caduca a los diez minutos; se permiten veinte pendientes vigentes por usuario. Preparar solamente inserta metadatos de confirmación, sin rutas, viajes, solicitudes, métodos ni notificaciones de negocio.
+El frontend puede mostrar `resumen` y los botones Confirmar y Cancelar. El identificador y la expiración proceden del backend. La confirmación caduca a los diez minutos y se permiten veinte pendientes vigentes por usuario. Preparar solamente inserta metadatos de confirmación, sin rutas, viajes, solicitudes, métodos ni notificaciones de negocio.
+
+### Confirmar o cancelar por chat
+
+Después de revisar la propuesta, envía otro `POST /api/agent/chat` con el JWT del propietario y el mismo `conversationId` recibido al preparar.
+
+```json
+{"message":"Sí, confirmo","conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"}
+```
+
+Envía «no, gracias» para cancelar una propuesta pendiente.
+
+```json
+{"message":"No, gracias","conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"}
+```
+
+Java reconoce las decisiones explícitas antes de llamar a Groq y recupera el UUID de la propuesta asociada. El texto solo expresa la decisión. El UUID de la operación y sus parámetros se obtienen del estado del servidor. Las respuestas condicionales como «sí, pero cambia la fecha» desvinculan la propuesta del chat y solicitan aclaración sin ejecutarla. Un cambio de tema también desvincula la propuesta anterior. Si el usuario abre otra conversación, puede seguir consultando o resolviendo la propuesta persistida desde la aplicación con su UUID original.
+
+La misma vía sirve para crear rutas y viajes, solicitar unirse a un viaje y registrar, editar, activar, desactivar o eliminar métodos de compensación. Una operación futura que reutilice `ConfirmationService` hereda este flujo.
+
+El chat conserva el mismo `conversationId` y añade `resolucionConfirmacion`. Su campo `estado` distingue los siguientes resultados.
+
+| `resolucionConfirmacion.estado` | Significado |
+|---|---|
+| `EJECUTADA` | El servicio ejecutó la propuesta en este turno. `operacion` contiene el resultado real. |
+| `CANCELADA` | El servicio canceló la propuesta en este turno. |
+| `EXPIRADA` | Terminó el plazo de la propuesta. |
+| `YA_EJECUTADA` | El servicio ya había ejecutado la propuesta, incluso si se confirmó desde la aplicación. El recibo persistido está en `confirmacion.resultado`. |
+| `YA_CANCELADA` | La propuesta ya estaba cancelada, incluso si se canceló desde la aplicación. |
+| `RECHAZADA` | El servicio rechazó la acción por validación, ausencia del recurso o conflicto de negocio. Consulta `advertencia`. |
+| `SIN_PENDIENTE` | El chat no dispone de una referencia vigente para la decisión. |
+| `ACLARACION_REQUERIDA` | El mensaje combina la decisión con una condición o cambio. |
+| `RESULTADO_INCIERTO` | El backend no pudo verificar el resultado. Consulta el UUID original mediante `GET /api/agent/confirmaciones/{id}` antes de decidir qué hacer. |
+
+`resolucionConfirmacion.confirmacion` contiene el recibo `ConfirmacionResumen` disponible o `null`. Solo `EJECUTADA` completa `operacion` con el resultado de negocio de esa ejecución. En estos turnos `resultados` queda vacío. Una conversación ajena o desconocida conserva la respuesta `404`. El cambio de rol detectado al abrir la sesión o una conversación ocupada conservan el `409`. La autorización del servicio sigue aplicándose al ejecutar.
+
+La sesión conserva el recibo terminal de la propuesta reciente para responder a una repetición. Cuando se confirma desde el chat y luego se repite el POST dedicado con el mismo UUID, el endpoint devuelve el recibo persistido. La siguiente propuesta inicia su propio ciclo con un UUID nuevo.
+
+El chat devuelve el recibo de la propuesta de viaje anterior al cancelarla.
+
+```json
+{
+  "message": "Cancelé la confirmación. La operación quedó sin ejecutar.",
+  "viajes": [],
+  "rutas": [],
+  "metodosCompensacion": [],
+  "operacion": null,
+  "resultados": [],
+  "advertencia": null,
+  "conversationId": "2c54e29b-701e-44af-a745-87aa311b9661",
+  "resolucionConfirmacion": {
+    "estado": "CANCELADA",
+    "confirmacion": {
+      "id": "f081920f-85ea-4f48-aafa-5abb11ae0077",
+      "tipo": "CREAR_VIAJE",
+      "estado": "CANCELADA",
+      "resumen": "Programar un viaje desde Surco hacia UPC el 2026-11-25 a las 08:00, capacidad 4. Referencias: Parque.",
+      "parametros": {"fecha":"2026-11-25","hora":"08:00:00"},
+      "expira": "2026-11-21T17:10:00Z",
+      "resultado": null
+    }
+  }
+}
+```
+
+### Confirmar o cancelar desde la aplicación
 
 ```http
 POST /api/agent/confirmaciones/f081920f-85ea-4f48-aafa-5abb11ae0077/confirmar
@@ -206,8 +272,6 @@ Authorization: Bearer <token>
 ```
 
 La petición se envía sin cuerpo ni parámetros de consulta. El servidor utiliza exclusivamente los parámetros guardados. Cualquier cuerpo no vacío, incluso `{}`, recibe HTTP 400.
-
-Si en la misma conversación el usuario responde solamente «sí» a una preparación reciente, el backend responde antes de llamar a Groq. Devuelve el mismo `conversationId`, `operacion: null` y `resultados: []`. El mensaje indica cómo usar el UUID original si la confirmación sigue pendiente, o avisa que se cumplió el plazo de la propuesta si su expiración ya pasó. Si el usuario cambia de tema antes de decir «sí», el chat ofrece orientación general y omite el UUID anterior. Para comprobar el estado efectivo de la confirmación persistida, usa `GET /api/agent/confirmaciones/{id}` con el UUID devuelto al preparar.
 
 La respuesta es `ConfirmacionResumen`:
 
@@ -246,7 +310,7 @@ Los conductores y pasajeros pueden listar sus métodos y preparar el registro, l
 | `cambiarEstadoMetodoCompensacion` | Activar o desactivar y conservar el tipo y la descripción | `CAMBIAR_ESTADO_METODO` | `PUT /api/metodos-compensacion/{id}` |
 | `eliminarMetodoCompensacion` | Eliminar un método propio | `ELIMINAR_METODO` | `DELETE /api/metodos-compensacion/{id}` |
 
-Una propuesta válida identifica el método actual, muestra los valores anteriores y propuestos cuando corresponda, y devuelve `operacion.estado: "CONFIRMACION_REQUERIDA"`. En una edición o cambio de estado, `operacion.confirmacion.parametros` contiene los valores propuestos de `tipo`, `descripcion` y `activo`. Para eliminar, `parametros` contiene `{}`. El servidor guarda internamente el método seleccionado y su estado al preparar. Al confirmar mediante HTTP, el backend compara ese estado con los datos actuales y vuelve a validar la propiedad y las reglas de negocio. Si el método cambió después de preparar la propuesta, el endpoint devuelve `409` y el usuario debe volver a solicitar el cambio. Repetir una confirmación ejecutada devuelve su recibo.
+Una propuesta válida identifica el método actual, muestra los valores anteriores y propuestos cuando corresponda, y devuelve `operacion.estado: "CONFIRMACION_REQUERIDA"`. En una edición o cambio de estado, `operacion.confirmacion.parametros` contiene los valores propuestos de `tipo`, `descripcion` y `activo`. Para eliminar, `parametros` contiene `{}`. El servidor guarda internamente el método seleccionado y su estado al preparar. Al confirmar desde el chat o la aplicación, el backend compara ese estado con los datos actuales y vuelve a validar la propiedad y las reglas de negocio. Si el método cambió después de preparar la propuesta, se rechaza la confirmación y el usuario debe volver a solicitar el cambio. Repetir una confirmación ejecutada devuelve su recibo.
 
 | `operacion.estado` | Motivo para omitir la confirmación |
 |---|---|
@@ -260,7 +324,7 @@ Si un duplicado o un vínculo aparece entre la preparación y la confirmación, 
 
 El backend contesta directamente las preguntas que identifica sobre los tipos de compensación y cómo gestionar un método. `DINERO` corresponde a aportes monetarios, `GASOLINA` a aportes de combustible y `FAVOR` a ayudas acordadas entre usuarios. Estas respuestas dan orientación en `message` sin consultar a Groq ni usar herramientas, con `operacion: null` y `resultados: []`. Las órdenes negadas, como «No desactives mi método Yape», bloquean la preparación.
 
-Si la petición identifica con claridad una acción y contiene sus datos, Java puede completar una preparación de registro, edición, activación, desactivación o eliminación omitida por Groq después de una respuesta final válida. La llamada del modelo y la recuperación usan los argumentos comprobados en Java, el callback habitual, el presupuesto del turno y el límite de una preparación. `ConfirmationService` sigue seleccionando el método propio y aplicando las reglas de negocio. El cambio se aplica al confirmar por HTTP.
+Si la petición identifica con claridad una acción y contiene sus datos, Java puede completar una preparación de registro, edición, activación, desactivación o eliminación omitida por Groq después de una respuesta final válida. La llamada del modelo y la recuperación usan los argumentos comprobados en Java, el callback habitual, el presupuesto del turno y el límite de una preparación. `ConfirmationService` sigue seleccionando el método propio y aplicando las reglas de negocio. El cambio se aplica al confirmar por chat o desde la aplicación.
 
 El registro, la edición y la eliminación pueden completarse en varios mensajes con el mismo `conversationId`. Ante una solicitud explícita incompleta, la sesión conserva los campos ya identificados y admite una respuesta breve con el dato que acaba de pedir. Si una edición o eliminación tiene varias coincidencias, el usuario puede precisar el método en la misma conversación. Un cambio de tema limpia el borrador. Para precisar una activación o desactivación, vuelve a indicar la acción junto con el método.
 
@@ -294,8 +358,30 @@ Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelv
 4. PASAJERO: «Busca viajes disponibles el viernes a las 07:00», «Consulta mis solicitudes».
 5. Ambos: «Consulta mis métodos de compensación».
 6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
-7. Preparar una escritura en una base local aislada, revisar el resumen y confirmar/cancelar mediante sus endpoints.
-8. Para una prueba real con Groq sobre Supabase, utilizar únicamente consultas. No confirmar escrituras ni cambiar datos.
+7. Preparar una escritura en una base local aislada y revisar el resumen. Probar la confirmación y cancelación por chat y mediante los endpoints dedicados.
+8. Reservar las pruebas de escritura para la base aislada. Las pruebas contra Supabase se limitan a consultas.
+
+### Probar decisiones de confirmación por chat
+
+En cada fila, prepara una propuesta elegible y sustituye `<conversationId>` por el valor de esa sesión. Conserva `operacion.confirmacion.id` para comprobar la propuesta mediante `GET /api/agent/confirmaciones/{id}` con el mismo JWT.
+
+| Preparación o condición inicial | Cuerpo de `POST /api/agent/chat` | Comprobación |
+|---|---|---|
+| Ruta nueva, rol conductor | `{"message":"sí","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = CREAR_RUTA` |
+| Viaje con fecha futura, rol conductor | `{"message":"confirmo","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = CREAR_VIAJE` |
+| Solicitud para un viaje con plazas, rol pasajero | `{"message":"adelante","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = SOLICITAR_UNIRSE` |
+| Registro de un método único | `{"message":"sí, confirmo","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = REGISTRAR_METODO` |
+| Edición de un método propio | `{"message":"hazlo","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = ACTUALIZAR_METODO` |
+| Cambio de estado de un método propio | `{"message":"procede","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = CAMBIAR_ESTADO_METODO` |
+| Eliminación de un método sin solicitudes asociadas | `{"message":"confirmar","conversationId":"<conversationId>"}` | `EJECUTADA`, `confirmacion.tipo = ELIMINAR_METODO` |
+| Propuesta pendiente | `{"message":"cancelar","conversationId":"<conversationId>"}` | `CANCELADA`, `operacion: null`. El POST de confirmación dedicado devuelve `409` para ese UUID. |
+| Propuesta ejecutada o cancelada desde la aplicación | `{"message":"sí","conversationId":"<conversationId>"}` | `YA_EJECUTADA` o `YA_CANCELADA`, `operacion: null` |
+| Propuesta que superó su plazo | `{"message":"sí","conversationId":"<conversationId>"}` | `EXPIRADA`, `operacion: null` |
+| Conversación nueva o tema cambiado antes de decidir | `{"message":"sí"}` o `{"message":"no","conversationId":"<conversationId>"}` | `SIN_PENDIENTE`, `confirmacion: null` |
+| Condición que altera la propuesta | `{"message":"Sí, pero cambia la fecha","conversationId":"<conversationId>"}` | `ACLARACION_REQUERIDA`. La propuesta original sigue pendiente en el endpoint dedicado. |
+| Cambio externo que deja el snapshot obsoleto | `{"message":"sí","conversationId":"<conversationId>"}` | `RECHAZADA`, `advertencia` con el conflicto y `operacion: null`. |
+
+Los valores de la columna Comprobación corresponden a `resolucionConfirmacion.estado` y `resolucionConfirmacion.confirmacion`, salvo que se indique otro campo.
 
 ### Probar la gestión de métodos de compensación
 
@@ -347,10 +433,10 @@ Si `Yape` es un método `DINERO` activo, `GET /api/agent/confirmaciones/{id}` de
 }
 ```
 
-1. Comprueba que `operacion.estado` sea `CONFIRMACION_REQUERIDA` y que `operacion.confirmacion.resumen` describa el método y el cambio. Copia exactamente el UUID que devolvió `operacion.confirmacion.id` para usarlo en el path del GET o del POST.
-2. En ese mismo `conversationId`, envía «sí» al chat. Comprueba que `message` mencione la confirmación HTTP original, `operacion` sea `null` y `resultados` esté vacío. Repite `GET /api/metodos-compensacion` para comprobar que todavía están los datos originales.
-3. Ejecuta `POST /api/agent/confirmaciones/{id}/confirmar` con el mismo JWT, sin cuerpo ni parámetros de consulta. Comprueba `estado: "EJECUTADA"` y `resultado.estado: "EXITO"`.
-4. Vuelve a listar los métodos para comprobar el cambio. Repite la confirmación con el mismo UUID y verifica que devuelve el resultado guardado.
+1. Comprueba que `operacion.estado` sea `CONFIRMACION_REQUERIDA` y que `operacion.confirmacion.resumen` describa el método y el cambio. Guarda el `conversationId` y el UUID de `operacion.confirmacion.id` por separado.
+2. En ese mismo `conversationId`, envía «sí» al chat. Comprueba `resolucionConfirmacion.estado: "EJECUTADA"` y `operacion.estado: "EXITO"`. Consulta `GET /api/metodos-compensacion` y verifica el cambio descrito en el resumen.
+3. Ejecuta `POST /api/agent/confirmaciones/{id}/confirmar` con el mismo JWT, sin cuerpo ni parámetros de consulta. Comprueba que el mismo UUID sigue con `estado: "EJECUTADA"` y `resultado.estado: "EXITO"`, con el resultado persistido en el paso anterior.
+4. Para probar el orden inverso, prepara otra propuesta, confírmala desde el endpoint dedicado y luego envía «sí» en ese mismo `conversationId`. Comprueba `resolucionConfirmacion.estado: "YA_EJECUTADA"` y `operacion: null`.
 
 El POST de confirmación y las siguientes consultas GET devuelven el resultado ejecutado. En el ejemplo, `resultado.id` ilustra el identificador numérico del método que entrega el backend.
 
@@ -371,7 +457,7 @@ El POST de confirmación y las siguientes consultas GET devuelven el resultado e
 }
 ```
 
-Para probar la cancelación, prepara otra operación y ejecuta `POST /api/agent/confirmaciones/{id}/cancelar`. Verifica `estado: "CANCELADA"` y que los métodos conservan sus datos. También puedes probar una descripción ambigua, un método vinculado a una solicitud o una edición duplicada y comprobar que el chat omite la confirmación.
+Para probar la cancelación, prepara otra operación y envía `{"message":"No, gracias","conversationId":"<conversationId-devuelto>"}`. Verifica `resolucionConfirmacion.estado: "CANCELADA"` y que los métodos conservan sus datos. Si intentas confirmar ese UUID desde el endpoint dedicado, obtendrás `409`. También puedes cancelar mediante `POST /api/agent/confirmaciones/{id}/cancelar` y consultar el recibo mediante `GET`.
 
 #### Registro en dos turnos
 
@@ -395,7 +481,7 @@ Después de recibir la propuesta, puedes comprobar el comportamiento de una afir
 {"message":"sí","conversationId":"<conversationId-devuelto>"}
 ```
 
-Para ejecutar el registro, sigue el paso de confirmación HTTP con el UUID original de la propuesta. Si antes de decir «sí» envías otra petición, como «¿Qué tipos de compensación existen?», la afirmación recibe orientación general. Puedes seguir consultando la propuesta con el UUID que guardaste.
+El «sí» confirma el registro si es el siguiente mensaje en esa conversación. Si antes envías otra petición, como «¿Qué tipos de compensación existen?», la afirmación no encuentra una propuesta vigente en el chat. Puedes seguir consultando la propuesta con el UUID que guardaste.
 
 #### Edición y eliminación en dos turnos
 
@@ -423,7 +509,7 @@ Envía el dato pedido con el UUID de esa conversación.
 {"message":"Yape","conversationId":"<conversationId-devuelto>"}
 ```
 
-Si el método existe, es identificable y cumple las reglas de la operación, el chat prepara la confirmación. Comprueba el cambio propuesto en `operacion.confirmacion.resumen` y usa su UUID para confirmar o cancelar por HTTP.
+Si el método existe, es identificable y cumple las reglas de la operación, el chat prepara la confirmación. Comprueba el cambio propuesto en `operacion.confirmacion.resumen` y responde en esa conversación. También puedes usar su UUID en los endpoints dedicados.
 
 ### Probar los reportes estadísticos
 

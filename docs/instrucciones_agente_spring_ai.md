@@ -1,6 +1,6 @@
 ﻿# Integración y extensión del agente Spring AI
 
-Esta guía describe la implementación real de UniRide. Los primeros ejemplos de laboratorio usaban venta de entradas y Gemini; se conserva ese antecedente conceptual, pero sus snippets de `.entity(...)` y confirmación por texto no son aplicables a esta integración Groq. Los principios útiles siguen siendo descubrir beans con Spring, describir tools con precisión y reutilizar los servicios de negocio.
+Esta guía describe la implementación de UniRide con Spring AI y Groq. El laboratorio de Gemini se conserva como referencia histórica. Las herramientas se descubren mediante Spring y reutilizan los servicios de negocio. La confirmación por texto se procesa directamente en Java antes de llamar al modelo.
 
 ## Configuración actual
 
@@ -18,8 +18,9 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | Componente | Responsabilidad |
 |---|---|
 | AgentController | Validar petición de chat y devolver DTO |
-| AgentService | Resolver usuario, sesión y contexto; llamar una vez al flujo del proveedor; mapear fallos |
-| AgentConversationStore | Propiedad, TTL, límites y exclusión de mensajes simultáneos |
+| AgentService | Resolver usuario y sesión, procesar decisiones explícitas de confirmación y dirigir los demás mensajes al flujo del proveedor |
+| AgentConversationStore | Propiedad, TTL, límites, exclusión de mensajes simultáneos y referencia de la propuesta actual |
+| ConfirmationIntent | Reconocer respuestas completas de confirmación o cancelación y distinguirlas de preguntas y decisiones condicionales |
 | AgentConfig | Prompt y construcción de ChatClient; no contiene permisos efectivos |
 | AgentToolRegistry | Callbacks, límite por turno, recibos y construcción de resultados estructurados |
 | AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
@@ -28,8 +29,8 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | EstadisticasService | Totales de actividad, frecuencia histórica, ranking de rutas y generación del historial en PDF |
 | HistorialController | Descarga autenticada del PDF mediante `GET /api/historial/pdf` |
 | MetodoCompensacionAgentTools | Consulta de métodos propios y preparación de registro, edición, cambio de estado o eliminación |
-| ConfirmationService | Guardar propuesta, validar propietario/estado/expiración y ejecutar negocio una sola vez |
-| ConfirmationController | Confirmación explícita recibida fuera del modelo |
+| ConfirmationService | Guardar propuestas, validar propietario, estado y expiración, y resolver operaciones de forma transaccional e idempotente |
+| ConfirmationController | Exponer los endpoints autenticados de consulta, confirmación y cancelación |
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
 
 Spring descubre los componentes por `@ComponentScan`; usar inyección por constructor. Evitar dependencias circulares y llamadas manuales a configuración.
@@ -76,22 +77,24 @@ Una tool de escritura debe **preparar**, nunca ejecutar el servicio de negocio d
 4. Guardar únicamente parámetros necesarios, ID del usuario autenticado, resumen exacto y snapshot de los datos que acepta el usuario. No almacenar el mensaje completo ni credenciales.
 5. Reutilizar expiración, UUID aleatorio, bloqueo de confirmación propia y comprobación del rol actual. En ejecución, tomar locks compatibles con las operaciones tradicionales y comparar nuevamente el snapshot.
 6. Ejecutar el servicio existente y guardar el resultado en la misma transacción. No marcar EJECUTADA si falla negocio o commit. No introducir reintentos de escrituras.
-7. Registrar el nombre de la preparación en el límite de una operación por turno de `AgentToolRegistry`. Nunca registrar `confirmar` como `@Tool`.
+7. Registrar el nombre de la preparación en el límite de una operación por turno de `AgentToolRegistry`. Mantener `confirmar` y `cancelar` fuera de las herramientas del modelo.
 8. Añadir tests de preparación sin efectos, rol cambiado, propiedad ajena, expiración, cancelación, snapshot cambiado, reglas revalidadas, rollback, confirmación duplicada y concurrencia PostgreSQL.
 
-La aplicación confirma por `POST /api/agent/confirmaciones/{id}/confirmar`, sin parámetros ni cuerpo. El modelo no puede fabricar una aprobación. Repetir el mismo UUID ejecutado devuelve su recibo; si el resultado de red es incierto, consultar primero ese UUID. `GET` y `/cancelar` completan el protocolo. Ver [contratos completos](agente_flujo.md).
+Una operación nueva que utiliza `ConfirmationService` hereda la confirmación y cancelación textual. El chat resuelve respuestas completas como «sí» o «no, gracias» antes de llamar a Groq y recibe el UUID exclusivamente de la conversación autenticada. La aplicación también puede llamar a `POST /api/agent/confirmaciones/{id}/confirmar` o `/cancelar`, sin parámetros ni cuerpo. La misma confirmación persistida respalda ambas vías. Si el resultado de red es incierto, consulta primero el UUID de la propuesta mediante `GET /api/agent/confirmaciones/{id}`. Ver [contrato y ejemplos de Swagger](agente_flujo.md#preparación-y-confirmación).
+
+La resolución por chat inspecciona el estado persistido bajo el mismo bloqueo que protege la ejecución. Esto permite distinguir una decisión nueva de una repetición, incluso cuando la aplicación y el chat actúan a la vez. `ChatResponse.resolucionConfirmacion` informa el estado observado y el recibo disponible. Las respuestas de los endpoints dedicados conservan `ConfirmacionResumen`.
 
 ### Gestión de métodos de compensación
 
 `MetodoCompensacionAgentTools` expone `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. El modelo describe el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
 
-`ConfirmationService` guarda el estado del método al preparar la operación y compara ese estado al confirmar. Los tres tipos nuevos reutilizan `MetodoCompensacionService` para aplicar los cambios, validar duplicados y conservar las solicitudes vinculadas. Flyway V8 amplía la restricción `CHECK` del tipo en `agent_confirmaciones`. El protocolo conserva el límite de una preparación por turno y utiliza los mismos endpoints autenticados de confirmación.
+`ConfirmationService` guarda el estado del método al preparar la operación y compara ese estado al confirmar. Los tres tipos nuevos reutilizan `MetodoCompensacionService` para aplicar los cambios, validar duplicados y conservar las solicitudes vinculadas. Flyway V8 amplía la restricción `CHECK` del tipo en `agent_confirmaciones`. El protocolo conserva el límite de una preparación por turno y comparte las validaciones entre chat y endpoints dedicados.
 
 La detección de compensación evalúa el mensaje actual. Las preguntas reconocidas sobre tipos o procedimientos reciben una respuesta Java antes de llamar a Groq, con `operacion: null` y `resultados: []`. Las órdenes negadas bloquean la preparación. El registro exige que la herramienta de compensación corresponda a la intención actual y usa los argumentos validados a partir de la petición, incluso cuando Groq aporta otros valores.
 
-Con una solicitud explícita y completa de registrar, editar, cambiar el estado o eliminar, el turno puede invocar el callback de preparación si Groq lo omitió y devolvió una respuesta válida con `STOP`. La llamada original y la recuperación comparten el presupuesto del turno, la captura de resultados y el límite de una preparación. La ejecución de negocio, la notificación y el recibo se guardan en una transacción al confirmar por HTTP.
+Con una solicitud explícita y completa de registrar, editar, cambiar el estado o eliminar, el turno puede invocar el callback de preparación si Groq lo omitió y devolvió una respuesta válida con `STOP`. La llamada original y la recuperación comparten el presupuesto del turno, la captura de resultados y el límite de una preparación. Al confirmar por cualquiera de las vías, el servicio guarda la ejecución de negocio, la notificación y el recibo en una transacción.
 
-La sesión mantiene borradores tipados para registrar, editar o eliminar. Un borrador conserva los datos explícitos de la petición y admite una respuesta breve al dato solicitado. Un cambio de tema lo descarta. La sesión conserva por separado el UUID y la expiración de una preparación reciente. Una afirmación aislada como «sí» recibe orientación antes de llamar a Groq, con `operacion: null` y `resultados: []`. Si el usuario envió otra petición, la afirmación recibe orientación general. El estado efectivo de cualquier UUID emitido puede consultarse en el endpoint GET de confirmaciones. Para las pruebas manuales, consulta [Gestión de métodos de compensación en Swagger](agente_flujo.md#probar-la-gestión-de-métodos-de-compensación).
+La sesión mantiene borradores tipados para registrar, editar o eliminar. Un borrador conserva los datos explícitos de la petición y admite una respuesta breve al dato solicitado. La referencia de la propuesta actual se guarda por separado y depende de un recibo estructurado del servidor. Un cambio de tema desvincula la referencia de la conversación. La propuesta persistida permanece consultable con su UUID y el JWT del propietario. Para las pruebas manuales, consulta [Gestión de métodos de compensación en Swagger](agente_flujo.md#probar-la-gestión-de-métodos-de-compensación).
 
 ## Salida y errores
 

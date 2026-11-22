@@ -188,7 +188,7 @@ class CompensationIntentTest {
     @ParameterizedTest
     @ValueSource(strings = {"Sí", "Confirmo", "Está bien, hazlo", "Procede", "Acepto la operación", "¡SÍ!"})
     void recognizesBareAffirmationsWithoutGrantingPermissionToPrepare(String text) {
-        assertThat(CompensationIntent.isAffirmation(text)).isTrue();
+        assertThat(ConfirmationIntent.classify(text)).isEqualTo(ConfirmationIntent.CONFIRMAR);
         assertThat(CompensationIntent.classify(text, null).blockPreparations()).isTrue();
     }
 
@@ -196,6 +196,6 @@ class CompensationIntentTest {
     void distinguishesAnActualTripRequestFromMethodManagement() {
         assertThat(CompensationIntent.isTripRequest("Quiero unirme a un viaje")).isTrue();
         assertThat(CompensationIntent.isTripRequest("Activa mi método de compensación gasolina")).isFalse();
-        assertThat(CompensationIntent.isAffirmation("Sí, pero cambia el tipo")).isFalse();
+        assertThat(ConfirmationIntent.classify("Sí, pero cambia el tipo")).isEqualTo(ConfirmationIntent.AMBIGUA);
     }
 }

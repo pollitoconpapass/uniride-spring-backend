@@ -57,8 +57,6 @@ final class CompensationIntent {
     private static final Pattern MANAGEMENT = pattern("^(?:(?:expl[ií]came )?c[oó]mo (?:puedo |se )?|puedo )" + METHOD_PROCEDURE
             + "(?:(?:, *| (?:o|y) )" + METHOD_PROCEDURE + ")* (?:(?:mi|mis|un|los) )?m[eé]todos?(?: de compensaci[oó]n)?$");
     private static final Pattern NEGATION = pattern("^(?:por favor,? )?(?:no|nunca|jam[aá]s)\\b");
-    private static final Pattern AFFIRMATION = pattern("^(?:s[ií](?:,? (?:confirmo|hazlo|gracias|procede))?|confirmo(?: la operaci[oó]n)?|"
-            + "est[aá] bien(?:,? hazlo)?|procede|acepto(?: la operaci[oó]n)?|de acuerdo|adelante|hazlo)$");
     private static final Pattern TRIP = pattern("\\b(?:unirme|unirse|[uú]neme|sumarme|sumarse|subirme|viajar con|"
             + "(?:solicita(?:r|me)?|reserva(?:r|me)?|pide|pedir) (?:un )?cupo)\\b");
     private static final Pattern LABEL = Pattern.compile("[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} _+/%&()'-]{0,254}");
@@ -122,7 +120,8 @@ final class CompensationIntent {
 
     static Decision classify(String message, Draft draft) {
         String text = clean(message);
-        if (AgentConversationStore.containsSecrets(message) || isAffirmation(message) || NEGATION.matcher(text).find()) {
+        if (AgentConversationStore.containsSecrets(message) || ConfirmationIntent.classify(message) != ConfirmationIntent.OTRA
+                || NEGATION.matcher(text).find()) {
             return blocked(null, null);
         }
         if (TYPE_CATALOGUE.matcher(text).matches()) return information(TYPES_HELP);
@@ -166,10 +165,6 @@ final class CompensationIntent {
             case DELETE -> new Eliminacion(selector);
             default -> decision.draft();
         };
-    }
-
-    static boolean isAffirmation(String message) {
-        return !message.strip().endsWith("?") && AFFIRMATION.matcher(clean(message)).matches();
     }
 
     static boolean isTripRequest(String message) {

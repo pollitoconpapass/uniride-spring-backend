@@ -2,6 +2,8 @@ package com.uniride.agent;
 
 import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.ConfirmacionResumen;
+import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.enums.Rol;
 import java.time.*;
 import java.util.*;
@@ -94,8 +96,6 @@ public class AgentConversationStore {
         return new AgentProviderException(HttpStatus.TOO_MANY_REQUESTS, "CONVERSATION_LIMIT", message);
     }
 
-    record ReferenciaConfirmacion(UUID id, Instant expira) { }
-
     private static final class Session {
         private final Long userId;
         private final Rol role;
@@ -104,7 +104,8 @@ public class AgentConversationStore {
         private volatile Instant lastUsed;
         private int turns;
         private CompensationIntent.Draft borrador;
-        private ReferenciaConfirmacion confirmacion;
+        private UUID confirmacionPendiente;
+        private ConfirmacionResumen confirmacionResuelta;
         private Session(Long userId, Rol role, Instant now) {
             this.userId = userId; this.role = role; this.lastUsed = now;
         }
@@ -125,14 +126,25 @@ public class AgentConversationStore {
             session.borrador = borrador;
         }
 
-        ReferenciaConfirmacion confirmacion() { return session.confirmacion; }
+        UUID confirmacionPendiente() { return session.confirmacionPendiente; }
+        ConfirmacionResumen confirmacionResuelta() { return session.confirmacionResuelta; }
 
-        void descartarReferenciaConfirmacion() { session.confirmacion = null; }
+        void descartarReferenciaConfirmacion() {
+            session.confirmacionPendiente = null;
+            session.confirmacionResuelta = null;
+        }
+
+        void guardarResolucion(ConfirmacionResumen confirmacion) {
+            session.confirmacionPendiente = null;
+            session.confirmacionResuelta = confirmacion;
+        }
 
         void complete(String user, ChatResponse response) {
-            var confirmacion = response.operacion() == null ? null : response.operacion().confirmacion();
-            if (confirmacion != null && confirmacion.estado() == EstadoConfirmacion.PENDIENTE) {
-                session.confirmacion = new ReferenciaConfirmacion(confirmacion.id(), confirmacion.expira());
+            var operacion = response.operacion();
+            if (operacion != null && operacion.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operacion.confirmacion() != null && operacion.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
+                session.confirmacionPendiente = operacion.confirmacion().id();
+                session.confirmacionResuelta = null;
             }
             complete(user, response.message());
         }

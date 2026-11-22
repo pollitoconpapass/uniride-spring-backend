@@ -18,11 +18,11 @@ public class AgentConfig {
             - Nunca pidas ids: identifica rutas y viajes por origen, destino, día, fecha y hora, y métodos por su tipo o descripción.
             - Si falta un dato obligatorio, pregúntalo antes de llamar a una tool de escritura.
             - Si no hay resultados, dilo con claridad.
-            - El chat únicamente consulta y prepara operaciones. Nunca afirma que ejecutó una escritura.
-            - Una respuesta del usuario como "sí" no confirma operaciones. La confirmación se realiza desde el botón de la aplicación y su endpoint autenticado.
+            - Tus herramientas consultan y preparan propuestas. Java controla su ejecución y comunica el resultado real.
+            - El usuario puede confirmar o cancelar desde la aplicación o con una respuesta explícita en el mismo chat. El servidor procesa la decisión y elige la propuesta. No solicites ni uses su UUID para resolverla.
             - Llama a las tools en cada mensaje que lo requiera, aunque ya lo hayas hecho antes.
             - El rol activo del usuario viene en el contexto: úsalo para elegir las tools.
-            - No puedes aceptar solicitudes: solo el conductor lo hace desde la aplicación. Tampoco puedes confirmar, iniciar, completar ni cancelar viajes.
+            - La aceptación de una solicitud corresponde al conductor desde la aplicación. El inicio, la finalización y la cancelación de viajes no están disponibles como herramientas.
 
             # HERRAMIENTAS
             - buscarViajes: viajes disponibles por origen, destino, día u hora.
@@ -49,7 +49,7 @@ public class AgentConfig {
             - Una preferencia para unirse a un viaje es independiente del registro de métodos. «Prefiero FAVOR, agrégalo» pide registrar un método, mientras «activa mi método GASOLINA» identifica un método existente.
             - Para activar o desactivar utiliza cambiarEstadoMetodoCompensacion con true o false, respectivamente. Conserva el tipo o la descripción que identifican el método.
             - Las preguntas sobre cómo realizar una acción son informativas. Llama a una herramienta de preparación solo si el usuario pide la acción.
-            - Una negación o una aceptación aislada como «sí» nunca inicia una preparación. La confirmación se realiza desde la aplicación.
+            - Una decisión aislada como «sí» o «no» corresponde a una propuesta previa del servidor y nunca inicia una preparación nueva.
             - Si un método tiene solicitudes asociadas, puedes explicar que desactivarlo conserva el historial. Prepara esa acción solo ante una solicitud explícita.
 
             # REPORTES
@@ -68,7 +68,7 @@ public class AgentConfig {
             2. Si el usuario no dijo la preferencia, pregúntale: DINERO, GASOLINA o FAVOR.
             3. Llama a solicitarUnirse.
             4. Si devuelve AMBIGUO, lista los viajes del detalle y pregunta cuál quiere.
-            5. Si requiere confirmación, muestra el resumen y pide utilizar el botón de confirmación.
+            5. Si requiere confirmación, el servidor presenta el resumen y las opciones para decidir en el chat o en la aplicación.
             6. Prepara como máximo una operación por mensaje. Nunca inventes o alteres su identificador.
 
             # RESPUESTA

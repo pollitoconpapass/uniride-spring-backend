@@ -16,6 +16,7 @@ import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.confirmation.TipoOperacion;
 import com.uniride.agent.dto.*;
+import com.uniride.agent.dto.ResolucionConfirmacion.Estado;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.agent.tools.RutaAgentTools;
@@ -64,6 +65,7 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -123,10 +125,11 @@ class GroqProviderIntegrationTest {
     }
 
     private AgentService service(Duration timeout, Object otherTools) {
-        return service(timeout, otherTools, Clock.fixed(NOW, ZoneId.of("America/Lima")));
+        return service(timeout, otherTools, mock(ConfirmationService.class));
     }
 
-    private AgentService service(Duration timeout, Object otherTools, Clock clock) {
+    private AgentService service(Duration timeout, Object otherTools, ConfirmationService confirmations) {
+        Clock clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
         var options = OpenAiChatOptions.builder()
                 .baseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/openai/v1")
                 .apiKey("simulated-provider-test-only")
@@ -139,13 +142,14 @@ class GroqProviderIntegrationTest {
                 .build();
         var model = OpenAiChatModel.builder().options(options).build();
         ChatClient client = new AgentConfig().chatClient(ChatClient.builder(model));
-        return new AgentService(client, users, clock,
-                new AgentToolRegistry(mapper, ToolCallbacks.from(otherTools, new ReportesAgentTools(reports, users))));
+        var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(otherTools, new ReportesAgentTools(reports, users)));
+        return new AgentService(client, users, clock, registry, new AgentConversationStore(clock), confirmations);
     }
 
     private ConfirmationService useCompensationTools() {
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations),
+                confirmations);
         return confirmations;
     }
 
@@ -153,6 +157,12 @@ class GroqProviderIntegrationTest {
         var confirmation = new ConfirmacionResumen(UUID.randomUUID(), type, EstadoConfirmacion.PENDIENTE, summary,
                 mapper.valueToTree(parameters), NOW.plusSeconds(600), null);
         return new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, summary, confirmation);
+    }
+
+    private ConfirmacionResumen resolved(OperacionResumen proposal, EstadoConfirmacion state, OperacionResumen result) {
+        var receipt = proposal.confirmacion();
+        return new ConfirmacionResumen(receipt.id(), receipt.tipo(), state, receipt.resumen(), receipt.parametros(),
+                receipt.expira(), result);
     }
 
     @Test
@@ -213,10 +223,10 @@ class GroqProviderIntegrationTest {
     void compensationUpdateUsesThePreparationReceiptAndAcceptsNoResourceId() {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
         String detalle = "Cambiar la descripción de Yape a Yape personal. ¿Confirmas esta operación?";
         when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal"))
-                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, detalle));
+                .thenReturn(pending(TipoOperacion.ACTUALIZAR_METODO, detalle, Map.of("descripcion", "Yape personal")));
         enqueue(200, toolCall("actualizarMetodoCompensacion", """
                 {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
                 """));
@@ -228,7 +238,8 @@ class GroqProviderIntegrationTest {
 
         ChatResponse response = service.chat("owner", "Cambia la descripción de mi método Yape a Yape personal");
 
-        assertThat(response.message()).isEqualTo(detalle).doesNotContain("Inventado", "Otra descripción", "BITCOIN");
+        assertThat(response.message()).contains(detalle, "aplicación", "sí", "confirmo", "cancelar")
+                .doesNotContain("Inventado", "Otra descripción", "BITCOIN");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
         assertThat(requests).hasSize(3);
@@ -251,17 +262,17 @@ class GroqProviderIntegrationTest {
     void compensationStateStaysPendingFollowingTheSelectedBoolean(boolean active) {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
         String detalle = (active ? "Activar" : "Desactivar") + " el método de gasolina. ¿Confirmas esta operación?";
         when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active))
-                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, detalle));
+                .thenReturn(pending(TipoOperacion.CAMBIAR_ESTADO_METODO, detalle, Map.of("activo", active)));
         enqueue(200, toolCall("cambiarEstadoMetodoCompensacion",
                 "{\"tipoActual\":\"GASOLINA\",\"activo\":" + active + "}"));
         enqueue(200, completion("El cambio ya se realizó.", "stop"));
 
         ChatResponse response = service.chat("owner", active ? "Activa mi método de gasolina" : "Desactiva mi método de gasolina");
 
-        assertThat(response.message()).isEqualTo(detalle);
+        assertThat(response.message()).contains(detalle, "aplicación", "sí", "confirmo", "cancelar");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo)
                 .containsExactly("cambiarEstadoMetodoCompensacion");
@@ -275,7 +286,7 @@ class GroqProviderIntegrationTest {
     void associatedCompensationMethodCannotBeDeletedOrAutomaticallyDeactivated() {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
         String detalle = "No puedes eliminar este método porque tiene solicitudes asociadas. Puedes desactivarlo.";
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes"))
                 .thenThrow(new BusinessException(detalle));
@@ -390,11 +401,11 @@ class GroqProviderIntegrationTest {
 
         assertThat(updated.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(updated.operacion().confirmacion()).isEqualTo(edit.confirmacion());
-        assertThat(updated.message()).contains("Yape personal", "Confirma desde la aplicación").doesNotContain("Ya cambié");
+        assertThat(updated.message()).contains("Yape personal", "aplicación", "confirmo").doesNotContain("Ya cambié");
         assertThat(updated.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
         assertThat(deleted.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(deleted.operacion().confirmacion()).isEqualTo(deletion.confirmacion());
-        assertThat(deleted.message()).contains("FAVOR", "Confirma desde la aplicación").doesNotContain("Ya eliminé");
+        assertThat(deleted.message()).contains("FAVOR", "aplicación", "confirmo").doesNotContain("Ya eliminé");
         assertThat(deleted.resultados()).extracting(ResultadoAgente::tipo).containsExactly("eliminarMetodoCompensacion");
         assertThat(deleted.conversationId()).isEqualTo(updated.conversationId());
         assertThat(requests).hasSize(2);
@@ -662,11 +673,16 @@ class GroqProviderIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"Sí", "Confirmo", "Está bien, hazlo", "Procede", "Acepto la operación"})
-    void affirmationAfterPendingDeleteOnlyExplainsHttpConfirmation(String affirmation) {
+    @ValueSource(strings = {"Sí", "Si", "Confirmo", "Sí, confirmo", "Confirmar", "Hazlo", "Procede", "Adelante",
+            "De   acuerdo", "Está bien, hazlo", "  ¡ACEPTO LA OPERACION!  "})
+    void affirmationUsesThePersistedReceiptAndDoesNotCallTheProviderAgain(String affirmation) {
         var confirmations = useCompensationTools();
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        var result = new OperacionResumen(EstadoOperacion.EXITO, 47L, "Método Yape eliminado.");
+        var receipt = resolved(proposal, EstadoConfirmacion.EJECUTADA, result);
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
+        when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), true))
+                .thenReturn(new ResolucionConfirmacion(Estado.EJECUTADA, receipt));
         enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
@@ -675,37 +691,101 @@ class GroqProviderIntegrationTest {
 
         assertThat(pending.operacion().confirmacion().id()).isEqualTo(proposal.confirmacion().id());
         assertThat(followUp.conversationId()).isEqualTo(pending.conversationId());
-        assertThat(followUp.operacion()).isNull();
+        assertThat(followUp.operacion()).isEqualTo(result);
+        assertThat(followUp.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.EJECUTADA, receipt));
         assertThat(followUp.resultados()).isEmpty();
-        assertThat(followUp.message()).contains("POST /api/agent/confirmaciones/" + proposal.confirmacion().id() + "/confirmar");
+        assertThat(followUp.message()).contains(result.detalle());
+
+        ChatResponse repeated = service.chat("Sí", pending.conversationId());
+        assertThat(repeated.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
+        assertThat(repeated.operacion()).isNull();
         assertThat(requests).hasSize(2);
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), true);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"No", "No, gracias", "Cancelar", "Cancela la operación", "Mejor no", "No confirmo",
+            "No lo hagas", "Déjalo así", "Prefiero cancelar"})
+    void rejectionCancelsThePersistedProposalWithoutCallingGroq(String rejection) {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        var receipt = resolved(proposal, EstadoConfirmacion.CANCELADA, null);
+        when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
+        when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), false))
+                .thenReturn(new ResolucionConfirmacion(Estado.CANCELADA, receipt));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
+        ChatResponse followUp = service.chat(rejection, prepared.conversationId());
+
+        assertThat(followUp.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.CANCELADA, receipt));
+        assertThat(followUp.message()).containsIgnoringCase("cancel");
+        assertThat(followUp.conversationId()).isEqualTo(prepared.conversationId());
+        assertThat(followUp.operacion()).isNull();
+        assertThat(followUp.resultados()).isEmpty();
+
+        ChatResponse afterCancellation = service.chat("Sí", prepared.conversationId());
+        assertThat(afterCancellation.resolucionConfirmacion())
+                .isEqualTo(new ResolucionConfirmacion(Estado.YA_CANCELADA, receipt));
+        assertThat(afterCancellation.operacion()).isNull();
+        assertThat(requests).hasSize(1);
+        verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), false);
         verifyNoMoreInteractions(confirmations);
     }
 
     @Test
-    void affirmationUsesStatusEndpointWhenThePreviousProposalDeadlineHasPassed() {
-        var confirmations = mock(ConfirmationService.class);
-        var clock = mock(Clock.class);
-        when(clock.instant()).thenReturn(NOW);
-        when(clock.getZone()).thenReturn(ZoneId.of("America/Lima"));
-        when(clock.withZone(any())).thenReturn(clock);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations), clock);
+    void confirmationSurfacesPersistedExpirationWithoutCallingGroq() {
+        var confirmations = useCompensationTools();
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        var receipt = resolved(proposal, EstadoConfirmacion.EXPIRADA, null);
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
-        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
+        when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), true))
+                .thenReturn(new ResolucionConfirmacion(Estado.EXPIRADA, receipt));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
-        ChatResponse pending = service.chat("Elimina mi método Yape", (UUID) null);
-        when(clock.instant()).thenReturn(proposal.confirmacion().expira().plusSeconds(1));
-        ChatResponse followUp = service.chat("Sí", pending.conversationId());
+        ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
+        ChatResponse followUp = service.chat("Sí", prepared.conversationId());
 
-        assertThat(followUp.message()).contains("plazo", "GET /api/agent/confirmaciones/" + proposal.confirmacion().id())
-                .doesNotContain("/confirmar", "sigue pendiente");
-        assertThat(followUp.conversationId()).isEqualTo(pending.conversationId());
+        assertThat(followUp.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.EXPIRADA, receipt));
+        assertThat(followUp.conversationId()).isEqualTo(prepared.conversationId());
         assertThat(followUp.operacion()).isNull();
-        assertThat(requests).hasSize(2);
+        assertThat(requests).hasSize(1);
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), true);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void anUncertainResultKeepsTheSameIdAndOnlyRetriesOnAnotherExplicitAnswer() {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        var id = proposal.confirmacion().id();
+        var result = new OperacionResumen(EstadoOperacion.EXITO, 47L, "Método Yape eliminado.");
+        var receipt = resolved(proposal, EstadoConfirmacion.EJECUTADA, result);
+        when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
+        when(confirmations.resolverDesdeChat(id, true))
+                .thenThrow(new TransientDataAccessResourceException("internal database fixture"))
+                .thenReturn(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
+        ChatResponse uncertain = service.chat("Sí", prepared.conversationId());
+
+        assertThat(uncertain.operacion()).isNull();
+        assertThat(uncertain.resolucionConfirmacion().estado()).isEqualTo(Estado.RESULTADO_INCIERTO);
+        assertThat(uncertain.advertencia().codigo()).isEqualTo("CONFIRMATION_RESULT_UNCERTAIN");
+        assertThat(uncertain.message()).contains(id.toString()).doesNotContain("internal database fixture");
+        verify(confirmations).resolverDesdeChat(id, true);
+
+        ChatResponse repeated = service.chat("Sí", prepared.conversationId());
+        assertThat(repeated.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
+        assertThat(repeated.operacion()).isNull();
+        assertThat(requests).hasSize(1);
+        verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verify(confirmations, times(2)).resolverDesdeChat(id, true);
         verifyNoMoreInteractions(confirmations);
     }
 
@@ -730,10 +810,46 @@ class GroqProviderIntegrationTest {
         for (ChatResponse affirmation : List.of(otherConversation, afterAnotherTopic)) {
             assertThat(affirmation.operacion()).isNull();
             assertThat(affirmation.resultados()).isEmpty();
-            assertThat(affirmation.message()).containsIgnoringCase("confirm").doesNotContain(proposal.confirmacion().id().toString());
+            assertThat(affirmation.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null));
+            assertThat(affirmation.message()).doesNotContain(proposal.confirmacion().id().toString());
         }
         assertThat(requests).hasSize(2);
         verify(reports).resumen();
+        verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Sí", "No"})
+    void anAnswerWithoutAPendingProposalSkipsTheProviderAndConfirmationService(String answer) {
+        var confirmations = useCompensationTools();
+
+        ChatResponse response = service.chat(answer, (UUID) null);
+
+        assertThat(response.conversationId()).isNotNull();
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null));
+        assertThat(requests).isEmpty();
+        verifyNoInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Sí, pero cambia la descripción", "No, mejor cambia el tipo", "¿Confirmo?",
+            "Sí, si se puede editar después"})
+    void conditionalAnswersRequireClarificationAndCannotTriggerAnotherOperation(String answer) {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
+        ChatResponse clarification = service.chat(answer, prepared.conversationId());
+        ChatResponse detached = service.chat("Sí", prepared.conversationId());
+
+        assertThat(clarification.operacion()).isNull();
+        assertThat(clarification.resolucionConfirmacion().estado()).isEqualTo(Estado.ACLARACION_REQUERIDA);
+        assertThat(detached.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null));
+        assertThat(requests).hasSize(1);
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verifyNoMoreInteractions(confirmations);
     }
@@ -754,7 +870,7 @@ class GroqProviderIntegrationTest {
     void rejectsCompensationTypeOutsideTheToolEnumWithoutPreparingAnything() {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
         enqueue(200, toolCall("actualizarMetodoCompensacion", """
                 {"descripcionActual":"Yape","nuevoTipo":"FAVOR"}
                 """));
@@ -1047,7 +1163,8 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararRuta(any())).thenReturn(new OperacionResumen(
                 EstadoOperacion.CONFIRMACION_REQUERIDA, null, "La ruta está pendiente de confirmación.", pending));
         when(reports.rankingRutas()).thenReturn(rankedRoutes());
-        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users));
+        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
         enqueue(200, toolCall("crearRuta", """
                 {"origen":"Surco","capacidadMaxima":3,"puntosReferencia":"Parque"}
                 """));
@@ -1245,7 +1362,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.advertencia().codigo()).isEqualTo("PROVIDER_REJECTED");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
-        assertThat(response.message()).contains(proposal.confirmacion().resumen(), "Confirma desde la aplicación");
+        assertThat(response.message()).contains(proposal.confirmacion().resumen(), "aplicación", "confirmo");
         verify(confirmations).prepararMetodo(request);
         verifyNoMoreInteractions(confirmations);
     }

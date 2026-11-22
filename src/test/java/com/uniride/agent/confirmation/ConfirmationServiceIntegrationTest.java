@@ -3,7 +3,11 @@ package com.uniride.agent.confirmation;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.uniride.agent.AgentConversationFixture;
+import com.uniride.agent.AgentConversationStore;
 import com.uniride.agent.AgentService;
 import com.uniride.agent.AgentToolRegistry;
 import com.uniride.agent.dto.*;
@@ -12,13 +16,16 @@ import com.uniride.entities.*;
 import com.uniride.enums.*;
 import com.uniride.exceptions.*;
 import com.uniride.repositories.*;
+import com.uniride.security.JwtService;
 import com.uniride.services.*;
+import jakarta.servlet.Filter;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
@@ -27,12 +34,20 @@ import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultMatcher;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.context.WebApplicationContext;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Runs against the isolated test datasource only, with no model/provider calls. */
@@ -40,6 +55,10 @@ import tools.jackson.databind.ObjectMapper;
 class ConfirmationServiceIntegrationTest {
     @Autowired ConfirmationService service;
     @Autowired AgentToolRegistry agentTools;
+    @Autowired AgentConversationStore conversations;
+    @Autowired JwtService jwt;
+    @Autowired WebApplicationContext web;
+    @Autowired @Qualifier("springSecurityFilterChain") Filter securityChain;
     @Autowired UsuarioService userService;
     @Autowired ConfirmationRepository confirmations;
     @Autowired UsuarioRepository users;
@@ -54,6 +73,8 @@ class ConfirmationServiceIntegrationTest {
     @Autowired PerfilRolService roles;
     @Autowired Clock clock;
     @MockitoBean NotificacionService notifications;
+    @MockitoBean ChatClient chatClient;
+    private MockMvc mvc;
     Usuario driver;
     Usuario passenger;
 
@@ -67,9 +88,12 @@ class ConfirmationServiceIntegrationTest {
         authenticate(driver);
     }
 
-    @AfterEach void clearIdentity() { SecurityContextHolder.clearContext(); }
+    @AfterEach void clearIdentity() {
+        SecurityContextHolder.clearContext();
+        verifyNoInteractions(chatClient);
+    }
 
-    @Test void recoveredActivationAndConversationalAcceptanceLeaveTheMethodUnchangedUntilExplicitConfirmation() {
+    @Test void recoveredActivationStaysPendingUntilTheUserConfirmsItInChat() {
         var original = metodo(driver, TipoCompensacion.GASOLINA, "glp", false);
         var providerCalls = new AtomicInteger();
         ChatModel model = prompt -> {
@@ -78,7 +102,8 @@ class ConfirmationServiceIntegrationTest {
                     ChatGenerationMetadata.builder().finishReason("STOP").build());
             return new org.springframework.ai.chat.model.ChatResponse(List.of(generation));
         };
-        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools);
+        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools,
+                conversations, service);
         long before = confirmations.count();
 
         var proposal = agent.chat("Activa mi método de compensación gasolina", (UUID) null);
@@ -87,20 +112,18 @@ class ConfirmationServiceIntegrationTest {
         assertThat(pending.tipo()).isEqualTo(TipoOperacion.CAMBIAR_ESTADO_METODO);
         assertThat(pending.parametros().path("activo").asBoolean()).isTrue();
         assertThat(proposal.resultados()).extracting(ResultadoAgente::tipo).containsExactly("cambiarEstadoMetodoCompensacion");
-        assertThat(proposal.message()).contains("glp", "Confirma desde la aplicación").doesNotContain("¿Prefieres");
-
-        var acceptance = agent.chat("sí", proposal.conversationId());
-        assertThat(acceptance.conversationId()).isEqualTo(proposal.conversationId());
-        assertThat(acceptance.operacion()).isNull();
-        assertThat(acceptance.message()).contains("POST /api/agent/confirmaciones/" + pending.id() + "/confirmar");
-        assertThat(providerCalls).hasValue(1);
-        assertThat(confirmations.count()).isEqualTo(before + 1);
+        assertThat(proposal.message()).contains("glp", "sí", "cancelar").doesNotContain("¿Prefieres");
         assertThat(confirmations.findById(pending.id()).orElseThrow().getEstado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
         assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "glp", false);
         verifyNoInteractions(notifications);
 
-        var confirmed = service.confirmar(pending.id());
-        assertThat(confirmed.estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        var acceptance = agent.chat("sí", proposal.conversationId());
+        assertThat(acceptance.conversationId()).isEqualTo(proposal.conversationId());
+        assertThat(acceptance.resolucionConfirmacion().estado().name()).isEqualTo("EJECUTADA");
+        assertThat(acceptance.operacion()).isEqualTo(service.obtener(pending.id()).resultado());
+        assertThat(acceptance.message()).isEqualTo(acceptance.operacion().detalle());
+        assertThat(providerCalls).hasValue(1);
+        assertThat(confirmations.count()).isEqualTo(before + 1);
         assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "glp", true);
         verify(notifications).notificar(any(), eq(TipoNotificacion.EXITO), eq("Método de compensación actualizado"), anyString());
     }
@@ -117,7 +140,8 @@ class ConfirmationServiceIntegrationTest {
         ChatModel model = prompt -> new org.springframework.ai.chat.model.ChatResponse(List.of(
                 new Generation(new AssistantMessage("Operación ejecutada."),
                         ChatGenerationMetadata.builder().finishReason("STOP").build())));
-        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools);
+        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools,
+                conversations, service);
         long before = confirmations.count();
 
         var question = agent.chat("Cambia la descripción de mi método Yape", (UUID) null);
@@ -135,21 +159,332 @@ class ConfirmationServiceIntegrationTest {
         var deletePending = deletion.operacion().confirmacion();
         assertThat(deletePending.tipo()).isEqualTo(TipoOperacion.ELIMINAR_METODO);
         assertThat(deletePending.resumen()).contains("Apuntes");
-        var acceptance = agent.chat("sí", deletion.conversationId());
-        assertThat(acceptance.operacion()).isNull();
-        assertThat(acceptance.message()).contains(deletePending.id().toString()).doesNotContain(editPending.id().toString());
-
         assertThat(confirmations.count()).isEqualTo(before + 2);
         assertMetodo(yape.getId(), TipoCompensacion.DINERO, "Yape", false);
         assertThat(methods.existsById(favor.getId())).isTrue();
         assertThat(methods.existsById(foreign.getId())).isTrue();
         verifyNoInteractions(notifications);
 
+        var acceptance = agent.chat("sí", deletion.conversationId());
+        assertThat(acceptance.resolucionConfirmacion().estado().name()).isEqualTo("EJECUTADA");
+        assertThat(acceptance.resolucionConfirmacion().confirmacion().id()).isEqualTo(deletePending.id());
+        assertThat(acceptance.operacion().id()).isEqualTo(favor.getId());
+        assertThat(service.obtener(editPending.id()).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
         assertThat(service.confirmar(editPending.id()).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
-        assertThat(service.confirmar(deletePending.id()).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
         assertMetodo(yape.getId(), TipoCompensacion.DINERO, "Yape personal", false);
         assertThat(methods.existsById(favor.getId())).isFalse();
         assertThat(methods.existsById(foreign.getId())).isTrue();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "CREAR_RUTA, sí",
+        "CREAR_VIAJE, confirmo",
+        "SOLICITAR_UNIRSE, adelante",
+        "REGISTRAR_METODO, 'sí, confirmo'",
+        "ACTUALIZAR_METODO, hazlo",
+        "CAMBIAR_ESTADO_METODO, procede",
+        "ELIMINAR_METODO, confirmar"
+    })
+    void acceptsAllPersistedOperationTypesInChat(TipoOperacion type, String response) throws Exception {
+        Usuario owner = type == TipoOperacion.SOLICITAR_UNIRSE ? passenger : driver;
+        authenticate(owner);
+        var original = switch (type) {
+            case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO ->
+                    metodo(owner, TipoCompensacion.DINERO, "Yape", true);
+            default -> null;
+        };
+        var prepared = switch (type) {
+            case CREAR_RUTA -> service.prepararRuta(routeRequest());
+            case CREAR_VIAJE -> service.prepararViaje(route().getId(), tripRequest());
+            case SOLICITAR_UNIRSE -> service.prepararSolicitud(trip().getId(),
+                    new SolicitudRequest(null, TipoCompensacion.GASOLINA, null));
+            case REGISTRAR_METODO -> service.prepararMetodo(
+                    new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Compartir apuntes", true));
+            case ACTUALIZAR_METODO -> service.prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
+            case CAMBIAR_ESTADO_METODO -> service.prepararEstadoMetodo(null, "Yape", false);
+            case ELIMINAR_METODO -> service.prepararEliminacionMetodo(null, "Yape");
+        };
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(owner, prepared);
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        verifyNoInteractions(notifications);
+
+        var executed = chat(owner, conversation, response, status().isOk());
+
+        assertChatResolution(executed, conversation, "EJECUTADA", id);
+        var persisted = service.obtener(id);
+        assertThat(persisted.estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertThat(mapper.treeToValue(executed.path("operacion"), OperacionResumen.class)).isEqualTo(persisted.resultado());
+        assertThat(executed.path("message").asText()).isEqualTo(persisted.resultado().detalle());
+        Long resource = persisted.resultado().id();
+        switch (type) {
+            case CREAR_RUTA -> assertThat(routes.findById(resource).orElseThrow().getOrigen()).isEqualTo("Surco");
+            case CREAR_VIAJE -> assertThat(trips.findById(resource).orElseThrow().getFecha()).isEqualTo(tripRequest().fecha());
+            case SOLICITAR_UNIRSE -> assertThat(requests.findById(resource).orElseThrow().getEstado())
+                    .isEqualTo(EstadoSolicitud.PENDIENTE);
+            case REGISTRAR_METODO -> assertMetodo(resource, TipoCompensacion.FAVOR, "Compartir apuntes", true);
+            case ACTUALIZAR_METODO -> assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape personal", true);
+            case CAMBIAR_ESTADO_METODO -> assertMetodo(original.getId(), TipoCompensacion.DINERO, "Yape", false);
+            case ELIMINAR_METODO -> assertThat(methods.existsById(original.getId())).isFalse();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"no", "No, gracias", "cancelar"})
+    void cancelsInChatAndPreventsConfirmationFromEitherChannel(String response) throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        long before = routes.count();
+
+        assertChatResolution(chat(driver, conversation, response, status().isOk()), conversation, "CANCELADA", id);
+        assertChatResolution(chat(driver, conversation, "sí", status().isOk()), conversation, "YA_CANCELADA", id);
+        assertChatResolution(chat(driver, conversation, "cancelar", status().isOk()), conversation, "YA_CANCELADA", id);
+        confirmHttp(driver, id, status().isConflict());
+
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.CANCELADA);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void observesAnHttpCancellationWhenTheConversationStillHasTheProposal() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        long before = routes.count();
+
+        var cancelled = callWithJwt(driver, post("/api/agent/confirmaciones/{id}/cancelar", id).contextPath("/api"),
+                status().isOk());
+        assertThat(cancelled.path("estado").asText()).isEqualTo("CANCELADA");
+        var followUp = chat(driver, conversation, "confirmo", status().isOk());
+
+        assertChatResolution(followUp, conversation, "YA_CANCELADA", id);
+        assertThat(followUp.path("resolucionConfirmacion").path("confirmacion")).isEqualTo(cancelled);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void replaysTheCommittedReceiptAcrossChatAndHttpWithoutAnotherWrite(boolean chatFirst) throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        long before = routes.count();
+        JsonNode executed;
+        if (chatFirst) {
+            var chat = chat(driver, conversation, "sí", status().isOk());
+            assertChatResolution(chat, conversation, "EJECUTADA", id);
+            executed = chat.path("resolucionConfirmacion").path("confirmacion");
+        } else {
+            executed = confirmHttp(driver, id, status().isOk());
+        }
+        var replay = chat(driver, conversation, "sí", status().isOk());
+        assertChatResolution(replay, conversation, "YA_EJECUTADA", id);
+        assertThat(replay.path("resolucionConfirmacion").path("confirmacion")).isEqualTo(executed);
+        assertThat(confirmHttp(driver, id, status().isOk())).isEqualTo(executed);
+        assertThat(routes.count()).isEqualTo(before + 1);
+        verify(notifications, times(1)).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void expiresInChatWithoutExecutingTheOperation() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        var entity = confirmations.findById(id).orElseThrow();
+        entity.setCreada(clock.instant().minusSeconds(1200));
+        entity.setExpira(clock.instant().minusSeconds(1));
+        confirmations.save(entity);
+        long before = routes.count();
+
+        assertChatResolution(chat(driver, conversation, "sí", status().isOk()), conversation, "EXPIRADA", id);
+        assertThat(confirmHttp(driver, id, status().isGone()).path("estado").asText()).isEqualTo("EXPIRADA");
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void aDecisionRequiresJwtAndTheExactOwnedConversation() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        UUID otherConversation;
+        try (var other = conversations.open(driver.getId(), driver.getRolPrincipal(), null)) {
+            otherConversation = other.id();
+        }
+        long before = routes.count();
+
+        chat(null, conversation, "sí", status().isForbidden());
+        chat(passenger, conversation, "sí", status().isNotFound());
+        assertChatResolution(chat(driver, otherConversation, "sí", status().isOk()), otherConversation, "SIN_PENDIENTE", null);
+        assertThat(chat(driver, null, "no", status().isOk()).path("resolucionConfirmacion").path("estado").asText())
+                .isEqualTo("SIN_PENDIENTE");
+
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void chatDecisionRejectsAConversationFromThePreviousRole() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID conversation = bindProposal(driver, prepared);
+        driver.setRolPrincipal(Rol.PASAJERO);
+        users.save(driver);
+        long before = routes.count();
+
+        chat(driver, conversation, "sí", status().isConflict());
+
+        assertThat(service.obtener(prepared.confirmacion().id()).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void ambiguousConsentAndAChangeOfSubjectCannotExecuteThePendingOperation() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        long before = routes.count();
+
+        var clarification = chat(driver, conversation, "sí, pero cambia la fecha", status().isOk());
+        assertThat(clarification.path("resolucionConfirmacion").path("estado").asText())
+                .isEqualTo("ACLARACION_REQUERIDA");
+        assertThat(clarification.path("operacion").isNull()).isTrue();
+        var otherTopic = chat(driver, conversation, "¿Qué tipos de compensación existen?", status().isOk());
+        assertThat(otherTopic.path("message").asText()).contains("DINERO", "GASOLINA", "FAVOR");
+        assertChatResolution(chat(driver, conversation, "sí", status().isOk()), conversation, "SIN_PENDIENTE", null);
+
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void theNextPreparedOperationReplacesAnExecutedReference() throws Exception {
+        var first = service.prepararRuta(routeRequest());
+        UUID conversation = bindProposal(driver, first);
+        UUID firstId = first.confirmacion().id();
+        long before = routes.count();
+        assertChatResolution(chat(driver, conversation, "sí", status().isOk()), conversation, "EJECUTADA", firstId);
+
+        var second = service.prepararRuta(new RutaRequest("Miraflores", 3, "Parque", null, null));
+        UUID secondId = second.confirmacion().id();
+        AgentConversationFixture.recordProposal(conversations, driver, conversation, second);
+        var executed = chat(driver, conversation, "sí", status().isOk());
+
+        assertChatResolution(executed, conversation, "EJECUTADA", secondId);
+        assertThat(executed.path("message").asText()).contains("Miraflores");
+        assertThat(service.obtener(firstId).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertThat(routes.count()).isEqualTo(before + 2);
+        verify(notifications, times(2)).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void concurrentChatAndHttpDecisionsExecuteOnceWithOneCommittedReceipt() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        // Build MockMvc on the calling thread before sharing it across requests.
+        mvc();
+        long before = routes.count();
+        var chatWrote = new CountDownLatch(1);
+        var httpStarted = new CountDownLatch(1);
+        var commit = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            chatWrote.countDown();
+            await(commit);
+            return null;
+        }).when(notifications).notificar(any(), any(), anyString(), anyString());
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var viaChat = pool.submit(() -> chat(driver, conversation, "sí", status().isOk()));
+            try {
+                await(chatWrote);
+                var viaHttp = pool.submit(() -> {
+                    httpStarted.countDown();
+                    return confirmHttp(driver, id, status().isOk());
+                });
+                await(httpStarted);
+                assertThatThrownBy(() -> viaHttp.get(200, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                commit.countDown();
+
+                var chatResponse = viaChat.get(10, TimeUnit.SECONDS);
+                assertChatResolution(chatResponse, conversation, "EJECUTADA", id);
+                assertThat(chatResponse.path("resolucionConfirmacion").path("confirmacion"))
+                        .isEqualTo(viaHttp.get(10, TimeUnit.SECONDS));
+            } finally {
+                commit.countDown();
+            }
+        }
+
+        assertThat(routes.count()).isEqualTo(before + 1);
+        verify(notifications, times(1)).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void rejectsAnObsoleteSnapshotInChatWithoutWriting() throws Exception {
+        var method = metodo(driver, TipoCompensacion.DINERO, "Yape", true);
+        var prepared = service.prepararEliminacionMetodo(null, "Yape");
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        methodService.actualizar(method.getId(), new MetodoCompensacionRequest(TipoCompensacion.DINERO, "Yape REST", true));
+
+        var rejected = chat(driver, conversation, "sí", status().isOk());
+
+        assertChatResolution(rejected, conversation, "RECHAZADA", null);
+        assertThat(rejected.path("message").asText()).contains("cambiaron");
+        assertThat(rejected.path("advertencia").path("codigo").asText()).isEqualTo("CONFIRMATION_BUSINESS_CONFLICT");
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertMetodo(method.getId(), TipoCompensacion.DINERO, "Yape REST", true);
+        verify(notifications, times(1)).notificar(any(), any(), anyString(), anyString());
+    }
+
+    @Test void rejectsALateCapacityConflictInChatWithoutSendingARequest() throws Exception {
+        Viaje trip = trip();
+        authenticate(passenger);
+        var prepared = service.prepararSolicitud(trip.getId(), new SolicitudRequest(null, TipoCompensacion.DINERO, null));
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(passenger, prepared);
+        trip.setPasajeros(4);
+        trips.save(trip);
+        long before = requests.count();
+
+        var rejected = chat(passenger, conversation, "sí", status().isOk());
+
+        assertChatResolution(rejected, conversation, "RECHAZADA", null);
+        assertThat(rejected.path("message").asText()).contains("cupos");
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(requests.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void rejectsAResourceThatDisappearedAfterPreparation() throws Exception {
+        Ruta ruta = route();
+        var prepared = service.prepararViaje(ruta.getId(), tripRequest());
+        UUID conversation = bindProposal(driver, prepared);
+        routes.deleteById(ruta.getId());
+        long before = trips.count();
+
+        var rejected = chat(driver, conversation, "sí", status().isOk());
+
+        assertChatResolution(rejected, conversation, "RECHAZADA", null);
+        assertThat(rejected.path("advertencia").path("codigo").asText()).isEqualTo("CONFIRMATION_NOT_FOUND");
+        assertThat(service.obtener(prepared.confirmacion().id()).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(trips.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test void validatesThePreparedParametersAgainBeforeExecutionInChat() throws Exception {
+        var prepared = service.prepararRuta(routeRequest());
+        UUID id = prepared.confirmacion().id();
+        UUID conversation = bindProposal(driver, prepared);
+        var persisted = confirmations.findById(id).orElseThrow();
+        persisted.setParametros(mapper.writeValueAsString(new RutaRequest("", 0, "", null, null)));
+        confirmations.save(persisted);
+        long before = routes.count();
+
+        var rejected = chat(driver, conversation, "sí", status().isOk());
+
+        assertChatResolution(rejected, conversation, "RECHAZADA", null);
+        assertThat(rejected.path("advertencia").path("codigo").asText()).isEqualTo("CONFIRMATION_INVALID");
+        assertThat(service.obtener(id).estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(routes.count()).isEqualTo(before);
+        verifyNoInteractions(notifications);
     }
 
     @Test void preparesRouteWithoutBusinessWritesAndKeepsExactParameters() {
@@ -760,6 +1095,47 @@ class ConfirmationServiceIntegrationTest {
         assertThat(List.of(service.obtener(firstId).estado(), service.obtener(secondId).estado()))
                 .containsExactlyInAnyOrder(EstadoConfirmacion.EJECUTADA, EstadoConfirmacion.PENDIENTE);
         verify(notifications).notificar(any(), any(), anyString(), anyString());
+    }
+
+    private UUID bindProposal(Usuario owner, OperacionResumen proposal) {
+        return AgentConversationFixture.recordProposal(conversations, owner, null, proposal);
+    }
+
+    private MockMvc mvc() {
+        if (mvc == null) mvc = MockMvcBuilders.webAppContextSetup(web).addFilters(securityChain).build();
+        return mvc;
+    }
+
+    private JsonNode chat(Usuario user, UUID conversation, String message, ResultMatcher expected) throws Exception {
+        return callWithJwt(user, post("/api/agent/chat").contextPath("/api").contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsBytes(new ChatRequest(message, conversation))), expected);
+    }
+
+    private JsonNode confirmHttp(Usuario user, UUID id, ResultMatcher expected) throws Exception {
+        return callWithJwt(user, post("/api/agent/confirmaciones/{id}/confirmar", id).contextPath("/api"), expected);
+    }
+
+    private JsonNode callWithJwt(Usuario user, MockHttpServletRequestBuilder request, ResultMatcher expected) throws Exception {
+        if (user != null) request.header("Authorization", "Bearer " + jwt.generarToken(user.getCorreoInstitucional()));
+        var priorIdentity = SecurityContextHolder.getContext();
+        SecurityContextHolder.clearContext();
+        try {
+            var result = mvc().perform(request).andExpect(expected).andReturn().getResponse();
+            return result.getContentAsByteArray().length == 0
+                    ? mapper.createObjectNode() : mapper.readTree(result.getContentAsByteArray());
+        } finally {
+            SecurityContextHolder.setContext(priorIdentity);
+        }
+    }
+
+    private void assertChatResolution(JsonNode response, UUID conversation, String state, UUID confirmation) {
+        assertThat(response.path("conversationId").asText()).isEqualTo(conversation.toString());
+        var resolution = response.path("resolucionConfirmacion");
+        assertThat(resolution.path("estado").asText()).isEqualTo(state);
+        if (confirmation != null) {
+            assertThat(resolution.path("confirmacion").path("id").asText()).isEqualTo(confirmation.toString());
+        }
+        if (!state.equals("EJECUTADA")) assertThat(response.path("operacion").isNull()).isTrue();
     }
 
     private String confirmarConcurrente(Usuario owner, UUID id, CountDownLatch start, String conflictMessage) {

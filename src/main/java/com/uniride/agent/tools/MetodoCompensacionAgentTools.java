@@ -31,7 +31,7 @@ public class MetodoCompensacionAgentTools {
 
     @Tool(description = """
             Prepara un método propio de compensación para confirmación. NO registra todavía el método.
-            Sirve para ambos roles. Solo el usuario confirma mediante el endpoint HTTP explícito.
+            Sirve para ambos roles. La propuesta requiere una decisión explícita del usuario.
             """)
     public OperacionResumen registrarMetodoCompensacion(
             @ToolParam(description = "Tipo DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion tipo,
@@ -40,7 +40,7 @@ public class MetodoCompensacionAgentTools {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
                     "Indica el tipo de compensación y una descripción.");
         try {
-            return orientarConfirmacion(confirmaciones.prepararMetodo(new MetodoCompensacionRequest(tipo, descripcion, true)));
+            return confirmaciones.prepararMetodo(new MetodoCompensacionRequest(tipo, descripcion, true));
         } catch (BusinessException | CamposInvalidosException | ResourceNotFoundException | NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
@@ -48,7 +48,7 @@ public class MetodoCompensacionAgentTools {
 
     @Tool(description = """
             Prepara editar el tipo o la descripción de un método propio. Identifica el método por tipo o descripción actual.
-            Proporciona solo los campos que el usuario pidió cambiar. Conserva el estado activo. Requiere confirmación HTTP.
+            Proporciona solo los campos que el usuario pidió cambiar. Conserva el estado activo.
             """)
     public OperacionResumen actualizarMetodoCompensacion(
             @ToolParam(description = "Tipo actual DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion tipoActual,
@@ -60,7 +60,7 @@ public class MetodoCompensacionAgentTools {
 
     @Tool(description = """
             Prepara activar o desactivar un método propio por tipo o descripción actual. Requiere un estado deseado explícito.
-            Conserva el tipo y la descripción. El usuario ejecuta el cambio mediante confirmación HTTP.
+            Conserva el tipo y la descripción.
             """)
     public OperacionResumen cambiarEstadoMetodoCompensacion(
             @ToolParam(description = "Tipo actual DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion tipoActual,
@@ -71,7 +71,7 @@ public class MetodoCompensacionAgentTools {
 
     @Tool(description = """
             Prepara eliminar un método propio por tipo o descripción actual si carece de solicitudes asociadas.
-            Úsala solo ante un pedido explícito de eliminación. El usuario ejecuta la acción mediante confirmación HTTP.
+            Úsala solo ante un pedido explícito de eliminación.
             """)
     public OperacionResumen eliminarMetodoCompensacion(
             @ToolParam(description = "Tipo actual DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion tipoActual,
@@ -81,7 +81,7 @@ public class MetodoCompensacionAgentTools {
 
     private OperacionResumen prepararGestion(Supplier<OperacionResumen> preparar) {
         try {
-            return orientarConfirmacion(preparar.get());
+            return preparar.get();
         } catch (ResourceNotFoundException e) {
             return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No encontré un método de compensación propio que coincida.");
         } catch (BusinessException | CamposInvalidosException | NoPermitidoException e) {
@@ -89,10 +89,4 @@ public class MetodoCompensacionAgentTools {
         }
     }
 
-    private OperacionResumen orientarConfirmacion(OperacionResumen propuesta) {
-        if (propuesta.estado() != EstadoOperacion.CONFIRMACION_REQUERIDA || propuesta.confirmacion() == null) return propuesta;
-        return new OperacionResumen(propuesta.estado(), propuesta.id(),
-                "Preparé la operación. " + propuesta.confirmacion().resumen()
-                        + " Confirma desde la aplicación para aplicar el cambio.", propuesta.confirmacion());
-    }
 }
