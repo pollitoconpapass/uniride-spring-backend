@@ -1,8 +1,16 @@
 package com.uniride.agent;
 
 import static org.assertj.core.api.Assertions.*;
+import com.uniride.agent.confirmation.EstadoConfirmacion;
+import com.uniride.agent.confirmation.TipoOperacion;
+import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.ConfirmacionResumen;
+import com.uniride.agent.dto.EstadoOperacion;
+import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.enums.Rol;
+import com.uniride.enums.TipoCompensacion;
 import java.time.*;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -62,6 +70,34 @@ class AgentConversationStoreTest {
                 .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("CONVERSATION_ROLE_CHANGED"));
         assertThatThrownBy(() -> new AgentConversationStore(clock).open(1L, Rol.CONDUCTOR, changed))
                 .isInstanceOf(AgentProviderException.class);
+    }
+
+    @Test void draftAndConfirmationReferenceStayWithTheAuthorizedSession() {
+        var draft = new CompensationIntent.Registro(TipoCompensacion.FAVOR, null);
+        Instant expiry = clock.instant.plus(Duration.ofMinutes(10));
+        var pending = new ConfirmacionResumen(UUID.randomUUID(), TipoOperacion.ELIMINAR_METODO,
+                EstadoConfirmacion.PENDIENTE, "Eliminar Yape.", null, expiry, null);
+        UUID id;
+        try (var lease = store.open(1L, Rol.PASAJERO, null)) {
+            id = lease.id();
+            lease.guardarBorrador(draft);
+            lease.complete("Elimina mi método Yape", new ChatResponse("Revisa la operación.", List.of(), List.of(),
+                    List.of(), new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Revisa la operación.", pending)));
+        }
+        assertThatThrownBy(() -> store.open(2L, Rol.PASAJERO, id))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.NOT_FOUND));
+        try (var lease = store.open(1L, Rol.PASAJERO, id)) {
+            assertThat(lease.borrador()).isEqualTo(draft);
+            assertThat(lease.confirmacionPendiente()).isEqualTo(pending.id());
+            assertThat(lease.confirmacionResuelta()).isNull();
+        }
+        assertThatThrownBy(() -> store.open(1L, Rol.CONDUCTOR, id))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("CONVERSATION_ROLE_CHANGED"));
+        try (var lease = store.open(1L, Rol.CONDUCTOR, null)) {
+            assertThat(lease.borrador()).isNull();
+            assertThat(lease.confirmacionPendiente()).isNull();
+            assertThat(lease.confirmacionResuelta()).isNull();
+        }
     }
 
     @Test void simultaneousMessagesDoNotMixAndLeaseReleasesOnFailure() {

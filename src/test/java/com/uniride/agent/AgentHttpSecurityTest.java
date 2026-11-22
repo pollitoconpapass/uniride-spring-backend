@@ -9,12 +9,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.ConfirmacionResumen;
+import com.uniride.agent.dto.EstadoOperacion;
+import com.uniride.agent.dto.OperacionResumen;
+import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.confirmation.*;
+import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
+import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
+import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
@@ -158,6 +164,7 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.metodosCompensacion").isEmpty())
                 .andExpect(jsonPath("$.operacion").isEmpty())
                 .andExpect(jsonPath("$.advertencia").isEmpty())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
                 .andExpect(jsonPath("$.conversationId").value(conversation.toString()))
                 .andExpect(jsonPath("$.resultados.length()").value(1))
                 .andExpect(jsonPath("$.resultados[0].tipo").value("consultarMisEstadisticas"))
@@ -184,8 +191,9 @@ class AgentHttpSecurityTest {
             return new org.springframework.ai.chat.model.ChatResponse(List.of(generation));
         };
         var registry = new AgentToolRegistry(new ObjectMapper(), ToolCallbacks.from(reportes));
-        var service = new AgentService(new AgentConfig().chatClient(ChatClient.builder(model)), usuarioService,
-                Clock.fixed(NOW, ZoneId.of("America/Lima")), registry);
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var service = new AgentService(new AgentConfig().chatClient(ChatClient.builder(model)), usuarioService, clock,
+                registry, new AgentConversationStore(clock), confirmations);
         when(agent.chat(eq("Ranking de mis rutas"), isNull(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), (UUID) null));
 
@@ -196,6 +204,66 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.resultados").doesNotExist());
         assertThat(providerCalls).hasValue(1);
         verifyNoInteractions(estadisticas, confirmations);
+    }
+
+    @Test
+    void textualConfirmationRequiresJwtAndSerializesThePersistedReceipt() throws Exception {
+        var mapper = new ObjectMapper();
+        var userService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var tools = new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations);
+        var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(tools));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var providerCalls = new AtomicInteger();
+        ChatModel model = prompt -> {
+            providerCalls.incrementAndGet();
+            return new org.springframework.ai.chat.model.ChatResponse(List.of(new Generation(
+                    new AssistantMessage("Puedo ayudarte con una operación de UniRide."),
+                    ChatGenerationMetadata.builder().finishReason("STOP").build())));
+        };
+        var service = new AgentService(ChatClient.builder(model).build(), userService, clock, registry,
+                new AgentConversationStore(clock), confirmations);
+        doAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)))
+                .when(agent).chat(anyString(), nullable(UUID.class));
+
+        UUID id = UUID.randomUUID();
+        var parameters = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
+        var pending = new ConfirmacionResumen(id, TipoOperacion.REGISTRAR_METODO, EstadoConfirmacion.PENDIENTE,
+                "Registrar método FAVOR «Apuntes de clase».", mapper.valueToTree(parameters), NOW.plusSeconds(600), null);
+        var result = new OperacionResumen(EstadoOperacion.EXITO, 61L, "Método FAVOR registrado.");
+        var executed = new ConfirmacionResumen(id, pending.tipo(), EstadoConfirmacion.EJECUTADA, pending.resumen(),
+                pending.parametros(), pending.expira(), result);
+        when(confirmations.prepararMetodo(parameters))
+                .thenReturn(new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, pending.resumen(), pending));
+        when(confirmations.resolverDesdeChat(id, true))
+                .thenReturn(new ResolucionConfirmacion(ResolucionConfirmacion.Estado.EJECUTADA, executed));
+
+        String preparation = mvc.perform(post("/agent/chat").header("Authorization", bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Registra un método FAVOR con descripción Apuntes de clase\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operacion.confirmacion.id").value(id.toString()))
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        String conversation = mapper.readTree(preparation).path("conversationId").asText();
+        String answer = "{\"message\":\"sí\",\"conversationId\":\"" + conversation + "\"}";
+
+        mvc.perform(post("/agent/chat").contentType(MediaType.APPLICATION_JSON).content(answer))
+                .andExpect(status().isForbidden());
+        verify(confirmations, never()).resolverDesdeChat(any(UUID.class), anyBoolean());
+
+        mvc.perform(post("/agent/chat").header("Authorization", bearer()).contentType(MediaType.APPLICATION_JSON).content(answer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversationId").value(conversation))
+                .andExpect(jsonPath("$.operacion.estado").value("EXITO"))
+                .andExpect(jsonPath("$.operacion.id").value(61))
+                .andExpect(jsonPath("$.resolucionConfirmacion.estado").value("EJECUTADA"))
+                .andExpect(jsonPath("$.resolucionConfirmacion.confirmacion.id").value(id.toString()))
+                .andExpect(jsonPath("$.resolucionConfirmacion.confirmacion.estado").value("EJECUTADA"))
+                .andExpect(jsonPath("$.resolucionConfirmacion.confirmacion.resultado.detalle").value(result.detalle()));
+        verify(confirmations).prepararMetodo(parameters);
+        verify(confirmations).resolverDesdeChat(id, true);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(providerCalls).hasValue(1);
     }
 
     @Test

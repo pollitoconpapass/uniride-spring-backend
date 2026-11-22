@@ -68,7 +68,7 @@ public class ViajeAgentTools {
     @Tool(description = """
             Prepara un viaje en una ruta propia del conductor. NO crea todavía el viaje.
             Identifica la ruta por origen y destino; si hay varias pregunta cuál desea.
-            Devuelve una confirmación que solo el usuario puede enviar al endpoint HTTP explícito.
+            Devuelve una propuesta que el servidor resuelve ante una decisión explícita del usuario.
             """)
     public OperacionResumen crearViaje(
             @ToolParam(description = "Origen de la ruta propia", required = false) String origenRuta,
@@ -99,7 +99,7 @@ public class ViajeAgentTools {
             Prepara una solicitud de cupo para el pasajero. NO envía todavía la solicitud.
             Identifica el viaje por origen, destino, día, fecha y hora, sin pedir IDs.
             Si hay varias coincidencias pide más datos. Requiere preferencia DINERO, GASOLINA o FAVOR.
-            Solo el usuario puede confirmar mediante el endpoint HTTP explícito.
+            La propuesta requiere una decisión explícita del usuario procesada por el servidor.
             """)
     public OperacionResumen solicitarUnirse(
             @ToolParam(description = "Origen", required = false) String origen,

@@ -1,5 +1,6 @@
 package com.uniride.agent;
 
+import com.uniride.agent.confirmation.EstadoConfirmacion;
 import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
 import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 
@@ -19,7 +20,11 @@ import tools.jackson.databind.ObjectMapper;
 /** Each turn owns its receipts and budget; nothing is shared between users or threads. */
 @Component
 public class AgentToolRegistry {
-    private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse", "registrarMetodoCompensacion");
+    private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
+            "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
+            "eliminarMetodoCompensacion");
+    private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
+            "actualizarMetodoCompensacion", "eliminarMetodoCompensacion");
     private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
@@ -37,10 +42,18 @@ public class AgentToolRegistry {
 
     public Turn newTurn() { return newTurn(null); }
 
-    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) { return new Turn(historialPdf); }
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf) {
+        return newTurn(historialPdf, CompensationIntent.classify("", null), false);
+    }
+
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
+        return new Turn(historialPdf, compensation, solicitudViaje);
+    }
 
     public final class Turn {
         private final HistorialPdfIntent.Solicitud historialPdf;
+        private final CompensationIntent.Decision compensation;
+        private final boolean solicitudViaje;
         private int calls;
         private final List<ResultadoAgente> results = new ArrayList<>();
         private final Map<String, String> receipts = new HashMap<>();
@@ -50,8 +63,10 @@ public class AgentToolRegistry {
         private OperacionResumen operation;
         private boolean prepared;
 
-        private Turn(HistorialPdfIntent.Solicitud historialPdf) {
+        private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
             this.historialPdf = historialPdf;
+            this.compensation = compensation;
+            this.solicitudViaje = solicitudViaje;
         }
 
         public ToolCallback[] callbacks() {
@@ -74,31 +89,51 @@ public class AgentToolRegistry {
 
         private void recoverRead(String name) {
             if (receipts.containsKey(name + NO_ARGUMENTS)) return;
+            execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
+        }
 
-            ToolCallback callback = Arrays.stream(AgentToolRegistry.this.callbacks)
+        synchronized void recoverCompensation() {
+            String name = compensation.allowedTool();
+            if (prepared || compensation.blockPreparations() || compensation.recoveryArgs() == null
+                    || name == null || !RECOVERABLE_COMPENSATION.contains(name)) return;
+            execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
+        }
+
+        private ToolCallback callback(String name) {
+            return Arrays.stream(AgentToolRegistry.this.callbacks)
                     .filter(candidate -> candidate.getToolDefinition().name().equals(name))
                     .findFirst()
-                    .orElseThrow(() -> invalid("REPORT_TOOL_UNAVAILABLE", "El reporte solicitado no está disponible."));
-            execute(callback, NO_ARGUMENTS, new ToolContext(Map.of()));
+                    .orElseThrow(() -> invalid("TOOL_UNAVAILABLE", "La herramienta solicitada no está disponible."));
         }
 
         private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
+            boolean prepara = PREPARATIONS.contains(name);
+            boolean coincide = name.equals(compensation.allowedTool());
+            boolean preparaCompensacion = RECOVERABLE_COMPENSATION.contains(name);
+            boolean argumentosVerificados = coincide && compensation.recoveryArgs() != null;
+            // Provider and fallback share the same verified arguments and receipt.
+            if (preparaCompensacion && argumentosVerificados) {
+                input = mapper.writeValueAsString(compensation.recoveryArgs());
+            }
             Object arguments = mapper.readValue(input, Object.class);
             boolean pdf = DESCARGA_HISTORIAL_PDF.equals(name);
             boolean noArguments = pdf || AgentReportIntent.isReportTool(name);
             // Extra model fields cannot change a report's filters or its receipt.
             String key = name + (noArguments ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
-            if (PREPARATIONS.contains(name) && prepared)
+            if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
+            if (prepara && (compensation.blockPreparations()
+                    || (compensation.allowedTool() != null && !coincide)
+                    || (preparaCompensacion && !argumentosVerificados))) {
+                return responderSinEjecutar(key, "Usa únicamente la acción explícita y los datos indicados por el usuario.");
+            }
             if (pdf && (historialPdf == null || historialPdf.filtros() == null)) {
                 String detalle = historialPdf == null ? "La descarga requiere una solicitud explícita del usuario."
                         : historialPdf.aclaracion();
-                String output = mapper.writeValueAsString(Map.of("mensaje", detalle));
-                receipts.put(key, output);
-                return output;
+                return responderSinEjecutar(key, detalle);
             }
             if (pdf) context = new ToolContext(Map.of(CONTEXTO_FILTROS_PDF, historialPdf.filtros()));
             String output;
@@ -121,7 +156,13 @@ public class AgentToolRegistry {
                 throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
             JsonNode data = mapper.readTree(output);
             capture(name, data);
-            if (PREPARATIONS.contains(name)) prepared = true;
+            if (prepara) prepared = true;
+            receipts.put(key, output);
+            return output;
+        }
+
+        private String responderSinEjecutar(String key, String mensaje) {
+            String output = mapper.writeValueAsString(Map.of("mensaje", mensaje));
             receipts.put(key, output);
             return output;
         }
@@ -156,7 +197,12 @@ public class AgentToolRegistry {
 
         private String message(String text, AdvertenciaAgente warning) {
             // The operation receipt or controlled warning takes precedence over model text.
-            String primary = operation != null ? operation.detalle() : warning != null ? text : null;
+            String primary = operation != null ? operation.detalle() : warning != null ? text : compensation.message();
+            if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
+                primary += " Puedes confirmar desde la aplicación o escribir «sí» o «confirmo» en este chat. "
+                        + "Para cancelar la propuesta, escribe «no» o «cancelar».";
+            }
             List<String> reports = results.stream()
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)
@@ -194,9 +240,12 @@ public class AgentToolRegistry {
             // The model selects a topic, never supplies an assertion of business success.
             String normalized = text.toLowerCase(Locale.ROOT);
             if (normalized.contains("¿") || normalized.endsWith("?")) {
+                if ((normalized.contains("método") || normalized.contains("metodo"))
+                        && (normalized.contains("cambiar") || normalized.contains("modificar")))
+                    return "¿Qué quieres cambiar en tu método de compensación? Indica el nuevo tipo o la nueva descripción.";
                 if (normalized.contains("fecha") || normalized.contains("hora"))
                     return "¿Qué fecha y hora deseas para el viaje?";
-                if (normalized.contains("compensa"))
+                if (solicitudViaje && normalized.contains("compensa"))
                     return "¿Prefieres compensar con DINERO, GASOLINA o FAVOR?";
                 if (normalized.contains("capacidad") || normalized.contains("referencia"))
                     return "¿Cuál es el origen, la capacidad máxima y los puntos de referencia de la ruta?";

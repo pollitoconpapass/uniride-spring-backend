@@ -103,21 +103,27 @@ El token puede configurarse desde el botón `Authorize` de Swagger UI.
 
 `POST /api/agent/chat` recibe `{"message":"Consulta mis rutas"}` con JWT.
 La respuesta conserva los campos originales y agrega `conversationId`, `resultados`
-y `advertencia`. Para continuar una sesión, reenvía su `conversationId`; omitirlo
-inicia una conversación independiente. Las sesiones viven en RAM, expiran tras
+y `advertencia`. Las decisiones de confirmación por texto devuelven también
+`resolucionConfirmacion`. Para continuar una sesión, reenvía su `conversationId`.
+Omitirlo inicia una conversación independiente. Las sesiones viven en RAM, expiran tras
 30 minutos de inactividad y no se comparten entre usuarios.
 
 El agente utiliza herramientas Java mediante Spring AI y la API compatible de
 Groq. El backend construye los datos estructurados a partir de sus resultados;
 no combina Structured Outputs con tool calling ni registra una herramienta `json`.
-Las cuatro operaciones de escritura únicamente preparan confirmaciones. Para
-ejecutarlas se necesita un endpoint autenticado explícito, independiente del modelo.
+Las herramientas de escritura preparan propuestas con un resumen. Con el mismo
+`conversationId`, el propietario puede responder «sí» o «confirmo» para ejecutar
+la propuesta, o «no» o «cancelar» para descartarla. Los botones de la aplicación
+pueden seguir usando los endpoints de confirmación y cancelación con JWT.
+Ambas vías usan el mismo servicio transaccional, al que el modelo no tiene acceso.
 
 El chat admite estadísticas personales y frecuencia histórica por día de la semana
 para ambos roles. Los conductores también pueden consultar el ranking de sus rutas
 con las penalidades asociadas. Los reportes se devuelven en `resultados`.
 El chat también prepara la descarga del historial en PDF para ambos roles. El
 archivo se descarga con el JWT del usuario mediante `GET /api/historial/pdf`.
+Ambos roles pueden preparar el registro, la edición, la activación, la
+desactivación y la eliminación de sus métodos de compensación desde el chat.
 
 Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md) y el

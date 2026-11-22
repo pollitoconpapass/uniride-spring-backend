@@ -1,18 +1,35 @@
 package com.uniride.agent;
 
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.confirmation.ConfirmationService;
+import com.uniride.agent.dto.AdvertenciaAgente;
+import com.uniride.agent.dto.ResolucionConfirmacion;
+import com.uniride.agent.dto.ResolucionConfirmacion.Estado;
 import com.uniride.entities.Usuario;
 import com.uniride.services.UsuarioService;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.UUID;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import com.openai.errors.OpenAIServiceException;
+import com.uniride.exceptions.BusinessException;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.exceptions.NoAutorizadoException;
+import com.uniride.exceptions.ResourceNotFoundException;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionException;
 
 @Service
 public class AgentService {
@@ -24,41 +41,119 @@ public class AgentService {
     private final Clock clock;
     private final AgentToolRegistry tools;
     private final AgentConversationStore conversations;
+    private final ConfirmationService confirmations;
 
-    @org.springframework.beans.factory.annotation.Autowired
     public AgentService(ChatClient chatClient, UsuarioService usuarioService, Clock clock,
-                        AgentToolRegistry tools, AgentConversationStore conversations) {
+                        AgentToolRegistry tools, AgentConversationStore conversations, ConfirmationService confirmations) {
         this.chatClient = chatClient; this.usuarioService = usuarioService; this.clock = clock;
-        this.tools = tools; this.conversations = conversations;
-    }
-
-    public AgentService(ChatClient chatClient, UsuarioService usuarioService, Clock clock, AgentToolRegistry tools) {
-        this(chatClient, usuarioService, clock, tools, new AgentConversationStore(clock));
+        this.tools = tools; this.conversations = conversations; this.confirmations = confirmations;
     }
 
     /** Compatibility for internal callers. Identity always comes from SecurityContext via UsuarioService. */
     public ChatResponse chat(String username, String message) {
-        return chat(message, (java.util.UUID) null);
+        return chat(message, (UUID) null);
     }
 
-    public ChatResponse chat(String message, java.util.UUID conversationId) {
+    public ChatResponse chat(String message, UUID conversationId) {
         AgentConversationStore.validateMessage(message);
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
-            ChatResponse response = execute(usuario, message, lease.history()).withConversationId(lease.id());
-            lease.complete(message, response.message());
+            ChatResponse response;
+            var decision = ConfirmationIntent.classify(message);
+            if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
+                response = resolverConfirmacion(lease, decision == ConfirmationIntent.CONFIRMAR);
+            } else if (decision == ConfirmationIntent.AMBIGUA && lease.confirmacionPendiente() != null) {
+                lease.guardarBorrador(null);
+                lease.descartarReferenciaConfirmacion();
+                response = respuestaConfirmacion(new ResolucionConfirmacion(Estado.ACLARACION_REQUERIDA, null), null);
+            } else {
+                var compensation = CompensationIntent.classify(message, lease.borrador());
+                // A new request may yield a new receipt, but cannot resume an older confirmation reference.
+                lease.descartarReferenciaConfirmacion();
+                lease.guardarBorrador(compensation.draft());
+                response = compensation.informational() ? soloMensaje(compensation.message())
+                        : execute(usuario, message, lease.history(), compensation);
+                lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
+            }
+            response = response.withConversationId(lease.id());
+            lease.complete(message, response);
             return response;
         }
     }
 
-    private ChatResponse execute(Usuario usuario, String message,
-                                 java.util.List<org.springframework.ai.chat.messages.Message> history) {
+    private ChatResponse resolverConfirmacion(AgentConversationStore.Lease lease, boolean confirmar) {
+        UUID id = lease.confirmacionPendiente();
+        if (!confirmar || id != null) lease.guardarBorrador(null);
+        if (id == null) {
+            var resuelta = lease.confirmacionResuelta();
+            if (resuelta == null) {
+                return respuestaConfirmacion(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null), null);
+            }
+            var estado = switch (resuelta.estado()) {
+                case EJECUTADA -> Estado.YA_EJECUTADA;
+                case CANCELADA -> Estado.YA_CANCELADA;
+                case EXPIRADA -> Estado.EXPIRADA;
+                case PENDIENTE -> throw new IllegalStateException("La confirmación aún está pendiente");
+            };
+            return respuestaConfirmacion(new ResolucionConfirmacion(estado, resuelta), null);
+        }
+
+        try {
+            var resolucion = confirmations.resolverDesdeChat(id, confirmar);
+            lease.guardarResolucion(resolucion.confirmacion());
+            return respuestaConfirmacion(resolucion, null);
+        } catch (CamposInvalidosException invalid) {
+            return rechazarConfirmacion("CONFIRMATION_INVALID", invalid.getMessage());
+        } catch (ResourceNotFoundException missing) {
+            return rechazarConfirmacion("CONFIRMATION_NOT_FOUND", missing.getMessage());
+        } catch (BusinessException conflict) {
+            return rechazarConfirmacion("CONFIRMATION_BUSINESS_CONFLICT", conflict.getMessage());
+        } catch (DataIntegrityViolationException conflict) {
+            return rechazarConfirmacion("CONFIRMATION_BUSINESS_CONFLICT", "Los datos actuales impiden aplicar la operación.");
+        } catch (TransactionException | TransientDataAccessException | DataAccessResourceFailureException
+                 | RecoverableDataAccessException | JpaSystemException uncertain) {
+            return respuestaConfirmacion(new ResolucionConfirmacion(Estado.RESULTADO_INCIERTO, null),
+                    new AdvertenciaAgente("CONFIRMATION_RESULT_UNCERTAIN",
+                            "No se pudo determinar el resultado. Consulta el estado en la aplicación o con GET "
+                                    + "/api/agent/confirmaciones/" + id + " antes de reintentar."));
+        }
+    }
+
+    private ChatResponse rechazarConfirmacion(String codigo, String mensaje) {
+        return respuestaConfirmacion(new ResolucionConfirmacion(Estado.RECHAZADA, null), new AdvertenciaAgente(codigo, mensaje));
+    }
+
+    private ChatResponse respuestaConfirmacion(ResolucionConfirmacion resolucion, AdvertenciaAgente advertencia) {
+        var operacion = resolucion.estado() == Estado.EJECUTADA ? resolucion.confirmacion().resultado() : null;
+        String mensaje = switch (resolucion.estado()) {
+            case EJECUTADA -> operacion.detalle();
+            case CANCELADA -> "Cancelé la confirmación. La operación quedó sin ejecutar.";
+            case EXPIRADA -> "La confirmación expiró. Solicita una nueva propuesta.";
+            case YA_EJECUTADA -> "La operación ya fue ejecutada. " + resolucion.confirmacion().resultado().detalle();
+            case YA_CANCELADA -> "La confirmación ya estaba cancelada. La operación quedó sin ejecutar.";
+            case SIN_PENDIENTE -> "No hay una confirmación pendiente en esta conversación.";
+            case ACLARACION_REQUERIDA -> "La propuesta quedó sin resolver. Indica qué cambio necesitas para preparar otra "
+                    + "o revisa la propuesta anterior en la aplicación.";
+            case RECHAZADA, RESULTADO_INCIERTO -> advertencia.mensaje();
+        };
+        return new ChatResponse(mensaje, List.of(), List.of(), List.of(), operacion, List.of(), advertencia, null, resolucion);
+    }
+
+    private ChatResponse soloMensaje(String message) {
+        return new ChatResponse(message, List.of(), List.of(), List.of(), null);
+    }
+
+    private ChatResponse execute(Usuario usuario, String message, List<Message> history,
+                                 CompensationIntent.Decision compensation) {
         String contexto = "Contexto: hoy es " + LocalDate.now(clock) + " y son las "
                 + LocalTime.now(clock).format(FORMATO_HORA)
                 + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
                 + "Mensaje del usuario: " + message;
 
-        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock));
+        boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
+                && history.get(history.size() - 2) instanceof UserMessage anterior
+                && CompensationIntent.isTripRequest(anterior.getText()));
+        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock), compensation, solicitudViaje);
         try {
             var response = chatClient.prompt()
                     .messages(history)
@@ -76,6 +171,7 @@ public class AgentService {
                 throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta inválida.");
             }
             turn.recoverReports(AgentReportIntent.classify(message));
+            turn.recoverCompensation();
             return turn.response(text.trim());
         } catch (RuntimeException failure) {
             // No model retries: an earlier tool may already have completed.

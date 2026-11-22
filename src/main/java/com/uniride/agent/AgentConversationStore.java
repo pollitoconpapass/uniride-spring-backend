@@ -1,5 +1,9 @@
 package com.uniride.agent;
 
+import com.uniride.agent.confirmation.EstadoConfirmacion;
+import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.ConfirmacionResumen;
+import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.enums.Rol;
 import java.time.*;
 import java.util.*;
@@ -99,6 +103,9 @@ public class AgentConversationStore {
         private final Deque<Message> messages = new ArrayDeque<>();
         private volatile Instant lastUsed;
         private int turns;
+        private CompensationIntent.Draft borrador;
+        private UUID confirmacionPendiente;
+        private ConfirmacionResumen confirmacionResuelta;
         private Session(Long userId, Rol role, Instant now) {
             this.userId = userId; this.role = role; this.lastUsed = now;
         }
@@ -111,6 +118,37 @@ public class AgentConversationStore {
         private Lease(UUID id, Session session) { this.id = id; this.session = session; }
         public UUID id() { return id; }
         public List<Message> history() { return List.copyOf(session.messages); }
+
+        CompensationIntent.Draft borrador() { return session.borrador; }
+
+        void guardarBorrador(CompensationIntent.Draft borrador) {
+            if (borrador != null) borrador.validateNoSecrets();
+            session.borrador = borrador;
+        }
+
+        UUID confirmacionPendiente() { return session.confirmacionPendiente; }
+        ConfirmacionResumen confirmacionResuelta() { return session.confirmacionResuelta; }
+
+        void descartarReferenciaConfirmacion() {
+            session.confirmacionPendiente = null;
+            session.confirmacionResuelta = null;
+        }
+
+        void guardarResolucion(ConfirmacionResumen confirmacion) {
+            session.confirmacionPendiente = null;
+            session.confirmacionResuelta = confirmacion;
+        }
+
+        void complete(String user, ChatResponse response) {
+            var operacion = response.operacion();
+            if (operacion != null && operacion.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operacion.confirmacion() != null && operacion.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
+                session.confirmacionPendiente = operacion.confirmacion().id();
+                session.confirmacionResuelta = null;
+            }
+            complete(user, response.message());
+        }
+
         public void complete(String user, String assistant) {
             // Credential-shaped output is never retained, even if an external provider echoes it.
             if (SECRET.matcher(assistant).find()) return;
