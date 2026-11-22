@@ -57,6 +57,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -220,13 +221,14 @@ class GroqProviderIntegrationTest {
                 {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
                 """));
         enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"nuevaDescripcion":"Yape personal","descripcionActual":"Yape"}
+                {"id":123,"tipoActual":"GASOLINA","descripcionActual":"Inventado","nuevoTipo":"BITCOIN",
+                 "nuevaDescripcion":"Otra descripción","activo":false}
                 """));
         enqueue(200, completion("Actualicé el método directamente.", "stop"));
 
         ChatResponse response = service.chat("owner", "Cambia la descripción de mi método Yape a Yape personal");
 
-        assertThat(response.message()).isEqualTo(detalle);
+        assertThat(response.message()).isEqualTo(detalle).doesNotContain("Inventado", "Otra descripción", "BITCOIN");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
         assertThat(requests).hasSize(3);
@@ -278,11 +280,11 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes"))
                 .thenThrow(new BusinessException(detalle));
         enqueue(200, toolCall("eliminarMetodoCompensacion", """
-                {"tipoActual":"FAVOR","descripcionActual":"Favor con apuntes"}
+                {"id":123,"tipoActual":"GASOLINA","descripcionActual":"Inventado"}
                 """));
         enqueue(200, completion("Método eliminado.", "stop"));
 
-        ChatResponse response = service.chat("owner", "Elimina mi método Favor con apuntes");
+        ChatResponse response = service.chat("owner", "Elimina mi método de tipo FAVOR llamado Favor con apuntes");
 
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.ERROR);
         assertThat(response.operacion().confirmacion()).isNull();
@@ -294,10 +296,16 @@ class GroqProviderIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"¿Cómo elimino un método?", "¿Cómo activo un método?", "No quiero desactivar mi método",
-            "¿Qué pasa si elimino Yape?", "Explícame cómo se editan los métodos", "¿Puedo eliminar un método?",
-            "No elimines mi método de gasolina"})
-    void erroneousProviderToolCannotPrepareDeletionOnAnInformativeOrNegatedTurn(String question) {
+    @CsvSource(delimiter = '|', textBlock = """
+            ¿Cómo elimino un método? | true
+            ¿Cómo activo un método? | true
+            No quiero desactivar mi método | false
+            ¿Qué pasa si elimino Yape? | false
+            Explícame cómo se editan los métodos | false
+            ¿Puedo eliminar un método? | true
+            No elimines mi método de gasolina | false
+            """)
+    void erroneousProviderToolCannotPrepareDeletionOnAnInformativeOrNegatedTurn(String question, boolean direct) {
         var confirmations = useCompensationTools();
         enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
         enqueue(200, completion("Eliminé el método.", "stop"));
@@ -307,14 +315,20 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
         assertThat(response.message()).doesNotContain("Eliminé el método");
-        assertThat(requests).hasSize(2);
+        assertThat(requests).hasSize(direct ? 0 : 2);
         verifyNoInteractions(confirmations);
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"Elimina mi método Yape", "Actualiza mi método de gasolina",
-            "¿Cómo activo un método?", "No quiero desactivar mi método", "Desactiva mi método"})
-    void modelOmittedCompensationPreparationIsOnlyRecoveredForVerifiedRequests(String message) {
+    @CsvSource(delimiter = '|', textBlock = """
+            Elimina mi método | false
+            Actualiza mi método de gasolina | false
+            ¿Cómo activo un método? | true
+            No quiero desactivar mi método | false
+            Desactiva mi método | false
+            Elimina mi método Yape o mi método FAVOR | false
+            """)
+    void modelOmittedCompensationPreparationIsOnlyRecoveredForVerifiedRequests(String message, boolean direct) {
         var confirmations = useCompensationTools();
         enqueue(200, completion("Eliminé el método.", "stop"));
 
@@ -323,7 +337,194 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
         assertThat(response.message()).containsIgnoringCase("método").doesNotContain("Eliminé el método", PREFERENCIA_VIAJE);
-        assertThat(requests).hasSize(1);
+        assertThat(requests).hasSize(direct ? 0 : 1);
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void answersCompensationCatalogueWithoutCallingProviderOrTools() {
+        var confirmations = useCompensationTools();
+
+        ChatResponse response = service.chat("¿Qué tipos de compensación existen?", (UUID) null);
+
+        assertThat(response.message()).contains("DINERO", "GASOLINA", "FAVOR")
+                .doesNotContain("¿Qué deseas hacer?", PREFERENCIA_VIAJE);
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).isEmpty();
+        assertThat(response.metodosCompensacion()).isEmpty();
+        assertThat(response.conversationId()).isNotNull();
+        assertThat(requests).isEmpty();
+        verifyNoInteractions(confirmations, reports);
+    }
+
+    @Test
+    void explainsHowToManageMethodsWithoutClaimingAnyChange() {
+        var confirmations = useCompensationTools();
+
+        ChatResponse response = service.chat("¿Cómo puedo registrar, actualizar o eliminar un método?", (UUID) null);
+
+        assertThat(response.message()).containsIgnoringCase("registrar").containsIgnoringCase("actualizar")
+                .containsIgnoringCase("eliminar").containsIgnoringCase("confirm")
+                .doesNotContain("¿Qué deseas hacer?", "Método eliminado", "Método registrado");
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).isEmpty();
+        assertThat(requests).isEmpty();
+        verifyNoInteractions(confirmations, reports);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Rol.class)
+    void recoversExplicitEditAndDeletionAsPendingOperationsWhenGroqStops(Rol role) {
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(role).build());
+        var confirmations = useCompensationTools();
+        var edit = pending(TipoOperacion.ACTUALIZAR_METODO, "Cambiar la descripción de Yape a Yape personal.",
+                Map.of("tipo", "DINERO", "descripcion", "Yape personal", "activo", true));
+        var deletion = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método FAVOR.", Map.of());
+        when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal")).thenReturn(edit);
+        when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null)).thenReturn(deletion);
+        enqueue(200, completion("Ya cambié tu método de compensación.", "stop"));
+        enqueue(200, completion("Ya eliminé tu método de compensación.", "stop"));
+
+        ChatResponse updated = service.chat("Cambia la descripción de mi método Yape a Yape personal", (UUID) null);
+        ChatResponse deleted = service.chat("Elimina mi método FAVOR", updated.conversationId());
+
+        assertThat(updated.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(updated.operacion().confirmacion()).isEqualTo(edit.confirmacion());
+        assertThat(updated.message()).contains("Yape personal", "Confirma desde la aplicación").doesNotContain("Ya cambié");
+        assertThat(updated.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
+        assertThat(deleted.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        assertThat(deleted.operacion().confirmacion()).isEqualTo(deletion.confirmacion());
+        assertThat(deleted.message()).contains("FAVOR", "Confirma desde la aplicación").doesNotContain("Ya eliminé");
+        assertThat(deleted.resultados()).extracting(ResultadoAgente::tipo).containsExactly("eliminarMetodoCompensacion");
+        assertThat(deleted.conversationId()).isEqualTo(updated.conversationId());
+        assertThat(requests).hasSize(2);
+        verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
+        verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void asksForAReplacementBeforePreparingEditInTheSameConversation() {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ACTUALIZAR_METODO, "Cambiar la descripción de Yape a Yape personal.",
+                Map.of("tipo", "DINERO", "descripcion", "Yape personal", "activo", true));
+        when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal")).thenReturn(proposal);
+        enqueue(200, toolCall("actualizarMetodoCompensacion", """
+                {"descripcionActual":"Yape","nuevaDescripcion":"Inventada"}
+                """));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse incomplete = service.chat("Cambia la descripción de mi método Yape", (UUID) null);
+
+        assertThat(incomplete.message()).containsIgnoringCase("nueva descripción").doesNotContain("Inventada");
+        assertThat(incomplete.operacion()).isNull();
+        assertThat(incomplete.resultados()).isEmpty();
+        verifyNoInteractions(confirmations);
+
+        ChatResponse prepared = service.chat("Yape personal", incomplete.conversationId());
+
+        assertThat(prepared.conversationId()).isEqualTo(incomplete.conversationId());
+        assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
+        assertThat(prepared.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
+        assertThat(requests).hasSize(3);
+        verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void asksForSelectorBeforePreparingDeletionInTheSameConversation() {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método FAVOR.", Map.of());
+        when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null)).thenReturn(proposal);
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse incomplete = service.chat("Elimina mi método", (UUID) null);
+
+        assertThat(incomplete.message()).containsIgnoringCase("método").containsIgnoringCase("descripción");
+        assertThat(incomplete.operacion()).isNull();
+        assertThat(incomplete.resultados()).isEmpty();
+        verifyNoInteractions(confirmations);
+
+        ChatResponse prepared = service.chat("FAVOR", incomplete.conversationId());
+
+        assertThat(prepared.conversationId()).isEqualTo(incomplete.conversationId());
+        assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
+        assertThat(prepared.resultados()).extracting(ResultadoAgente::tipo).containsExactly("eliminarMetodoCompensacion");
+        assertThat(requests).hasSize(2);
+        verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void narrowsAnAmbiguousDeletionOnlyAfterTheUserSuppliesTheDescription() {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar FAVOR Apuntes de clase.", Map.of());
+        when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null))
+                .thenReturn(new OperacionResumen(EstadoOperacion.AMBIGUO, null, "Hay varios métodos de tipo FAVOR."));
+        when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Apuntes de clase")).thenReturn(proposal);
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse ambiguous = service.chat("Elimina mi método FAVOR", (UUID) null);
+        assertThat(ambiguous.operacion().estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(ambiguous.operacion().confirmacion()).isNull();
+
+        ChatResponse prepared = service.chat("Apuntes de clase", ambiguous.conversationId());
+
+        assertThat(prepared.conversationId()).isEqualTo(ambiguous.conversationId());
+        assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
+        assertThat(requests).hasSize(2);
+        verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
+        verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Apuntes de clase");
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            Cambia la descripción de mi método Yape | Yape personal | actualizarMetodoCompensacion
+            Elimina mi método | FAVOR | eliminarMetodoCompensacion
+            """)
+    void editAndDeletionDraftsAreScopedToTheConversationAndClearedByAnotherTopic(
+            String incompleteRequest, String fragment, String staleTool) {
+        var confirmations = useCompensationTools();
+        when(reports.resumen()).thenReturn(new EstadisticasRespuesta(3, 2, 0, 0));
+        for (int i = 0; i < 3; i++) enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, toolCall(staleTool, """
+                {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
+                """));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse incomplete = service.chat(incompleteRequest, (UUID) null);
+        ChatResponse separate = service.chat(fragment, (UUID) null);
+        ChatResponse stats = service.chat("¿Cuántos viajes he completado?", incomplete.conversationId());
+        ChatResponse late = service.chat(fragment, incomplete.conversationId());
+
+        assertThat(separate.conversationId()).isNotEqualTo(incomplete.conversationId());
+        assertThat(separate.operacion()).isNull();
+        assertThat(stats.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisEstadisticas");
+        assertThat(late.conversationId()).isEqualTo(incomplete.conversationId());
+        assertThat(late.operacion()).isNull();
+        assertThat(late.resultados()).isEmpty();
+        assertThat(requests).hasSize(5);
+        verify(reports).resumen();
+        verifyNoInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Cambia la descripción de mi método Yape a Yape personal y elimina mi método FAVOR",
+            "Elimina mi método FAVOR y desactiva mi método Yape", "Elimina mi método Yape o mi método FAVOR"})
+    void rejectsGuessedCompensationPreparationWhenTheUserMentionsMultipleActionsOrSelectors(String request) {
+        var confirmations = useCompensationTools();
+        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"tipoActual\":\"FAVOR\"}"));
+        enqueue(200, completion("Eliminé el método.", "stop"));
+
+        ChatResponse response = service.chat(request, (UUID) null);
+
+        assertThat(response.message()).containsIgnoringCase("método").doesNotContain("Eliminé el método");
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).isEmpty();
         verifyNoInteractions(confirmations);
     }
 
@@ -509,6 +710,35 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
+    void affirmationAfterChangingTopicsOrSessionsDoesNotReferenceAnEarlierProposal() {
+        var confirmations = useCompensationTools();
+        var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
+        when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
+        when(reports.resumen()).thenReturn(new EstadisticasRespuesta(3, 2, 0, 0));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
+        ChatResponse otherConversation = service.chat("Sí", (UUID) null);
+        ChatResponse statistics = service.chat("¿Cuántos viajes he completado?", prepared.conversationId());
+        ChatResponse afterAnotherTopic = service.chat("Sí", prepared.conversationId());
+
+        assertThat(prepared.operacion().confirmacion().id()).isEqualTo(proposal.confirmacion().id());
+        assertThat(otherConversation.conversationId()).isNotEqualTo(prepared.conversationId());
+        assertThat(statistics.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisEstadisticas");
+        assertThat(afterAnotherTopic.conversationId()).isEqualTo(prepared.conversationId());
+        for (ChatResponse affirmation : List.of(otherConversation, afterAnotherTopic)) {
+            assertThat(affirmation.operacion()).isNull();
+            assertThat(affirmation.resultados()).isEmpty();
+            assertThat(affirmation.message()).containsIgnoringCase("confirm").doesNotContain(proposal.confirmacion().id().toString());
+        }
+        assertThat(requests).hasSize(2);
+        verify(reports).resumen();
+        verify(confirmations).prepararEliminacionMetodo(null, "Yape");
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
     void tripStillGetsTheCompensationPreferenceQuestionWhenThatInformationIsMissing() {
         enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
 
@@ -526,12 +756,16 @@ class GroqProviderIntegrationTest {
         var confirmations = mock(ConfirmationService.class);
         service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations));
         enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"descripcionActual":"Yape","nuevoTipo":"BITCOIN"}
+                {"descripcionActual":"Yape","nuevoTipo":"FAVOR"}
                 """));
+        enqueue(200, completion("Actualicé el método.", "stop"));
 
-        assertThatThrownBy(() -> service.chat("owner", "Cambia mi método Yape al tipo FAVOR"))
-                .isInstanceOf(AgentProviderException.class);
-        assertThat(requests).hasSize(1);
+        ChatResponse response = service.chat("owner", "Cambia mi método Yape al tipo BITCOIN");
+
+        assertThat(response.message()).contains("DINERO", "GASOLINA", "FAVOR").doesNotContain("Actualicé el método");
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).isEmpty();
+        assertThat(requests).hasSize(2);
         verifyNoInteractions(confirmations, queries);
     }
 

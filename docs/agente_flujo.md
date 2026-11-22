@@ -14,7 +14,7 @@ flowchart TD
     S --> M[AgentConversationStore: RAM limitada]
     S --> CC[ChatClient / Groq]
     CC --> R[AgentToolRegistry: recibos por petición]
-    S -->|Completa reportes omitidos| R
+    S -->|Completa reportes y preparaciones omitidas| R
     R --> T[AgentTools]
     T --> Q[AgentQueryService: solo lectura]
     T --> A[EstadisticasService: reportes personales]
@@ -207,7 +207,7 @@ Authorization: Bearer <token>
 
 La petición se envía sin cuerpo ni parámetros de consulta. El servidor utiliza exclusivamente los parámetros guardados. Cualquier cuerpo no vacío, incluso `{}`, recibe HTTP 400.
 
-Si en la misma conversación el usuario responde solamente «sí» a una preparación, el backend responde antes de llamar a Groq. Devuelve el mismo `conversationId`, `operacion: null` y `resultados: []`. El mensaje indica cómo usar el UUID original si la confirmación sigue pendiente, o avisa que se cumplió el plazo de la propuesta si su expiración ya pasó. Para verificar el estado efectivo de la confirmación, usa `GET /api/agent/confirmaciones/{id}`.
+Si en la misma conversación el usuario responde solamente «sí» a una preparación reciente, el backend responde antes de llamar a Groq. Devuelve el mismo `conversationId`, `operacion: null` y `resultados: []`. El mensaje indica cómo usar el UUID original si la confirmación sigue pendiente, o avisa que se cumplió el plazo de la propuesta si su expiración ya pasó. Si el usuario cambia de tema antes de decir «sí», el chat ofrece orientación general y omite el UUID anterior. Para comprobar el estado efectivo de la confirmación persistida, usa `GET /api/agent/confirmaciones/{id}` con el UUID devuelto al preparar.
 
 La respuesta es `ConfirmacionResumen`:
 
@@ -258,11 +258,11 @@ Una propuesta válida identifica el método actual, muestra los valores anterior
 
 Si un duplicado o un vínculo aparece entre la preparación y la confirmación, el endpoint devuelve `409`. La desactivación permite dejar de usar un método vinculado y conservarlo junto con su historial. El contrato tradicional se detalla en [Pagos y compensación](endpoints.md#módulo-7--pagos-y-compensación).
 
-Una pregunta de procedimiento como «¿Cómo elimino un método?» recibe instrucciones. También quedan fuera de la preparación las órdenes negadas, como «No desactives mi método Yape». Si Groq propone una herramienta de escritura de compensación ante estas frases, el registro omite esa preparación.
+El backend contesta directamente las preguntas que identifica sobre los tipos de compensación y cómo gestionar un método. `DINERO` corresponde a aportes monetarios, `GASOLINA` a aportes de combustible y `FAVOR` a ayudas acordadas entre usuarios. Estas respuestas dan orientación en `message` sin consultar a Groq ni usar herramientas, con `operacion: null` y `resultados: []`. Las órdenes negadas, como «No desactives mi método Yape», bloquean la preparación.
 
-Si el usuario pide claramente activar o desactivar un método, o da los datos completos para registrarlo, Java puede completar la preparación omitida por Groq después de una respuesta final válida. Se utiliza el callback habitual en el mismo turno, dentro del presupuesto de llamadas y del límite de una preparación. La selección del método y las validaciones de negocio siguen siendo las de `ConfirmationService`. La edición y la eliminación requieren una llamada a la herramienta correspondiente por parte del modelo. Ante datos incompletos, el chat pide una aclaración según la acción solicitada.
+Si la petición identifica con claridad una acción y contiene sus datos, Java puede completar una preparación de registro, edición, activación, desactivación o eliminación omitida por Groq después de una respuesta final válida. La llamada del modelo y la recuperación usan los argumentos comprobados en Java, el callback habitual, el presupuesto del turno y el límite de una preparación. `ConfirmationService` sigue seleccionando el método propio y aplicando las reglas de negocio. El cambio se aplica al confirmar por HTTP.
 
-El registro puede completarse en varios mensajes con el mismo `conversationId`. La sesión conserva un borrador de tipo y descripción a partir de una solicitud explícita y admite una respuesta breve con el dato que acaba de pedir. Un cambio de tema limpia ese borrador y el turno exige una intención actual para aceptar una preparación sugerida por Groq. El servidor prepara la confirmación al disponer de los datos completos y aplica las mismas reglas de propiedad, rol y caducidad de la sesión. Para precisar una activación, desactivación, edición o eliminación, vuelve a indicar la acción junto con el dato faltante.
+El registro, la edición y la eliminación pueden completarse en varios mensajes con el mismo `conversationId`. Ante una solicitud explícita incompleta, la sesión conserva los campos ya identificados y admite una respuesta breve con el dato que acaba de pedir. Si una edición o eliminación tiene varias coincidencias, el usuario puede precisar el método en la misma conversación. Un cambio de tema limpia el borrador. Para precisar una activación o desactivación, vuelve a indicar la acción junto con el método.
 
 ## Errores y recuperación
 
@@ -305,7 +305,17 @@ En una base local aislada, autoriza Swagger como conductor o pasajero. Consulta 
 {"message":"Consulta mis métodos de compensación"}
 ```
 
-Comprueba que `resultados` contenga `tipo: "consultarMisMetodosCompensacion"` con `datos.items` y que `operacion` sea `null`. Después, prueba cada cambio por separado con una descripción que identifique un único método.
+Comprueba que `resultados` contenga `tipo: "consultarMisMetodosCompensacion"` con `datos.items` y que `operacion` sea `null`. Para probar la orientación sobre tipos y procedimiento, envía cada pregunta por separado.
+
+```json
+{"message":"¿Qué tipos de compensación existen?"}
+```
+
+```json
+{"message":"¿Cómo puedo registrar, actualizar o eliminar un método?"}
+```
+
+Comprueba que `message` responda la pregunta, `operacion` sea `null` y `resultados` esté vacío. Después, prueba cada cambio por separado con un tipo o descripción que identifique un único método propio.
 
 ```json
 {"message":"Cambia la descripción de mi método Yape a Yape personal"}
@@ -320,7 +330,7 @@ Comprueba que `resultados` contenga `tipo: "consultarMisMetodosCompensacion"` co
 ```
 
 ```json
-{"message":"Elimina mi método de compensación Favor con apuntes"}
+{"message":"Elimina mi método FAVOR"}
 ```
 
 Si `Yape` es un método `DINERO` activo, `GET /api/agent/confirmaciones/{id}` devuelve una propuesta con esta forma. Los valores entre `<` y `>` representan valores que genera el backend.
@@ -385,7 +395,35 @@ Después de recibir la propuesta, puedes comprobar el comportamiento de una afir
 {"message":"sí","conversationId":"<conversationId-devuelto>"}
 ```
 
-Para ejecutar el registro, sigue el paso de confirmación HTTP con el UUID original de la propuesta.
+Para ejecutar el registro, sigue el paso de confirmación HTTP con el UUID original de la propuesta. Si antes de decir «sí» envías otra petición, como «¿Qué tipos de compensación existen?», la afirmación recibe orientación general. Puedes seguir consultando la propuesta con el UUID que guardaste.
+
+#### Edición y eliminación en dos turnos
+
+Para editar la descripción, envía este cuerpo y comprueba que el chat pida la nueva descripción.
+
+```json
+{"message":"Cambia la descripción de mi método Yape"}
+```
+
+Reenvía el `conversationId` real que te entregó el chat.
+
+```json
+{"message":"Yape personal","conversationId":"<conversationId-devuelto>"}
+```
+
+Para eliminar un método, inicia otra conversación y comprueba que el chat pida su tipo o descripción.
+
+```json
+{"message":"Elimina mi método"}
+```
+
+Envía el dato pedido con el UUID de esa conversación.
+
+```json
+{"message":"Yape","conversationId":"<conversationId-devuelto>"}
+```
+
+Si el método existe, es identificable y cumple las reglas de la operación, el chat prepara la confirmación. Comprueba el cambio propuesto en `operacion.confirmacion.resumen` y usa su UUID para confirmar o cancelar por HTTP.
 
 ### Probar los reportes estadísticos
 

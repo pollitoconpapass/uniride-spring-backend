@@ -103,7 +103,7 @@ public class AgentConversationStore {
         private final Deque<Message> messages = new ArrayDeque<>();
         private volatile Instant lastUsed;
         private int turns;
-        private CompensationIntent.Registro registro;
+        private CompensationIntent.Draft borrador;
         private ReferenciaConfirmacion confirmacion;
         private Session(Long userId, Rol role, Instant now) {
             this.userId = userId; this.role = role; this.lastUsed = now;
@@ -118,14 +118,16 @@ public class AgentConversationStore {
         public UUID id() { return id; }
         public List<Message> history() { return List.copyOf(session.messages); }
 
-        CompensationIntent.Registro registro() { return session.registro; }
+        CompensationIntent.Draft borrador() { return session.borrador; }
 
-        void guardarRegistro(CompensationIntent.Registro registro) {
-            if (registro != null) validateNoSecrets(registro.descripcion());
-            session.registro = registro;
+        void guardarBorrador(CompensationIntent.Draft borrador) {
+            if (borrador != null) borrador.validateNoSecrets();
+            session.borrador = borrador;
         }
 
         ReferenciaConfirmacion confirmacion() { return session.confirmacion; }
+
+        void descartarReferenciaConfirmacion() { session.confirmacion = null; }
 
         void complete(String user, ChatResponse response) {
             var confirmacion = response.operacion() == null ? null : response.operacion().confirmacion();

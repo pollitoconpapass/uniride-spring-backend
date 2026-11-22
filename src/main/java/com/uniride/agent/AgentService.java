@@ -49,13 +49,17 @@ public class AgentService {
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
             ChatResponse response;
-            if (lease.confirmacion() != null && CompensationIntent.isAffirmation(message)) {
-                lease.guardarRegistro(null);
+            if (CompensationIntent.isAffirmation(message)) {
+                lease.guardarBorrador(null);
                 response = orientarConfirmacion(lease.confirmacion());
             } else {
-                var compensation = CompensationIntent.classify(message, lease.registro());
-                lease.guardarRegistro(compensation.draft());
-                response = execute(usuario, message, lease.history(), compensation);
+                var compensation = CompensationIntent.classify(message, lease.borrador());
+                // A new request may yield a new receipt, but cannot resume an older confirmation reference.
+                lease.descartarReferenciaConfirmacion();
+                lease.guardarBorrador(compensation.draft());
+                response = compensation.informational() ? soloMensaje(compensation.message())
+                        : execute(usuario, message, lease.history(), compensation);
+                lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
             }
             response = response.withConversationId(lease.id());
             lease.complete(message, response);
@@ -64,6 +68,10 @@ public class AgentService {
     }
 
     private ChatResponse orientarConfirmacion(AgentConversationStore.ReferenciaConfirmacion confirmacion) {
+        if (confirmacion == null) {
+            return soloMensaje("Confirma las operaciones desde la aplicación o usa POST /api/agent/confirmaciones/{id}/confirmar "
+                    + "con el UUID de la propuesta y tu JWT.");
+        }
         String ruta = "/api/agent/confirmaciones/" + confirmacion.id();
         String message = "La respuesta del chat no ejecuta cambios. ";
         if (confirmacion.expira().isAfter(clock.instant())) {
@@ -73,6 +81,10 @@ public class AgentService {
             message += "El plazo de confirmación de esa operación terminó. Consulta su estado en la aplicación o usa GET "
                     + ruta + " con tu JWT.";
         }
+        return soloMensaje(message);
+    }
+
+    private ChatResponse soloMensaje(String message) {
         return new ChatResponse(message, List.of(), List.of(), List.of(), null);
     }
 

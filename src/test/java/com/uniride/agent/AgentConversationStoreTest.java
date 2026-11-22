@@ -80,20 +80,20 @@ class AgentConversationStoreTest {
         UUID id;
         try (var lease = store.open(1L, Rol.PASAJERO, null)) {
             id = lease.id();
-            lease.guardarRegistro(draft);
+            lease.guardarBorrador(draft);
             lease.complete("Elimina mi método Yape", new ChatResponse("Revisa la operación.", List.of(), List.of(),
                     List.of(), new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Revisa la operación.", pending)));
         }
         assertThatThrownBy(() -> store.open(2L, Rol.PASAJERO, id))
                 .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.NOT_FOUND));
         try (var lease = store.open(1L, Rol.PASAJERO, id)) {
-            assertThat(lease.registro()).isEqualTo(draft);
+            assertThat(lease.borrador()).isEqualTo(draft);
             assertThat(lease.confirmacion()).isEqualTo(new AgentConversationStore.ReferenciaConfirmacion(pending.id(), expiry));
         }
         assertThatThrownBy(() -> store.open(1L, Rol.CONDUCTOR, id))
                 .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("CONVERSATION_ROLE_CHANGED"));
         try (var lease = store.open(1L, Rol.CONDUCTOR, null)) {
-            assertThat(lease.registro()).isNull();
+            assertThat(lease.borrador()).isNull();
             assertThat(lease.confirmacion()).isNull();
         }
     }

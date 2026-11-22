@@ -105,6 +105,53 @@ class ConfirmationServiceIntegrationTest {
         verify(notifications).notificar(any(), eq(TipoNotificacion.EXITO), eq("Método de compensación actualizado"), anyString());
     }
 
+    @ParameterizedTest
+    @EnumSource(Rol.class)
+    void recoveredEditAndDeletionPrepareOnlyOwnedMethodsForEitherRole(Rol role) {
+        var owner = role == Rol.CONDUCTOR ? driver : passenger;
+        var other = role == Rol.CONDUCTOR ? passenger : driver;
+        authenticate(owner);
+        var yape = metodo(owner, TipoCompensacion.DINERO, "Yape", false);
+        var favor = metodo(owner, TipoCompensacion.FAVOR, "Apuntes", true);
+        var foreign = metodo(other, TipoCompensacion.FAVOR, "Apuntes", true);
+        ChatModel model = prompt -> new org.springframework.ai.chat.model.ChatResponse(List.of(
+                new Generation(new AssistantMessage("Operación ejecutada."),
+                        ChatGenerationMetadata.builder().finishReason("STOP").build())));
+        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools);
+        long before = confirmations.count();
+
+        var question = agent.chat("Cambia la descripción de mi método Yape", (UUID) null);
+        assertThat(question.operacion()).isNull();
+        assertThat(question.message()).containsIgnoringCase("nueva descripción");
+        assertThat(confirmations.count()).isEqualTo(before);
+
+        var edit = agent.chat("Yape personal", question.conversationId());
+        var editPending = edit.operacion().confirmacion();
+        assertThat(editPending.tipo()).isEqualTo(TipoOperacion.ACTUALIZAR_METODO);
+        assertThat(editPending.parametros().path("descripcion").asText()).isEqualTo("Yape personal");
+        assertThat(editPending.parametros().path("activo").asBoolean()).isFalse();
+
+        var deletion = agent.chat("Elimina mi método FAVOR", edit.conversationId());
+        var deletePending = deletion.operacion().confirmacion();
+        assertThat(deletePending.tipo()).isEqualTo(TipoOperacion.ELIMINAR_METODO);
+        assertThat(deletePending.resumen()).contains("Apuntes");
+        var acceptance = agent.chat("sí", deletion.conversationId());
+        assertThat(acceptance.operacion()).isNull();
+        assertThat(acceptance.message()).contains(deletePending.id().toString()).doesNotContain(editPending.id().toString());
+
+        assertThat(confirmations.count()).isEqualTo(before + 2);
+        assertMetodo(yape.getId(), TipoCompensacion.DINERO, "Yape", false);
+        assertThat(methods.existsById(favor.getId())).isTrue();
+        assertThat(methods.existsById(foreign.getId())).isTrue();
+        verifyNoInteractions(notifications);
+
+        assertThat(service.confirmar(editPending.id()).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertThat(service.confirmar(deletePending.id()).estado()).isEqualTo(EstadoConfirmacion.EJECUTADA);
+        assertMetodo(yape.getId(), TipoCompensacion.DINERO, "Yape personal", false);
+        assertThat(methods.existsById(favor.getId())).isFalse();
+        assertThat(methods.existsById(foreign.getId())).isTrue();
+    }
+
     @Test void preparesRouteWithoutBusinessWritesAndKeepsExactParameters() {
         long before = routes.count();
         var result = service.prepararRuta(routeRequest());

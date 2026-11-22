@@ -2,6 +2,8 @@ package com.uniride.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uniride.agent.dto.EstadoOperacion;
+import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.enums.TipoCompensacion;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -70,8 +72,10 @@ class CompensationIntentTest {
             "Explícame cómo se editan los métodos", "¿Puedo eliminar un método?", "No elimines mi método de gasolina",
             "Activa mi método GASOLINA y desactiva Yape", "Activa mi método GASOLINA o DINERO", "Activa mi método 123",
             "Activa mi método usuarioId 123", "Elimina mi método Yape y otro", "Cambia mi método Yape y otro al tipo FAVOR",
-            "Activa mi método GASOLINA\nElimina mi método favor",
-            "Cambia la descripción de mi método Yape"})
+            "Activa mi método GASOLINA\nElimina mi método favor", "Cambia mi método Yape al tipo BITCOIN",
+            "Cambia la descripción de mi método Yape a Yape personal y elimina FAVOR", "Elimina mi método \"123\"",
+            "Cambia la descripción de mi método Yape a Personal elimina FAVOR", "Elimina mi método Yape modifica FAVOR",
+            "Elimina mi método \"Yape\" o \"Gasolina\""})
     void blocksPreparationsWhenTheRequestIsInformativeNegatedAmbiguousOrIncomplete(String text) {
         var decision = CompensationIntent.classify(text, null);
         assertThat(decision.blockPreparations()).isTrue();
@@ -82,23 +86,91 @@ class CompensationIntentTest {
 
     @Test
     void incompleteEditAsksForTheNewDescription() {
-        assertThat(CompensationIntent.classify("Cambia la descripción de mi método Yape", null).message())
+        var question = CompensationIntent.classify("Cambia la descripción de mi método Yape", null);
+        assertThat(question.message())
                 .contains("nueva descripción").doesNotContain("Prefieres compensar");
+        assertThat(question.blockPreparations()).isTrue();
+        assertThat(question.recoveryArgs()).isNull();
+        assertThat(CompensationIntent.classify("Yape personal", question.draft()).recoveryArgs())
+                .isEqualTo(Map.of("descripcionActual", "Yape", "nuevaDescripcion", "Yape personal"));
     }
 
     @ParameterizedTest
-    @CsvSource(delimiter = '|', textBlock = """
-            Cambia la descripción de mi método Yape a Yape personal | actualizarMetodoCompensacion
-            Cambia mi Yape a Yape personal | actualizarMetodoCompensacion
-            Elimina mi método de gasolina | eliminarMetodoCompensacion
-            Elimina mi Yape | eliminarMetodoCompensacion
-            Quiero quitar Favor con apuntes de mis métodos | eliminarMetodoCompensacion
-            """)
-    void explicitEditAndDeletionCanUseTheProviderToolWithoutAutomaticRecovery(String text, String tool) {
+    @ValueSource(strings = {"Cambia la descripción de mi método Yape a Yape personal",
+            "Cambia la descripción de Yape a Yape personal", "Cambia mi Yape a Yape personal"})
+    void preparesOnlyTheExplicitEditValues(String text) {
         var decision = CompensationIntent.classify(text, null);
-        assertThat(decision.allowedTool()).isEqualTo(tool);
-        assertThat(decision.recoveryArgs()).isNull();
-        assertThat(decision.message()).contains("método");
+        assertThat(decision.allowedTool()).isEqualTo("actualizarMetodoCompensacion");
+        assertThat(decision.recoveryArgs()).isEqualTo(Map.of("descripcionActual", "Yape", "nuevaDescripcion", "Yape personal"));
+    }
+
+    @Test
+    void preservesExplicitFieldAndQuotedDescription() {
+        assertThat(CompensationIntent.classify("Cambia mi método Yape al tipo DINERO", null).recoveryArgs())
+                .isEqualTo(Map.of("descripcionActual", "Yape", "nuevoTipo", TipoCompensacion.DINERO));
+        assertThat(CompensationIntent.classify("Cambia la descripción de mi método «Pago a clase» a «FAVOR»", null).recoveryArgs())
+                .isEqualTo(Map.of("descripcionActual", "Pago a clase", "nuevaDescripcion", "FAVOR"));
+        assertThat(CompensationIntent.classify("Cambia mi método Yape a FAVOR", null).blockPreparations()).isTrue();
+        assertThat(CompensationIntent.classify("Cambia la descripción de mi ruta Yape a Yape personal", null).allowedTool()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Elimina mi método FAVOR", "Elimina método FAVOR", "Elimina mi método de tipo FAVOR"})
+    void recoversOnlyTheExplicitDeletionSelector(String text) {
+        var decision = CompensationIntent.classify(text, null);
+        assertThat(decision.allowedTool()).isEqualTo("eliminarMetodoCompensacion");
+        assertThat(decision.recoveryArgs()).isEqualTo(Map.of("tipoActual", TipoCompensacion.FAVOR));
+    }
+
+    @Test
+    void doesNotInferTypeFromUnqualifiedDescription() {
+        assertThat(CompensationIntent.classify("Quiero quitar Favor con apuntes de mis métodos", null).recoveryArgs())
+                .isEqualTo(Map.of("descripcionActual", "Favor con apuntes"));
+        assertThat(CompensationIntent.classify("Elimina mi método de tipo FAVOR llamado Favor con apuntes", null).recoveryArgs())
+                .isEqualTo(Map.of("tipoActual", TipoCompensacion.FAVOR, "descripcionActual", "Favor con apuntes"));
+    }
+
+    @Test
+    void keepsOnlyTheRequestedDeletionWhenItsSelectorIsMissing() {
+        var question = CompensationIntent.classify("Elimina mi método", null);
+        assertThat(question.message()).contains("tipo", "descripción");
+        assertThat(question.recoveryArgs()).isNull();
+        var next = CompensationIntent.classify("FAVOR", question.draft());
+        assertThat(next.allowedTool()).isEqualTo("eliminarMetodoCompensacion");
+        assertThat(next.recoveryArgs()).isEqualTo(Map.of("tipoActual", TipoCompensacion.FAVOR));
+        assertThat(CompensationIntent.classify("Elimina", null).draft()).isNull();
+        assertThat(CompensationIntent.classify("Busca viajes a la UPC", question.draft()).draft()).isNull();
+    }
+
+    @Test
+    void onlyNarrowsSelectorsAfterAuthoritativeAmbiguity() {
+        var request = CompensationIntent.classify("Cambia el tipo de mi método FAVOR a DINERO", null);
+        var ambiguity = new OperacionResumen(EstadoOperacion.AMBIGUO, null, "Varios métodos.");
+        var draft = CompensationIntent.afterResponse(request, ambiguity);
+        var clarified = CompensationIntent.classify("Apuntes de clase", draft);
+        assertThat(clarified.recoveryArgs()).isEqualTo(Map.of("tipoActual", TipoCompensacion.FAVOR,
+                "descripcionActual", "Apuntes de clase", "nuevoTipo", TipoCompensacion.DINERO));
+        assertThat(CompensationIntent.classify("GASOLINA", draft).recoveryArgs()).isNull();
+        assertThat(CompensationIntent.afterResponse(clarified,
+                new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Preparada."))).isNull();
+
+        var deletion = CompensationIntent.classify("Elimina mi método Yape", null);
+        var deletionDraft = CompensationIntent.afterResponse(deletion, ambiguity);
+        assertThat(CompensationIntent.classify("Yape personal", deletionDraft).recoveryArgs())
+                .isEqualTo(Map.of("descripcionActual", "Yape personal"));
+        assertThat(CompensationIntent.classify("Efectivo", deletionDraft).recoveryArgs()).isNull();
+    }
+
+    @Test
+    void classifiesStaticInformationSeparatelyFromPreparingAnOperation() {
+        var types = CompensationIntent.classify("¿Qué tipos de compensación existen?", null);
+        assertThat(types.informational()).isTrue();
+        assertThat(types.message()).contains("DINERO", "GASOLINA", "FAVOR");
+        assertThat(types.recoveryArgs()).isNull();
+        var procedure = CompensationIntent.classify("¿Cómo puedo registrar, actualizar o eliminar un método?", null);
+        assertThat(procedure.informational()).isTrue();
+        assertThat(procedure.message()).contains("registrar", "actualizar", "eliminar", "confirma");
+        assertThat(procedure.allowedTool()).isNull();
     }
 
     @ParameterizedTest

@@ -79,6 +79,8 @@ class AgentToolRegistryTest {
         var edit = callback(turn, "actualizarMetodoCompensacion");
         String receipt = edit.call("{\"descripcionActual\":\"Yape\",\"nuevoTipo\":\"DINERO\"}");
         assertThat(edit.call("{\"nuevoTipo\":\"DINERO\",\"descripcionActual\":\"Yape\"}")).isEqualTo(receipt);
+        assertThat(edit.call("{\"metodoId\":999,\"descripcionActual\":\"Otro\",\"nuevoTipo\":\"FAVOR\"}")).isEqualTo(receipt);
+        turn.recoverCompensation();
 
         assertThatThrownBy(() -> callback(turn, "cambiarEstadoMetodoCompensacion")
                 .call("{\"descripcionActual\":\"Yape\",\"activo\":false}"))

@@ -22,7 +22,8 @@ public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
             "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "eliminarMetodoCompensacion");
-    private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion");
+    private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
+            "actualizarMetodoCompensacion", "eliminarMetodoCompensacion");
     private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
@@ -92,7 +93,8 @@ public class AgentToolRegistry {
 
         synchronized void recoverCompensation() {
             String name = compensation.allowedTool();
-            if (prepared || compensation.recoveryArgs() == null || name == null || !RECOVERABLE_COMPENSATION.contains(name)) return;
+            if (prepared || compensation.blockPreparations() || compensation.recoveryArgs() == null
+                    || name == null || !RECOVERABLE_COMPENSATION.contains(name)) return;
             execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
         }
 
@@ -108,8 +110,10 @@ public class AgentToolRegistry {
             String name = delegate.getToolDefinition().name();
             boolean prepara = PREPARATIONS.contains(name);
             boolean coincide = name.equals(compensation.allowedTool());
+            boolean preparaCompensacion = RECOVERABLE_COMPENSATION.contains(name);
+            boolean argumentosVerificados = coincide && compensation.recoveryArgs() != null;
             // Provider and fallback share the same verified arguments and receipt.
-            if (prepara && coincide && compensation.recoveryArgs() != null) {
+            if (preparaCompensacion && argumentosVerificados) {
                 input = mapper.writeValueAsString(compensation.recoveryArgs());
             }
             Object arguments = mapper.readValue(input, Object.class);
@@ -121,7 +125,8 @@ public class AgentToolRegistry {
             if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
             if (prepara && (compensation.blockPreparations()
-                    || (!coincide && (compensation.allowedTool() != null || name.endsWith("MetodoCompensacion"))))) {
+                    || (compensation.allowedTool() != null && !coincide)
+                    || (preparaCompensacion && !argumentosVerificados))) {
                 return responderSinEjecutar(key, "Usa únicamente la acción explícita y los datos indicados por el usuario.");
             }
             if (pdf && (historialPdf == null || historialPdf.filtros() == null)) {
