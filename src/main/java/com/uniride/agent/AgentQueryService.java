@@ -96,6 +96,23 @@ public class AgentQueryService {
                 .map(busquedaMapper::toBusquedaRespuesta);
     }
 
+    public record ViajeContribucion(Long id, ContribucionResultado.Opcion opcion) { }
+
+    /** Identifies candidates without calculating, exposing, or reusing the generic search estimate. */
+    public Page<ViajeContribucion> identificarViajes(ContribucionFiltros filtros) {
+        Usuario pasajero = requireRole(Rol.PASAJERO);
+        if (!filtros.tieneReferenciaViaje()) return Page.empty();
+
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        return viajes.identificarParaContribucion(pasajero.getId(), filtros.viajePropio(),
+                normalizar(filtros.origen()), normalizar(filtros.destino()), normalizar(filtros.conductor()),
+                normalizarDia(filtros.dia()), filtros.hora(), filtros.fecha(), EstadoViaje.PROGRAMADO,
+                EstadoRuta.ELIMINADA, ahora.toLocalDate(), ahora.toLocalTime(), PageRequest.of(0, 2))
+                .map(viaje -> new ViajeContribucion(viaje.getId(), new ContribucionResultado.Opcion(
+                        viaje.getRuta().getOrigen(), viaje.getRuta().getDestino(), viaje.getDia(), viaje.getFecha(),
+                        viaje.getHora(), viaje.getRuta().getConductor().getNombre())));
+    }
+
     /** Conductor-scoped identification for rescheduling; two rows detect ambiguity. */
     public Page<ViajeResumen> identificarViajesConductor(String origen, String destino, String dia,
             LocalDate fecha, LocalTime hora) {

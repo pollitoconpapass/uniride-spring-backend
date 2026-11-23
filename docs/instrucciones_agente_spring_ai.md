@@ -25,6 +25,8 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | AgentToolRegistry | Callbacks, límite por turno, recibos y construcción de resultados estructurados |
 | AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
 | AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
+| ContribucionAgentTools | Identificación autorizada del viaje y sugerencia referencial para el pasajero |
+| ContribucionService | Reglas y cálculo de US29 compartidos por el endpoint tradicional y el agente |
 | ReportesAgentTools | Consultas personales de solo lectura y validación del rol activo para el ranking |
 | EstadisticasService | Totales de actividad, frecuencia histórica, ranking de rutas y generación del historial en PDF |
 | HistorialController | Descarga autenticada del PDF mediante `GET /api/historial/pdf` |
@@ -47,6 +49,28 @@ Spring descubre los componentes por `@ComponentScan`; usar inyección por constr
 8. Agregar pruebas de rol, propiedad, filtros, página siguiente y ausencia de escrituras. Simular el proveedor; nunca usar una clave real en tests.
 
 `resultados` es el contrato extensible de `ChatResponse`. Las listas heredadas siguen disponibles para los clientes existentes.
+
+### Sugerencia de contribución (US29)
+
+`sugerirContribucionViaje` usa `ToolContext` para recibir los filtros tipados que
+Java obtiene del mensaje actual o de una aclaración en la misma conversación.
+El esquema expuesto a Groq está vacío. La identificación y el rol salen de la
+sesión autenticada. El ID se obtiene de la consulta autorizada después de comprobar
+que solo hay una coincidencia. `ContribucionService.sugerencia` calcula el importe
+y devuelve el mismo DTO de US29 que usa `GET /api/viajes/{id}/sugerencia-contribucion`.
+La selección y el cálculo ocurren en una transacción de solo lectura con una
+vista coherente del viaje.
+
+En un turno de contribución, el registro habilita la herramienta de consulta. Si
+Groq termina con `STOP` y omite la llamada, Java ejecuta el mismo callback con los
+mismos filtros y el presupuesto vigente. El recibo del turno evita repetir la
+consulta. El texto de éxito o aclaración y `resultados` proceden del recibo Java.
+La sugerencia es informativa y no requiere confirmación.
+
+La continuidad usa filtros tipados, limitados a la conversación y al rol del
+pasajero. Ante una aclaración, la herramienta vuelve a verificar las coincidencias
+en la base. Un cambio de tema descarta los filtros de contribución. El chat de voz
+reutiliza el mismo flujo. [Contrato y ejemplos de US29](agente_flujo.md#sugerencia-de-contribución-us29)
 
 ### Herramientas de reportes implementadas
 

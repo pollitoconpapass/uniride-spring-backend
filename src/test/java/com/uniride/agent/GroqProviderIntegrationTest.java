@@ -1,5 +1,6 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
 import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -17,21 +18,30 @@ import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.confirmation.TipoOperacion;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.dto.ResolucionConfirmacion.Estado;
+import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.agent.tools.RutaAgentTools;
+import com.uniride.agent.tools.ViajeAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.responses.AnalisisSemanalRespuesta;
 import com.uniride.dto.responses.DiaCantidadRespuesta;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.dto.responses.RankingRutasRespuesta;
 import com.uniride.dto.responses.RutaFrecuenteRespuesta;
+import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
+import com.uniride.entities.Viaje;
 import com.uniride.enums.EstadoRuta;
+import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
+import com.uniride.mappers.BusquedaMapper;
+import com.uniride.repositories.ViajeRepository;
+import com.uniride.services.ContribucionService;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
 import java.io.IOException;
@@ -43,8 +53,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -60,12 +72,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mapstruct.factory.Mappers;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.dao.TransientDataAccessResourceException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.http.HttpStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -77,6 +93,8 @@ class GroqProviderIntegrationTest {
     private static final String GENERIC_COMPLETION = "Puedo ayudarte con una consulta de UniRide.";
     private static final String PREFERENCIA_VIAJE = "¿Prefieres compensar con DINERO, GASOLINA o FAVOR?";
     private static final String REGISTRO_COMPLETO = "Registra un método FAVOR con descripción Apuntes de clase";
+    private static final String CONTRIBUCION_CON_RUTA = "¿Cuánto tendría que aportar por un viaje de Surco a la UPC con 3 pasajeros?";
+    private static final LocalDate FECHA_VIAJE = LocalDate.of(2026, 11, 25);
     private static final Instant NOW = Instant.parse("2026-11-21T15:00:00Z");
     private final ObjectMapper mapper = new ObjectMapper();
     private final BlockingQueue<Reply> replies = new LinkedBlockingQueue<>();
@@ -129,6 +147,10 @@ class GroqProviderIntegrationTest {
     }
 
     private AgentService service(Duration timeout, Object otherTools, ConfirmationService confirmations) {
+        return service(timeout, confirmations, otherTools);
+    }
+
+    private AgentService service(Duration timeout, ConfirmationService confirmations, Object... otherTools) {
         Clock clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
         var options = OpenAiChatOptions.builder()
                 .baseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/openai/v1")
@@ -142,7 +164,10 @@ class GroqProviderIntegrationTest {
                 .build();
         var model = OpenAiChatModel.builder().options(options).build();
         ChatClient client = new AgentConfig().chatClient(ChatClient.builder(model));
-        var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(otherTools, new ReportesAgentTools(reports, users)));
+        var callbacks = new Object[otherTools.length + 1];
+        System.arraycopy(otherTools, 0, callbacks, 0, otherTools.length);
+        callbacks[otherTools.length] = new ReportesAgentTools(reports, users);
+        var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(callbacks));
         return new AgentService(client, users, clock, registry, new AgentConversationStore(clock), confirmations);
     }
 
@@ -164,6 +189,298 @@ class GroqProviderIntegrationTest {
         return new ConfirmacionResumen(receipt.id(), receipt.tipo(), state, receipt.resumen(), receipt.parametros(),
                 receipt.expira(), result);
     }
+
+    @Test
+    void simulatedGroqSelectsContributionAndCannotReplaceAmountsInItsFinalAnswer() {
+        var fixture = useUniqueContribution();
+        enqueue(200, toolCall(NOMBRE));
+        enqueue(200, completion("Ya transferí S/ 99.99 y registré el acuerdo.", "stop"));
+
+        ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+
+        assertContribution(response);
+        assertThat(response.message()).doesNotContain("99.99", "transferí", "registré");
+        assertThat(requests).hasSize(2);
+        var functions = StreamSupport.stream(requests.getFirst().path("tools").spliterator(), false)
+                .map(tool -> tool.path("function")).toList();
+        assertThat(functions).extracting(function -> function.path("name").asText()).containsExactly(NOMBRE);
+        assertThat(functions.getFirst().path("parameters").path("properties").size()).isZero();
+        assertThat(requests.getLast().path("messages").toString()).contains("aporteEstimado", "litrosGasolinaAprox");
+        verify(fixture.viajes()).findById(90L);
+        verifyNoInteractions(fixture.confirmaciones(), reports);
+    }
+
+    @Test
+    void validStopFromSimulatedGroqRecoversOnlyTheExplicitContributionFilters() {
+        var fixture = useUniqueContribution();
+        enqueue(200, completion("El aporte obligatorio es S/ 99.99.", "stop"));
+
+        ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+
+        assertContribution(response);
+        assertThat(response.message()).doesNotContain("99.99", "obligatorio");
+        assertThat(requests).hasSize(1);
+        var captor = ArgumentCaptor.forClass(ContribucionFiltros.class);
+        verify(fixture.consultas()).identificarViajes(captor.capture());
+        var filters = captor.getValue();
+        assertThat(filters.origen()).isEqualToIgnoringCase("Surco");
+        assertThat(filters.destino()).isEqualToIgnoringCase("UPC");
+        assertThat(filters.pasajeros()).isEqualTo(3);
+        assertThat(filters.fecha()).isNull();
+        assertThat(filters.hora()).isNull();
+        assertThat(filters.dia()).isNull();
+        assertThat(filters.viajePropio()).isFalse();
+        verify(fixture.viajes()).findById(90L);
+        verifyNoInteractions(fixture.confirmaciones(), reports);
+    }
+
+    @Test
+    void simulatedGroqCannotSupplyAnIdentityTripIdOrFiltersAndDuplicateCallsReuseTheVerifiedData() {
+        var fixture = useUniqueContribution();
+        enqueue(200, toolCall(NOMBRE, """
+                {"viajeId":999,"usuarioId":101,"rol":"CONDUCTOR","origen":"Ajeno","fecha":"2030-01-01","pasajeros":20}
+                """));
+        enqueue(200, toolCall(NOMBRE, """
+                {"viajeId":998,"destino":"Destino ajeno","pasajeros":14}
+                """));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+
+        assertContribution(response);
+        assertThat(response.message()).doesNotContain("Ajeno", "Destino ajeno");
+        assertThat(requests).hasSize(3);
+        var captor = ArgumentCaptor.forClass(ContribucionFiltros.class);
+        verify(fixture.consultas()).identificarViajes(captor.capture());
+        assertThat(captor.getValue().origen()).isEqualToIgnoringCase("Surco");
+        assertThat(captor.getValue().destino()).isEqualToIgnoringCase("UPC");
+        assertThat(captor.getValue().pasajeros()).isEqualTo(3);
+        assertThat(captor.getValue().fecha()).isNull();
+        verify(fixture.viajes()).findById(90L);
+        verifyNoMoreInteractions(fixture.viajes(), fixture.consultas());
+        verifyNoInteractions(fixture.confirmaciones());
+    }
+
+    @Test
+    void contributionDoesNotPrepareASeatRequestEvenIfSimulatedGroqTriesCallingItsTool() {
+        var fixture = useUniqueContribution();
+        enqueue(200, toolCall("solicitarUnirse", """
+                {"origen":"Surco","destino":"UPC","fecha":"2026-11-25","hora":"08:00","preferencia":"GASOLINA"}
+                """));
+
+        assertThatThrownBy(() -> service.chat(CONTRIBUCION_CON_RUTA, (UUID) null))
+                .isInstanceOf(AgentProviderException.class);
+
+        verifyNoInteractions(fixture.confirmaciones(), fixture.viajes(), fixture.consultas());
+        assertThat(requests).hasSize(1);
+    }
+
+    @Test
+    void simulatedGroqOmissionKeepsAnAmbiguousTripAndResolvesOnlyWhenThePassengerSuppliesItsDateAndTime() {
+        var fixture = useContributionTools();
+        Viaje viaje = contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0));
+        Viaje mismaFecha = contributionTrip(91L, FECHA_VIAJE, LocalTime.of(9, 0));
+        Viaje otraFecha = contributionTrip(92L, FECHA_VIAJE.plusDays(1), LocalTime.of(8, 0));
+        when(fixture.consultas().identificarViajes(any(ContribucionFiltros.class))).thenAnswer(call -> {
+            ContribucionFiltros filters = call.getArgument(0);
+            if (filters.fecha() == null) return tripPage(viaje, otraFecha);
+            if (filters.hora() == null) return tripPage(viaje, mismaFecha);
+            return tripPage(viaje);
+        });
+        when(fixture.viajes().findById(90L)).thenReturn(Optional.of(viaje));
+        enqueue(200, completion("Te corresponde pagar S/ 89.50.", "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse initial = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+        assertThat(initial.message()).containsIgnoringCase("fecha").doesNotContain("89.50");
+        assertAmbiguousContribution(initial);
+        ChatResponse byDate = service.chat("Al del 25 de noviembre.", initial.conversationId());
+        assertThat(byDate.message()).containsIgnoringCase("hora");
+        assertAmbiguousContribution(byDate);
+        verifyNoInteractions(fixture.viajes());
+
+        ChatResponse byHour = service.chat("A las ocho de la mañana.", initial.conversationId());
+        assertThat(byHour.conversationId()).isEqualTo(initial.conversationId());
+        assertContribution(byHour);
+
+        ChatResponse gasoline = service.chat("¿Cuánta gasolina correspondería aportar en ese viaje?", initial.conversationId());
+        assertContribution(gasoline);
+        ChatResponse favor = service.chat("¿Qué favor podría ofrecer como compensación?", initial.conversationId());
+        assertContribution(favor);
+        var captor = ArgumentCaptor.forClass(ContribucionFiltros.class);
+        verify(fixture.consultas(), times(5)).identificarViajes(captor.capture());
+        for (var filters : captor.getAllValues()) {
+            assertThat(filters.origen()).isEqualToIgnoringCase("Surco");
+            assertThat(filters.destino()).isEqualToIgnoringCase("UPC");
+            assertThat(filters.pasajeros()).isEqualTo(3);
+        }
+        assertThat(captor.getAllValues()).extracting(ContribucionFiltros::fecha)
+                .containsExactly(null, FECHA_VIAJE, FECHA_VIAJE, FECHA_VIAJE, FECHA_VIAJE);
+        assertThat(captor.getAllValues()).extracting(ContribucionFiltros::hora)
+                .containsExactly(null, null, LocalTime.of(8, 0), LocalTime.of(8, 0), LocalTime.of(8, 0));
+        verify(fixture.viajes(), times(3)).findById(90L);
+        verifyNoInteractions(fixture.confirmaciones());
+    }
+
+    @Test
+    void contributionContextCannotMoveBetweenUsersOrConversationsAndClearsOnTopicChange() {
+        var fixture = useContributionTools();
+        when(fixture.consultas().identificarViajes(any(ContribucionFiltros.class))).thenReturn(tripPage(
+                contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0)),
+                contributionTrip(91L, FECHA_VIAJE.plusDays(1), LocalTime.of(8, 0))));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse initial = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+        assertAmbiguousContribution(initial);
+        String followUp = "Al del 25 de noviembre a las 8.";
+
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(8L).rolPrincipal(Rol.PASAJERO).build());
+        assertThatThrownBy(() -> service.chat(followUp, initial.conversationId()))
+                .isInstanceOfSatisfying(AgentProviderException.class, error -> {
+                    assertThat(error.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(error.code()).isEqualTo("CONVERSATION_NOT_FOUND");
+                });
+        assertThat(requests).hasSize(1);
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        assertThat(service.chat(followUp, (UUID) null).resultados()).isEmpty();
+        assertThat(service.chat("Mis métodos de compensación", initial.conversationId()).resultados()).isEmpty();
+        assertThat(service.chat(followUp, initial.conversationId()).resultados()).isEmpty();
+
+        verify(fixture.consultas()).identificarViajes(any(ContribucionFiltros.class));
+        verifyNoMoreInteractions(fixture.consultas());
+        verifyNoInteractions(fixture.viajes(), fixture.confirmaciones());
+    }
+
+    @Test
+    void followingAnInformationalContributionWithASeatRequestPreparesOnlyTheNewTripRequest() {
+        var fixture = useContributionTools();
+        Viaje viaje = contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0));
+        when(fixture.consultas().identificarViajes(any(ContribucionFiltros.class))).thenReturn(tripPage(viaje));
+        when(fixture.viajes().findById(90L)).thenReturn(Optional.of(viaje));
+        when(fixture.consultas().identificarViajes("Surco", "UPC", null, FECHA_VIAJE, LocalTime.of(8, 0)))
+                .thenReturn(new PageImpl<>(List.of(Mappers.getMapper(BusquedaMapper.class).toBusquedaRespuesta(viaje))));
+        var parameters = new SolicitudRequest(null, TipoCompensacion.GASOLINA, null);
+        var proposal = pending(TipoOperacion.SOLICITAR_UNIRSE, "Confirma la solicitud de cupo.", Map.of("viajeId", 90L));
+        when(fixture.confirmaciones().prepararSolicitud(90L, parameters)).thenReturn(proposal);
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, toolCall("solicitarUnirse", """
+                {"origen":"Surco","destino":"UPC","fecha":"2026-11-25","hora":"08:00","preferencia":"GASOLINA"}
+                """));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse contribution = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+        assertContribution(contribution);
+        verifyNoInteractions(fixture.confirmaciones());
+        ChatResponse request = service.chat("Solicita un cupo de Surco a la UPC el 25 de noviembre a las 08:00 con GASOLINA",
+                contribution.conversationId());
+
+        assertThat(request.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
+        var confirmation = request.operacion().confirmacion();
+        assertThat(confirmation.id()).isEqualTo(proposal.confirmacion().id());
+        assertThat(confirmation.tipo()).isEqualTo(TipoOperacion.SOLICITAR_UNIRSE);
+        assertThat(confirmation.estado()).isEqualTo(EstadoConfirmacion.PENDIENTE);
+        assertThat(confirmation.parametros().path("viajeId").asLong()).isEqualTo(90L);
+        assertThat(request.resolucionConfirmacion()).isNull();
+        assertThat(request.resultados()).extracting(ResultadoAgente::tipo).containsExactly("solicitarUnirse");
+        verify(fixture.confirmaciones()).prepararSolicitud(90L, parameters);
+        verifyNoMoreInteractions(fixture.confirmaciones());
+        verify(fixture.viajes()).findById(90L);
+    }
+
+    @Test
+    void followingAnInformationalContributionWithAMethodRegistrationPreparesOnlyTheNewMethod() {
+        var fixture = useUniqueContribution();
+        var method = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
+        var proposal = pending(TipoOperacion.REGISTRAR_METODO, "Confirma el registro.", Map.of("tipo", "FAVOR"));
+        when(fixture.confirmaciones().prepararMetodo(method)).thenReturn(proposal);
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse contribution = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
+        assertContribution(contribution);
+        verifyNoInteractions(fixture.confirmaciones());
+        ChatResponse registration = service.chat(REGISTRO_COMPLETO, contribution.conversationId());
+
+        assertThat(registration.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
+        assertThat(registration.resolucionConfirmacion()).isNull();
+        assertThat(registration.resultados()).extracting(ResultadoAgente::tipo).containsExactly("registrarMetodoCompensacion");
+        verify(fixture.confirmaciones()).prepararMetodo(method);
+        verifyNoMoreInteractions(fixture.confirmaciones());
+        verify(fixture.viajes()).findById(90L);
+    }
+
+    private ContributionFixture useContributionTools() {
+        var queries = mock(AgentQueryService.class);
+        var trips = mock(ViajeRepository.class);
+        var confirmations = mock(ConfirmationService.class);
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        service = service(Duration.ofSeconds(3), confirmations,
+                new ContribucionAgentTools(queries, new ContribucionService(trips)),
+                new ViajeAgentTools(queries, confirmations, users),
+                new MetodoCompensacionAgentTools(queries, confirmations));
+        return new ContributionFixture(queries, trips, confirmations);
+    }
+
+    private ContributionFixture useUniqueContribution() {
+        var fixture = useContributionTools();
+        Viaje viaje = contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0));
+        when(fixture.consultas().identificarViajes(any(ContribucionFiltros.class))).thenReturn(tripPage(viaje));
+        when(fixture.viajes().findById(90L)).thenReturn(Optional.of(viaje));
+        return fixture;
+    }
+
+    private static Page<AgentQueryService.ViajeContribucion> tripPage(Viaje... trips) {
+        return new PageImpl<>(Arrays.stream(trips)
+                .map(trip -> new AgentQueryService.ViajeContribucion(trip.getId(),
+                        new ContribucionResultado.Opcion("Surco", "UPC", trip.getDia(), trip.getFecha(),
+                                trip.getHora(), "Ana Prueba"))).toList());
+    }
+
+    private static Viaje contributionTrip(Long id, LocalDate date, LocalTime time) {
+        return Viaje.builder().id(id).fecha(date).hora(time).dia("Miercoles")
+                .ruta(Ruta.builder().id(70L).origen("Surco").destino("UPC").estado(EstadoRuta.ACTIVA)
+                        .conductor(Usuario.builder().id(32L).nombre("Ana").build()).capacidadMaxima(4).build())
+                .estado(EstadoViaje.PROGRAMADO).build();
+    }
+
+    private static void assertContribution(ChatResponse response) {
+        JsonNode suggestion = contributionData(response).path("sugerencia");
+        assertThat(suggestion.path("viajeId").asLong()).isEqualTo(90L);
+        assertThat(suggestion.path("origen").asText()).isEqualTo("Surco");
+        assertThat(suggestion.path("destino").asText()).isEqualTo("UPC");
+        assertThat(suggestion.path("pasajeros").asInt()).isEqualTo(3);
+        assertThat(suggestion.path("esHoraPico").asBoolean()).isTrue();
+        assertThat(suggestion.path("costoTotalEstimado").asDouble()).isEqualTo(12.0);
+        assertThat(suggestion.path("aporteEstimado").asDouble()).isEqualTo(4.0);
+        assertThat(suggestion.path("litrosGasolinaAprox").asDouble()).isEqualTo(0.74);
+        assertThat(suggestion.path("sugerenciaFavor").asText()).containsIgnoringCase("favor");
+        assertThat(response.message()).contains("Surco", "UPC", "08:00").containsIgnoringCase("acuerdo")
+                .doesNotContain("No se encontraron resultados");
+    }
+
+    private static void assertAmbiguousContribution(ChatResponse response) {
+        JsonNode data = contributionData(response);
+        assertThat(data.path("estado").asText()).isEqualTo("AMBIGUA");
+        assertThat(data.path("alternativas").size()).isEqualTo(2);
+        assertThat(data.path("sugerencia").isNull() || data.path("sugerencia").isMissingNode()).isTrue();
+        assertThat(data.path("alternativas").get(0).has("viajeId")).isFalse();
+    }
+
+    private static JsonNode contributionData(ChatResponse response) {
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resolucionConfirmacion()).isNull();
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly(NOMBRE);
+        return response.resultados().getFirst().datos();
+    }
+
+    private record ContributionFixture(AgentQueryService consultas, ViajeRepository viajes,
+                                       ConfirmationService confirmaciones) { }
 
     @Test
     void rejectsPhantomJsonToolWithoutRetryOrChangingRegisteredTools() {

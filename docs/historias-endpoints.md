@@ -34,7 +34,7 @@ de **49 mappings** está en [endpoints.md](endpoints.md#índice-rápido).
 | 26 | Métodos compensación | GET/POST metodos-compensacion | MetodoCompensacionRepositoryTest |
 | 27 | Editar método propio | PUT metodos-compensacion/{id} | CierreTotal114MetodoCompensacionTest |
 | 28 | Eliminar método sin referencias | DELETE metodos-compensacion/{id} | CierreTotal114AccesoYMetodosRepositoryTest |
-| 29 | Sugerencia contribución | GET viajes/{id}/sugerencia-contribucion | ContribucionBusquedaUs10Test |
+| 29 | Sugerencia de contribución | GET viajes/{id}/sugerencia-contribucion y [agente por texto y voz](agente_flujo.md#sugerencia-de-contribución-us29) | ContribucionBusquedaUs10Test, GroqProviderIntegrationTest, AgentHttpSecurityTest, TextoHabladoTest |
 
 Operaciones de soporte: POST/GET rutas/{id}/viajes, DELETE viajes/{id}, PUT
 viajes/{id}/iniciar y /completar. Se mantienen en el inventario aunque no tengan

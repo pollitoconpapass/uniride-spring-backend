@@ -14,7 +14,9 @@ import com.uniride.dto.responses.RutaFrecuenteRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
+import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
+import com.uniride.services.ContribucionService;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.UsuarioService;
 import java.time.LocalDate;
@@ -33,7 +35,8 @@ class AgentToolRegistryTest {
             new ViajeAgentTools(queries, confirmations, users),
             new RutaAgentTools(queries, confirmations, users),
             new MetodoCompensacionAgentTools(queries, confirmations),
-            new ReportesAgentTools(statistics, users));
+            new ReportesAgentTools(statistics, users),
+            new ContribucionAgentTools(queries, mock(ContribucionService.class)));
 
     @Test void registersEveryExistingToolWithoutAnyConfirmationOrJsonTool() {
         assertThat(Arrays.stream(registry.newTurn().callbacks()).map(c -> c.getToolDefinition().name()))
@@ -44,6 +47,21 @@ class AgentToolRegistryTest {
                         "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion",
                         "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
         verifyNoInteractions(confirmations, queries, users, statistics);
+    }
+
+    @Test void anAttemptedContributionLookupIsNeverRepeatedAfterAnError() {
+        var filters = new ContribucionFiltros("Surco", "UPC", null, null, null, 2, null, false);
+        when(queries.identificarViajes(filters)).thenThrow(new BusinessException("Consulta interrumpida."));
+        var turn = registry.newTurn(null, CompensationIntent.classify("", null), false, filters);
+        assertThat(turn.callbacks()).extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly(ContribucionAgentTools.NOMBRE);
+
+        var tool = turn.callbacks()[0];
+        assertThatThrownBy(() -> tool.call("{}")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> tool.call("{\"viajeId\":1}")).isInstanceOf(AgentProviderException.class);
+        assertThatThrownBy(turn::recoverContribucion).isInstanceOf(AgentProviderException.class);
+        verify(queries).identificarViajes(filters);
+        verifyNoInteractions(confirmations);
     }
 
     @Test void repeatedArgumentsInDifferentOrderReturnSameReceiptAndOnlyOnePreparationIsAllowed() {

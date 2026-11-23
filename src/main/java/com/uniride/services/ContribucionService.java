@@ -28,7 +28,8 @@ public class ContribucionService {
         this.viajeRepository = viajeRepository;
     }
 
-    @Transactional(readOnly = true)
+    // El agente convierte una cantidad pendiente o inválida en una aclaración dentro de su transacción de lectura.
+    @Transactional(readOnly = true, noRollbackFor = CamposInvalidosException.class)
     public SugerenciaContribucionRespuesta sugerencia(Long viajeId, Integer pasajeros) {
         Viaje viaje = viajeRepository.findById(viajeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));

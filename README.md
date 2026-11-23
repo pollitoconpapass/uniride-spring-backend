@@ -124,6 +124,11 @@ El chat también prepara la descarga del historial en PDF para ambos roles. El
 archivo se descarga con el JWT del usuario mediante `GET /api/historial/pdf`.
 Ambos roles pueden preparar el registro, la edición, la activación, la
 desactivación y la eliminación de sus métodos de compensación desde el chat.
+Los pasajeros pueden consultar una sugerencia de contribución (US29) en texto o
+voz. Por ejemplo, envía `{"message":"¿Cuánto tendría que aportar por un viaje de Surco a la UPC?"}`
+a `/api/agent/chat`. La respuesta informa el aporte estimado, su equivalente en
+gasolina y una alternativa de favor acordado. La consulta es informativa y no
+requiere confirmación. [Ejemplos de Swagger y resultado estructurado](docs/agente_flujo.md#sugerencia-de-contribución-us29)
 
 Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md),

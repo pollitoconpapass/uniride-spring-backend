@@ -7,6 +7,7 @@ import com.uniride.agent.dto.MetodoCompensacionResumen;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.dto.ViajeResumen;
+import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
@@ -73,6 +74,27 @@ class TextoHabladoTest {
         var respuesta = new ChatResponse("Revisa los resultados.", List.of(), List.of(), List.of(),
                 null, List.of(new ResultadoAgente("buscarViajes", datos)), null, null);
         assertThat(TextoHablado.desde(respuesta)).endsWith("Hay más resultados en pantalla.");
+    }
+
+    @Test
+    void speaksVerifiedContributionAmountsWithSpanishDecimals() {
+        var datos = new ObjectMapper().valueToTree(Map.of("estado", "SUGERIDA", "sugerencia",
+                Map.of("pasajeros", 3, "aporteEstimado", 2.67, "litrosGasolinaAprox", 0.49)));
+        var respuesta = new ChatResponse("Detalle en pantalla.", List.of(), List.of(), List.of(), null,
+                List.of(new ResultadoAgente(ContribucionAgentTools.NOMBRE, datos)));
+
+        assertThat(TextoHablado.desde(respuesta)).isEqualTo("Para 3 pasajeros, el aporte estimado por pasajero "
+                + "es de 2,67 soles o 0,49 litros de gasolina. También puedes ofrecer un favor equivalente. "
+                + "El aporte final depende del acuerdo con el conductor.");
+    }
+
+    @Test
+    void keepsTheContributionClarificationWhenThereIsNoEstimate() {
+        var datos = new ObjectMapper().valueToTree(Map.of("estado", "FALTAN_PASAJEROS"));
+        var respuesta = new ChatResponse("¿Cuántos pasajeros harán el viaje?", List.of(), List.of(), List.of(),
+                null, List.of(new ResultadoAgente(ContribucionAgentTools.NOMBRE, datos)));
+
+        assertThat(TextoHablado.desde(respuesta)).isEqualTo("¿Cuántos pasajeros harán el viaje?");
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -8,6 +9,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.ContribucionFiltros;
+import com.uniride.agent.dto.ContribucionResultado;
 import com.uniride.agent.dto.ConfirmacionResumen;
 import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.OperacionResumen;
@@ -15,24 +18,36 @@ import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.confirmation.*;
+import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
+import com.uniride.entities.Viaje;
 import com.uniride.enums.Rol;
 import com.uniride.enums.EstadoRuta;
+import com.uniride.enums.EstadoViaje;
 import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.mappers.UsuarioMapper;
+import com.uniride.mappers.BusquedaMapper;
+import com.uniride.mappers.RutaMapper;
+import com.uniride.repositories.MetodoCompensacionRepository;
+import com.uniride.repositories.RutaRepository;
+import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.UsuarioRepository;
+import com.uniride.repositories.ViajeRepository;
 import com.uniride.security.*;
 import com.uniride.services.EstadisticasService;
+import com.uniride.services.ContribucionService;
 import com.uniride.services.MensajeService;
 import com.uniride.services.PerfilRolService;
+import com.uniride.services.SolicitudService;
 import com.uniride.services.UsuarioService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
@@ -52,6 +67,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
@@ -74,6 +90,7 @@ import tools.jackson.databind.ObjectMapper;
 class AgentHttpSecurityTest {
     static final String TEST_SECRET = "dW5pcmlkZS10ZXN0LXNlY3JldC1kZS0zMi1ieXRlcyE=";
     static final Instant NOW = Instant.parse("2026-11-21T15:00:00Z");
+    private static final String CONTRIBUCION = "¿Cuánto tendría que aportar por un viaje de Surco a la UPC?";
     @Autowired WebApplicationContext context;
     @Autowired UsuarioRepository usuarios;
     @Autowired AgentService agent;
@@ -94,7 +111,7 @@ class AgentHttpSecurityTest {
     @Test
     void withoutJwtDoesNotReachAgent() throws Exception {
         mvc.perform(post("/agent/chat").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"message\":\"Mis rutas\"}"))
+                .content(new ObjectMapper().writeValueAsString(Map.of("message", CONTRIBUCION))))
                 .andExpect(status().isForbidden());
         verifyNoInteractions(agent);
     }
@@ -175,6 +192,89 @@ class AgentHttpSecurityTest {
 
         verify(transcripcion).transcribir(any());
         verify(agent).chatVoz("¿Cuáles son mis rutas?", conversation);
+    }
+
+    @Test
+    void passengerContinuesContributionFromTextToVoiceWithSimulatedTranscriptionAndGroq() throws Exception {
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        var trips = mock(ViajeRepository.class);
+        var queries = mock(AgentQueryService.class);
+        var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var service = contributionAgent(usuarioService, queries, trips);
+        when(agent.chat(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        when(agent.chatVoz(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chatVoz(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        var date = LocalDate.of(2026, 11, 25);
+        var time = LocalTime.of(8, 0);
+        var trip = Viaje.builder().id(90L).fecha(date).hora(time).dia("Miercoles")
+                .ruta(Ruta.builder().origen("Surco").destino("UPC").build()).estado(EstadoViaje.PROGRAMADO).build();
+        var option = new ContribucionResultado.Opcion("Surco", "UPC", "Miercoles", date, time, "Ana Prueba");
+        when(queries.identificarViajes(any(ContribucionFiltros.class)))
+                .thenReturn(new PageImpl<>(List.of(new AgentQueryService.ViajeContribucion(90L, option))));
+        when(trips.findById(90L)).thenReturn(Optional.of(trip));
+        var mapper = new ObjectMapper();
+        String body = mvc.perform(post("/agent/chat").header("Authorization", bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("message", CONTRIBUCION))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resultados[0].tipo").value(NOMBRE))
+                .andExpect(jsonPath("$.resultados[0].datos.estado").value("FALTAN_PASAJEROS"))
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        String conversation = mapper.readTree(body).path("conversationId").asText();
+        when(transcripcion.transcribir(any())).thenReturn("3 pasajeros");
+
+        mvc.perform(multipart("/agent/voz").file(audio()).param("conversationId", conversation)
+                        .header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("3 pasajeros"))
+                .andExpect(jsonPath("$.textoHablado", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("4 soles"),
+                        org.hamcrest.Matchers.containsString("3 pasajeros"),
+                        org.hamcrest.Matchers.containsString("depende del acuerdo"),
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("999")))))
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversation))
+                .andExpect(jsonPath("$.respuesta.operacion").isEmpty())
+                .andExpect(jsonPath("$.respuesta.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.respuesta.resultados[0].tipo").value(NOMBRE))
+                .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.costoTotalEstimado").value(12.0))
+                .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.aporteEstimado").value(4.0))
+                .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.pasajeros").value(3));
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void contributionRequiresPassengerRoleWithTheRealJwtIdentity() throws Exception {
+        var trips = mock(ViajeRepository.class);
+        var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var queries = new AgentQueryService(mock(RutaRepository.class), trips, mock(MetodoCompensacionRepository.class),
+                mock(SolicitudRepository.class), mock(SolicitudService.class), usuarioService,
+                mock(RutaMapper.class), mock(BusquedaMapper.class), clock);
+        var service = contributionAgent(usuarioService, queries, trips);
+        when(agent.chat(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+
+        mvc.perform(post("/agent/chat").header("Authorization", bearer()).contentType(MediaType.APPLICATION_JSON)
+                        .content(new ObjectMapper().writeValueAsString(Map.of("message", CONTRIBUCION))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("PASAJERO")))
+                .andExpect(jsonPath("$.resultados").doesNotExist());
+        verifyNoInteractions(trips, confirmations);
+    }
+
+    private AgentService contributionAgent(UsuarioService usuarioService, AgentQueryService queries, ViajeRepository trips) {
+        ChatModel model = prompt -> new org.springframework.ai.chat.model.ChatResponse(List.of(new Generation(
+                new AssistantMessage("El aporte obligatorio es de 999 soles."),
+                ChatGenerationMetadata.builder().finishReason("STOP").build())));
+        var registry = new AgentToolRegistry(new ObjectMapper(),
+                ToolCallbacks.from(new ContribucionAgentTools(queries, new ContribucionService(trips))));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        return new AgentService(new AgentConfig().chatClient(ChatClient.builder(model)), usuarioService, clock,
+                registry, new AgentConversationStore(clock), confirmations);
     }
 
     @Test

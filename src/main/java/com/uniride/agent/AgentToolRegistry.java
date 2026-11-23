@@ -1,6 +1,8 @@
 package com.uniride.agent;
 
 import com.uniride.agent.confirmation.EstadoConfirmacion;
+import static com.uniride.agent.tools.ContribucionAgentTools.CONTEXTO_FILTROS;
+import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
 import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
 import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 
@@ -31,8 +33,9 @@ public class AgentToolRegistry {
 
     @Autowired
     public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
-                             MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes) {
-        this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes));
+                             MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes,
+                             ContribucionAgentTools contribucion) {
+        this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes, contribucion));
     }
 
     AgentToolRegistry(ObjectMapper mapper, ToolCallback... callbacks) {
@@ -47,13 +50,19 @@ public class AgentToolRegistry {
     }
 
     Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
-        return new Turn(historialPdf, compensation, solicitudViaje);
+        return newTurn(historialPdf, compensation, solicitudViaje, null);
+    }
+
+    Turn newTurn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
+                 boolean solicitudViaje, ContribucionFiltros filtrosContribucion) {
+        return new Turn(historialPdf, compensation, solicitudViaje, filtrosContribucion);
     }
 
     public final class Turn {
         private final HistorialPdfIntent.Solicitud historialPdf;
         private final CompensationIntent.Decision compensation;
         private final boolean solicitudViaje;
+        private final ContribucionFiltros filtrosContribucion;
         private int calls;
         private final List<ResultadoAgente> results = new ArrayList<>();
         private final Map<String, String> receipts = new HashMap<>();
@@ -61,16 +70,22 @@ public class AgentToolRegistry {
         private final List<RutaResumen> rutas = new ArrayList<>();
         private final List<MetodoCompensacionResumen> metodos = new ArrayList<>();
         private OperacionResumen operation;
+        private ContribucionResultado contribucion;
+        private boolean contribucionInvocada;
         private boolean prepared;
 
-        private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation, boolean solicitudViaje) {
+        private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
+                     boolean solicitudViaje, ContribucionFiltros filtrosContribucion) {
             this.historialPdf = historialPdf;
             this.compensation = compensation;
             this.solicitudViaje = solicitudViaje;
+            this.filtrosContribucion = filtrosContribucion;
         }
 
         public ToolCallback[] callbacks() {
-            return Arrays.stream(AgentToolRegistry.this.callbacks).map(delegate -> new ToolCallback() {
+            return Arrays.stream(AgentToolRegistry.this.callbacks)
+                    .filter(delegate -> NOMBRE.equals(delegate.getToolDefinition().name()) == (filtrosContribucion != null))
+                    .map(delegate -> new ToolCallback() {
                 public ToolDefinition getToolDefinition() { return delegate.getToolDefinition(); }
                 public ToolMetadata getToolMetadata() { return delegate.getToolMetadata(); }
                 public String call(String input) { return call(input, new ToolContext(Map.of())); }
@@ -90,6 +105,11 @@ public class AgentToolRegistry {
         private void recoverRead(String name) {
             if (receipts.containsKey(name + NO_ARGUMENTS)) return;
             execute(callback(name), NO_ARGUMENTS, new ToolContext(Map.of()));
+        }
+
+        synchronized void recoverContribucion() {
+            if (!contribucionInvocada) recoverRead(NOMBRE);
+            if (contribucion == null) throw invalid("TOOL_EXECUTION_FAILED", "No se pudo completar la sugerencia de contribución.");
         }
 
         synchronized void recoverCompensation() {
@@ -117,11 +137,13 @@ public class AgentToolRegistry {
             if (preparaCompensacion && argumentosVerificados) {
                 input = mapper.writeValueAsString(compensation.recoveryArgs());
             }
-            Object arguments = mapper.readValue(input, Object.class);
             boolean pdf = DESCARGA_HISTORIAL_PDF.equals(name);
-            boolean noArguments = pdf || AgentReportIntent.isReportTool(name);
-            // Extra model fields cannot change a report's filters or its receipt.
-            String key = name + (noArguments ? NO_ARGUMENTS : mapper.writeValueAsString(canonical(arguments)));
+            boolean sugiereContribucion = NOMBRE.equals(name);
+            boolean noArguments = pdf || sugiereContribucion || AgentReportIntent.isReportTool(name);
+            Object arguments = sugiereContribucion ? null : mapper.readValue(input, Object.class);
+            // Server-derived tool arguments have one receipt even if the model adds fields.
+            String key = name + (noArguments ? NO_ARGUMENTS
+                    : mapper.writeValueAsString(canonical(arguments)));
             if (receipts.containsKey(key)) return receipts.get(key);
             if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
@@ -136,6 +158,12 @@ public class AgentToolRegistry {
                 return responderSinEjecutar(key, detalle);
             }
             if (pdf) context = new ToolContext(Map.of(CONTEXTO_FILTROS_PDF, historialPdf.filtros()));
+            if (sugiereContribucion) {
+                if (contribucionInvocada)
+                    throw invalid("TOOL_EXECUTION_FAILED", "No se pudo completar la sugerencia de contribución.");
+                contribucionInvocada = true;
+                context = new ToolContext(Map.of(CONTEXTO_FILTROS, filtrosContribucion));
+            }
             String output;
             try {
                 output = delegate.call(noArguments ? NO_ARGUMENTS : input, context);
@@ -171,6 +199,7 @@ public class AgentToolRegistry {
             results.add(new ResultadoAgente(name, data));
             JsonNode items = data.isArray() ? data : data.path("items");
             switch (name) {
+                case NOMBRE -> contribucion = mapper.treeToValue(data, ContribucionResultado.class);
                 case "buscarViajes", "consultarMisViajes", "consultarMisSolicitudes" ->
                     items.forEach(item -> viajes.add(mapper.treeToValue(item, ViajeResumen.class)));
                 case "consultarMisRutas" ->
@@ -186,6 +215,8 @@ public class AgentToolRegistry {
 
         public boolean hasResults() { return !results.isEmpty(); }
 
+        ContribucionResultado contribucion() { return contribucion; }
+
         public ChatResponse response(String text) {
             return response(text, null);
         }
@@ -196,6 +227,7 @@ public class AgentToolRegistry {
         }
 
         private String message(String text, AdvertenciaAgente warning) {
+            if (contribucion != null) return contribucion.mensaje();
             // The operation receipt or controlled warning takes precedence over model text.
             String primary = operation != null ? operation.detalle() : warning != null ? text : compensation.message();
             if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA

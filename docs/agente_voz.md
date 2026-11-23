@@ -13,7 +13,7 @@ Incluido:
 - Transcripción en el backend con Groq (`whisper-large-v3-turbo`), reutilizando `GROQ_API_KEY`.
 - Síntesis de voz en el navegador con `speechSynthesis` (costo cero, sin clave nueva).
 - Lectura en voz alta del mensaje y de los resultados estructurados relevantes (rutas, viajes,
-  métodos de compensación), sin depender de que el modelo los enumere.
+  métodos de compensación y sugerencias de contribución), sin depender de que el modelo los enumere.
 
 Fuera de alcance por ahora:
 
@@ -63,8 +63,9 @@ Secuencia de un turno:
 6. El servidor valida la transcripción: no vacía, máximo 1000 caracteres y sin secretos.
 7. `AgentService` procesa el texto con el mismo flujo de `/agent/chat`, pero en modo voz: el
    modelo responde en dos frases y no enumera listas.
-8. El backend construye `textoHablado`: mensaje natural + hasta 5 elementos por lista
-   estructurada, con «hay N más en pantalla». Máximo aproximado de 900 caracteres.
+8. El backend construye `textoHablado` con el mensaje y hasta cinco elementos por lista
+   estructurada. Para US29 usa el importe por pasajero, el equivalente en gasolina y la
+   cantidad de pasajeros del resultado verificado. El texto se limita a 900 caracteres.
 9. Angular muestra la transcripción como mensaje del usuario, pinta la respuesta completa
    (`respuesta`) y reproduce `textoHablado`.
 10. Si el usuario vuelve a pulsar el micrófono, Angular detiene la voz en curso (barge-in).
@@ -129,7 +130,7 @@ HTTP 200 con un envoltorio nuevo que conserva intacto el contrato de `/agent/cha
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `transcripcion` | Mostrarla como mensaje del usuario; permite corregir errores del STT.                                                                     |
 | `textoHablado`  | Reproducirla tal cual con `speechSynthesis`. Si falta o está vacía, usar `respuesta.message`.                                             |
-| `respuesta`     | Mismo `ChatResponse` de `/agent/chat`: `message`, listas tipadas, `operacion`, `advertencia`, `conversationId`, `resolucionConfirmacion`. |
+| `respuesta`     | Mismo `ChatResponse` de `/agent/chat` con `message`, listas tipadas, `resultados`, `operacion`, `advertencia`, `conversationId` y `resolucionConfirmacion` cuando aplica. |
 
 Reglas de `textoHablado`:
 
@@ -139,6 +140,14 @@ Reglas de `textoHablado`:
 - No incluye IDs, JSON, markdown ni tablas.
 - Puede incluir el aviso de confirmación generado por Java. La UI no debe interpretar ese
   texto para decidir acciones; solo lo muestra y lo lee.
+
+Para probar una sugerencia en Swagger, autoriza un JWT con rol `PASAJERO` y adjunta a
+`POST /api/agent/voz` un audio con «¿Cuánto tendría que aportar por un viaje de Surco a la UPC?».
+Si necesitas completar la fecha, la hora o los pasajeros, reutiliza `respuesta.conversationId`
+en la siguiente petición de voz o en el chat de texto. El resultado aparece en
+`respuesta.resultados` con el tipo `sugerirContribucionViaje`. La respuesta hablada incluye
+el importe, los pasajeros usados y el carácter referencial sujeto a acuerdo. La sugerencia
+es informativa y no requiere confirmación. [Contrato y ejemplos de US29](agente_flujo.md#sugerencia-de-contribución-us29)
 
 ### 4.3 Errores
 
@@ -334,13 +343,16 @@ Backend (sin Groq real):
 - HTTP multipart: sin JWT → 403; sin archivo → 400; audio grande → 413; MIME inválido → 415;
   respuesta con `transcripcion`, `textoHablado` y `respuesta`.
 - Compositor de `textoHablado`: sin listas, una lista, más de cinco elementos, viaje con
-  fecha/hora, método activo/inactivo, truncado a ~900 caracteres.
+  fecha/hora, método activo/inactivo, truncado a ~900 caracteres y sugerencia US29 basada
+  en los importes capturados por Java.
 - Regresión: `/agent/chat` conserva su contrato y sus pruebas actuales.
 
 Manual con `GROQ_API_KEY` real:
 
 - «¿Cuáles son mis rutas?» devuelve transcripción correcta y `textoHablado` con las rutas.
 - Consulta de reportes: el mensaje incluye los valores y no se leen tablas ni IDs.
+- Consulta de contribución con rol PASAJERO: la respuesta hablada informa el aporte
+  estimado por pasajero y la pantalla conserva el detalle de US29.
 - Propuesta de escritura: la UI pide «sí» o «no»; no se ejecuta con frases ambiguas.
 
 Frontend (Chrome de escritorio):
