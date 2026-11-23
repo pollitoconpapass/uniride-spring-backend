@@ -68,6 +68,7 @@ import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -79,6 +80,8 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -119,6 +122,10 @@ class GroqProviderIntegrationTest {
                 if (reply.delayMillis() > 0) Thread.sleep(reply.delayMillis());
                 byte[] bytes = reply.body().getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
+                if (reply.status() == 429) {
+                    exchange.getResponseHeaders().set("Retry-After", "2");
+                    exchange.getResponseHeaders().set("X-RateLimit-Remaining-Tokens", "0");
+                }
                 exchange.sendResponseHeaders(reply.status(), bytes.length);
                 exchange.getResponseBody().write(bytes);
             } catch (InterruptedException interrupted) {
@@ -162,7 +169,8 @@ class GroqProviderIntegrationTest {
                 .parallelToolCalls(false)
                 .replayReasoningContent(false)
                 .build();
-        var model = OpenAiChatModel.builder().options(options).build();
+        var model = OpenAiChatModel.builder().options(options)
+                .httpClientBuilderCustomizer(new GroqHttpDiagnostics()).build();
         ChatClient client = new AgentConfig().chatClient(ChatClient.builder(model));
         var callbacks = new Object[otherTools.length + 1];
         System.arraycopy(otherTools, 0, callbacks, 0, otherTools.length);
@@ -191,35 +199,28 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void simulatedGroqSelectsContributionAndCannotReplaceAmountsInItsFinalAnswer() {
+    void recognizedContributionUsesVerifiedAmountsWithoutCallingRateLimitedGroq() {
         var fixture = useUniqueContribution();
-        enqueue(200, toolCall(NOMBRE));
-        enqueue(200, completion("Ya transferí S/ 99.99 y registré el acuerdo.", "stop"));
+        enqueue(429, rateLimitError());
 
         ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
 
         assertContribution(response);
-        assertThat(response.message()).doesNotContain("99.99", "transferí", "registré");
-        assertThat(requests).hasSize(2);
-        var functions = StreamSupport.stream(requests.getFirst().path("tools").spliterator(), false)
-                .map(tool -> tool.path("function")).toList();
-        assertThat(functions).extracting(function -> function.path("name").asText()).containsExactly(NOMBRE);
-        assertThat(functions.getFirst().path("parameters").path("properties").size()).isZero();
-        assertThat(requests.getLast().path("messages").toString()).contains("aporteEstimado", "litrosGasolinaAprox");
+        assertThat(response.advertencia()).isNull();
+        assertThat(requests).isEmpty();
         verify(fixture.viajes()).findById(90L);
         verifyNoInteractions(fixture.confirmaciones(), reports);
     }
 
     @Test
-    void validStopFromSimulatedGroqRecoversOnlyTheExplicitContributionFilters() {
+    void serverUsesOnlyTheExplicitContributionFilters() {
         var fixture = useUniqueContribution();
-        enqueue(200, completion("El aporte obligatorio es S/ 99.99.", "stop"));
 
         ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
 
         assertContribution(response);
-        assertThat(response.message()).doesNotContain("99.99", "obligatorio");
-        assertThat(requests).hasSize(1);
+        assertThat(response.message()).doesNotContain("obligatorio");
+        assertThat(requests).isEmpty();
         var captor = ArgumentCaptor.forClass(ContribucionFiltros.class);
         verify(fixture.consultas()).identificarViajes(captor.capture());
         var filters = captor.getValue();
@@ -235,30 +236,18 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void simulatedGroqCannotSupplyAnIdentityTripIdOrFiltersAndDuplicateCallsReuseTheVerifiedData() {
-        var fixture = useUniqueContribution();
+    void simulatedGroqCannotTriggerContributionOrSupplyItsIdentityTripIdAndFilters() {
+        var fixture = useContributionTools();
         enqueue(200, toolCall(NOMBRE, """
                 {"viajeId":999,"usuarioId":101,"rol":"CONDUCTOR","origen":"Ajeno","fecha":"2030-01-01","pasajeros":20}
                 """));
-        enqueue(200, toolCall(NOMBRE, """
-                {"viajeId":998,"destino":"Destino ajeno","pasajeros":14}
-                """));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
-        ChatResponse response = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
-
-        assertContribution(response);
-        assertThat(response.message()).doesNotContain("Ajeno", "Destino ajeno");
-        assertThat(requests).hasSize(3);
-        var captor = ArgumentCaptor.forClass(ContribucionFiltros.class);
-        verify(fixture.consultas()).identificarViajes(captor.capture());
-        assertThat(captor.getValue().origen()).isEqualToIgnoringCase("Surco");
-        assertThat(captor.getValue().destino()).isEqualToIgnoringCase("UPC");
-        assertThat(captor.getValue().pasajeros()).isEqualTo(3);
-        assertThat(captor.getValue().fecha()).isNull();
-        verify(fixture.viajes()).findById(90L);
-        verifyNoMoreInteractions(fixture.viajes(), fixture.consultas());
-        verifyNoInteractions(fixture.confirmaciones());
+        assertThatThrownBy(() -> service.chat("Ayúdame con UniRide.", (UUID) null))
+                .isInstanceOfSatisfying(AgentProviderException.class,
+                        failure -> assertThat(failure.status()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain(NOMBRE);
+        verifyNoInteractions(fixture.consultas(), fixture.viajes(), fixture.confirmaciones());
     }
 
     @Test
@@ -268,15 +257,15 @@ class GroqProviderIntegrationTest {
                 {"origen":"Surco","destino":"UPC","fecha":"2026-11-25","hora":"08:00","preferencia":"GASOLINA"}
                 """));
 
-        assertThatThrownBy(() -> service.chat(CONTRIBUCION_CON_RUTA, (UUID) null))
-                .isInstanceOf(AgentProviderException.class);
+        assertContribution(service.chat(CONTRIBUCION_CON_RUTA, (UUID) null));
 
-        verifyNoInteractions(fixture.confirmaciones(), fixture.viajes(), fixture.consultas());
-        assertThat(requests).hasSize(1);
+        verifyNoInteractions(fixture.confirmaciones());
+        verify(fixture.viajes()).findById(90L);
+        assertThat(requests).isEmpty();
     }
 
     @Test
-    void simulatedGroqOmissionKeepsAnAmbiguousTripAndResolvesOnlyWhenThePassengerSuppliesItsDateAndTime() {
+    void keepsAnAmbiguousTripAndResolvesOnlyWhenThePassengerSuppliesItsDateAndTime() {
         var fixture = useContributionTools();
         Viaje viaje = contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0));
         Viaje mismaFecha = contributionTrip(91L, FECHA_VIAJE, LocalTime.of(9, 0));
@@ -288,14 +277,8 @@ class GroqProviderIntegrationTest {
             return tripPage(viaje);
         });
         when(fixture.viajes().findById(90L)).thenReturn(Optional.of(viaje));
-        enqueue(200, completion("Te corresponde pagar S/ 89.50.", "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-
         ChatResponse initial = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
-        assertThat(initial.message()).containsIgnoringCase("fecha").doesNotContain("89.50");
+        assertThat(initial.message()).containsIgnoringCase("fecha");
         assertAmbiguousContribution(initial);
         ChatResponse byDate = service.chat("Al del 25 de noviembre.", initial.conversationId());
         assertThat(byDate.message()).containsIgnoringCase("hora");
@@ -323,6 +306,7 @@ class GroqProviderIntegrationTest {
                 .containsExactly(null, null, LocalTime.of(8, 0), LocalTime.of(8, 0), LocalTime.of(8, 0));
         verify(fixture.viajes(), times(3)).findById(90L);
         verifyNoInteractions(fixture.confirmaciones());
+        assertThat(requests).isEmpty();
     }
 
     @Test
@@ -331,7 +315,6 @@ class GroqProviderIntegrationTest {
         when(fixture.consultas().identificarViajes(any(ContribucionFiltros.class))).thenReturn(tripPage(
                 contributionTrip(90L, FECHA_VIAJE, LocalTime.of(8, 0)),
                 contributionTrip(91L, FECHA_VIAJE.plusDays(1), LocalTime.of(8, 0))));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
@@ -346,10 +329,10 @@ class GroqProviderIntegrationTest {
                     assertThat(error.status()).isEqualTo(HttpStatus.NOT_FOUND);
                     assertThat(error.code()).isEqualTo("CONVERSATION_NOT_FOUND");
                 });
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
         assertThat(service.chat(followUp, (UUID) null).resultados()).isEmpty();
-        assertThat(service.chat("Mis métodos de compensación", initial.conversationId()).resultados()).isEmpty();
+        assertThat(service.chat("Ayúdame con UniRide.", initial.conversationId()).resultados()).isEmpty();
         assertThat(service.chat(followUp, initial.conversationId()).resultados()).isEmpty();
 
         verify(fixture.consultas()).identificarViajes(any(ContribucionFiltros.class));
@@ -368,11 +351,10 @@ class GroqProviderIntegrationTest {
         var parameters = new SolicitudRequest(null, TipoCompensacion.GASOLINA, null);
         var proposal = pending(TipoOperacion.SOLICITAR_UNIRSE, "Confirma la solicitud de cupo.", Map.of("viajeId", 90L));
         when(fixture.confirmaciones().prepararSolicitud(90L, parameters)).thenReturn(proposal);
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
         enqueue(200, toolCall("solicitarUnirse", """
                 {"origen":"Surco","destino":"UPC","fecha":"2026-11-25","hora":"08:00","preferencia":"GASOLINA"}
                 """));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        enqueue(429, rateLimitError());
 
         ChatResponse contribution = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
         assertContribution(contribution);
@@ -380,6 +362,8 @@ class GroqProviderIntegrationTest {
         ChatResponse request = service.chat("Solicita un cupo de Surco a la UPC el 25 de noviembre a las 08:00 con GASOLINA",
                 contribution.conversationId());
 
+        assertThat(requests).hasSize(1);
+        assertThat(request.advertencia()).isNull();
         assertThat(request.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         var confirmation = request.operacion().confirmacion();
         assertThat(confirmation.id()).isEqualTo(proposal.confirmacion().id());
@@ -399,9 +383,7 @@ class GroqProviderIntegrationTest {
         var method = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
         var proposal = pending(TipoOperacion.REGISTRAR_METODO, "Confirma el registro.", Map.of("tipo", "FAVOR"));
         when(fixture.confirmaciones().prepararMetodo(method)).thenReturn(proposal);
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-
+        enqueue(429, rateLimitError());
         ChatResponse contribution = service.chat(CONTRIBUCION_CON_RUTA, (UUID) null);
         assertContribution(contribution);
         verifyNoInteractions(fixture.confirmaciones());
@@ -413,6 +395,7 @@ class GroqProviderIntegrationTest {
         verify(fixture.confirmaciones()).prepararMetodo(method);
         verifyNoMoreInteractions(fixture.confirmaciones());
         verify(fixture.viajes()).findById(90L);
+        assertThat(requests).isEmpty();
     }
 
     private ContributionFixture useContributionTools() {
@@ -499,12 +482,11 @@ class GroqProviderIntegrationTest {
         assertThat(request.path("model").asText()).isEqualTo("openai/gpt-oss-120b");
         assertThat(request.has("response_format")).isFalse();
         assertThat(request.path("tools").isArray()).isTrue();
-        assertThat(StreamSupport.stream(request.path("tools").spliterator(), false)
-                .map(tool -> tool.path("function").path("name").asText()).toList())
-                .contains("consultarMisRutas", "buscarViajes", "consultarMisViajes", "consultarMisMetodosCompensacion",
-                        "consultarMisEstadisticas", "consultarMiFrecuenciaViajes", "consultarRankingMisRutas",
-                        DESCARGA_HISTORIAL_PDF)
-                .doesNotContain("json");
+        assertThat(toolNames(request))
+                .contains("consultarMisRutas", "consultarMisViajes", "consultarMisMetodosCompensacion",
+                        "consultarMisEstadisticas", "consultarMiFrecuenciaViajes", "consultarRankingMisRutas")
+                .doesNotContain("json", "buscarViajes", "solicitarUnirse", "registrarMetodoCompensacion",
+                        DESCARGA_HISTORIAL_PDF, NOMBRE);
         assertThat(request.path("messages").toString())
                 .doesNotContain("$schema", "JSON Schema", "Your response should be in JSON format");
         assertThat(request.has("disable_tool_validation")).isFalse();
@@ -537,21 +519,13 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void compensationUpdateUsesThePreparationReceiptAndAcceptsNoResourceId() {
+    void compensationUpdateUsesVerifiedArgumentsAndReturnsThePreparationReceipt() {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
         service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
         String detalle = "Cambiar la descripción de Yape a Yape personal. ¿Confirmas esta operación?";
         when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal"))
                 .thenReturn(pending(TipoOperacion.ACTUALIZAR_METODO, detalle, Map.of("descripcion", "Yape personal")));
-        enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
-                """));
-        enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"id":123,"tipoActual":"GASOLINA","descripcionActual":"Inventado","nuevoTipo":"BITCOIN",
-                 "nuevaDescripcion":"Otra descripción","activo":false}
-                """));
-        enqueue(200, completion("Actualicé el método directamente.", "stop"));
 
         ChatResponse response = service.chat("owner", "Cambia la descripción de mi método Yape a Yape personal");
 
@@ -559,16 +533,7 @@ class GroqProviderIntegrationTest {
                 .doesNotContain("Inventado", "Otra descripción", "BITCOIN");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
-        assertThat(requests).hasSize(3);
-        var registered = StreamSupport.stream(requests.getFirst().path("tools").spliterator(), false)
-                .map(tool -> tool.path("function")).toList();
-        assertThat(registered.stream().map(tool -> tool.path("name").asText())).contains(
-                "consultarMisMetodosCompensacion", "registrarMetodoCompensacion", "actualizarMetodoCompensacion",
-                "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion")
-                .doesNotContain("confirmar", "json");
-        assertThat(registered.stream().filter(tool -> "actualizarMetodoCompensacion".equals(tool.path("name").asText()))
-                .findFirst().orElseThrow().path("parameters").path("properties").propertyNames())
-                .containsExactlyInAnyOrder("tipoActual", "descripcionActual", "nuevoTipo", "nuevaDescripcion");
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
         verifyNoMoreInteractions(confirmations);
         verifyNoInteractions(queries);
@@ -583,9 +548,6 @@ class GroqProviderIntegrationTest {
         String detalle = (active ? "Activar" : "Desactivar") + " el método de gasolina. ¿Confirmas esta operación?";
         when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active))
                 .thenReturn(pending(TipoOperacion.CAMBIAR_ESTADO_METODO, detalle, Map.of("activo", active)));
-        enqueue(200, toolCall("cambiarEstadoMetodoCompensacion",
-                "{\"tipoActual\":\"GASOLINA\",\"activo\":" + active + "}"));
-        enqueue(200, completion("El cambio ya se realizó.", "stop"));
 
         ChatResponse response = service.chat("owner", active ? "Activa mi método de gasolina" : "Desactiva mi método de gasolina");
 
@@ -593,7 +555,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo)
                 .containsExactly("cambiarEstadoMetodoCompensacion");
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active);
         verifyNoMoreInteractions(confirmations);
         verifyNoInteractions(queries);
@@ -607,17 +569,13 @@ class GroqProviderIntegrationTest {
         String detalle = "No puedes eliminar este método porque tiene solicitudes asociadas. Puedes desactivarlo.";
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes"))
                 .thenThrow(new BusinessException(detalle));
-        enqueue(200, toolCall("eliminarMetodoCompensacion", """
-                {"id":123,"tipoActual":"GASOLINA","descripcionActual":"Inventado"}
-                """));
-        enqueue(200, completion("Método eliminado.", "stop"));
 
         ChatResponse response = service.chat("owner", "Elimina mi método de tipo FAVOR llamado Favor con apuntes");
 
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.ERROR);
         assertThat(response.operacion().confirmacion()).isNull();
         assertThat(response.message()).isEqualTo(detalle);
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Favor con apuntes");
         verifyNoMoreInteractions(confirmations);
         verifyNoInteractions(queries);
@@ -629,13 +587,12 @@ class GroqProviderIntegrationTest {
             ¿Cómo activo un método? | true
             No quiero desactivar mi método | false
             ¿Qué pasa si elimino Yape? | false
-            Explícame cómo se editan los métodos | false
+            Explícame cómo se editan los métodos | true
             ¿Puedo eliminar un método? | true
             No elimines mi método de gasolina | false
             """)
-    void erroneousProviderToolCannotPrepareDeletionOnAnInformativeOrNegatedTurn(String question, boolean direct) {
+    void informativeOrNegatedTurnsDoNotExposeCompensationPreparations(String question, boolean direct) {
         var confirmations = useCompensationTools();
-        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
         enqueue(200, completion("Eliminé el método.", "stop"));
 
         ChatResponse response = service.chat("owner", question);
@@ -643,20 +600,21 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
         assertThat(response.message()).doesNotContain("Eliminé el método");
-        assertThat(requests).hasSize(direct ? 0 : 2);
+        assertThat(requests).hasSize(direct ? 0 : 1);
+        if (!direct) assertThat(toolNames()).doesNotContain("eliminarMetodoCompensacion");
         verifyNoInteractions(confirmations);
     }
 
     @ParameterizedTest
     @CsvSource(delimiter = '|', textBlock = """
-            Elimina mi método | false
-            Actualiza mi método de gasolina | false
+            Elimina mi método | true
+            Actualiza mi método de gasolina | true
             ¿Cómo activo un método? | true
             No quiero desactivar mi método | false
-            Desactiva mi método | false
+            Desactiva mi método | true
             Elimina mi método Yape o mi método FAVOR | false
             """)
-    void modelOmittedCompensationPreparationIsOnlyRecoveredForVerifiedRequests(String message, boolean direct) {
+    void missingOrAmbiguousCompensationDetailsCannotPrepareAnything(String message, boolean direct) {
         var confirmations = useCompensationTools();
         enqueue(200, completion("Eliminé el método.", "stop"));
 
@@ -701,8 +659,76 @@ class GroqProviderIntegrationTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"Mis métodos", "Muéstrame mis métodos de compensación", "¿Cuáles son mis métodos?"})
+    void explicitOwnedMethodListWorksWithoutCallingRateLimitedGroq(String question) {
+        var queries = useMethodListTools();
+        enqueue(429, rateLimitError());
+
+        assertMethodList(service.chat(question, (UUID) null));
+
+        assertThat(requests).isEmpty();
+        verify(queries).metodos(null);
+    }
+
+    @Test
+    void aModelSelectedMethodListNeedsJustOneProviderRequestOnAStandaloneTurn() {
+        var queries = useMethodListTools();
+        enqueue(200, toolCall("consultarMisMetodosCompensacion"));
+        enqueue(429, rateLimitError());
+
+        ChatResponse response = service.chat("Quisiera revisar las opciones que tengo guardadas para compensar", (UUID) null);
+
+        assertMethodList(response);
+        assertThat(response.advertencia()).isNull();
+        assertThat(requests).hasSize(1);
+        verify(queries).metodos(null);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitAfterReadingMethodsPreservesTheDataAndCountsActualHttpRounds(CapturedOutput output) {
+        var queries = useMethodListTools();
+        enqueue(200, toolCall("consultarMisMetodosCompensacion"));
+        enqueue(429, rateLimitError());
+
+        ChatResponse response = service.chat("Muéstrame mis métodos de compensación y mis estadísticas", (UUID) null);
+
+        assertMethodList(response);
+        assertThat(response.advertencia().codigo()).isEqualTo("PROVIDER_RATE_LIMIT");
+        assertThat(response.advertencia().mensaje()).doesNotContain("Provider-only rate limit detail");
+        assertThat(requests).hasSize(2);
+        assertThat(output.getAll()).contains("estadoHttp=429", "rondasHttp=2", "tipoLimite=TOKENS",
+                        "retryAfterSeconds=2", "x-ratelimit-remaining-tokens=0")
+                .doesNotContain("Provider-only rate limit detail", "Muéstrame mis métodos de compensación");
+        verify(queries).metodos(null);
+        verifyNoInteractions(reports);
+    }
+
+    private AgentQueryService useMethodListTools() {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        var method = new MetodoCompensacionResumen(17L, TipoCompensacion.GASOLINA, "Compartir combustible", true);
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(method), 0, 10, 14, true));
+        service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
+        return queries;
+    }
+
+    private static void assertMethodList(ChatResponse response) {
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisMetodosCompensacion");
+        var data = response.resultados().getFirst().datos();
+        assertThat(data.path("pagina").asInt()).isZero();
+        assertThat(data.path("total").asLong()).isEqualTo(14L);
+        assertThat(data.path("hayMas").asBoolean()).isTrue();
+        assertThat(response.metodosCompensacion()).extracting(MetodoCompensacionResumen::id).containsExactly(17L);
+        assertThat(response.message()).contains("1 resultado", "más resultados").doesNotContain("no completó");
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resolucionConfirmacion()).isNull();
+        assertThat(response.conversationId()).isNotNull();
+    }
+
+    @ParameterizedTest
     @EnumSource(Rol.class)
-    void recoversExplicitEditAndDeletionAsPendingOperationsWhenGroqStops(Rol role) {
+    void preparesExplicitEditAndDeletionAsPendingOperationsWithoutGroq(Rol role) {
         when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(role).build());
         var confirmations = useCompensationTools();
         var edit = pending(TipoOperacion.ACTUALIZAR_METODO, "Cambiar la descripción de Yape a Yape personal.",
@@ -710,8 +736,6 @@ class GroqProviderIntegrationTest {
         var deletion = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método FAVOR.", Map.of());
         when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal")).thenReturn(edit);
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null)).thenReturn(deletion);
-        enqueue(200, completion("Ya cambié tu método de compensación.", "stop"));
-        enqueue(200, completion("Ya eliminé tu método de compensación.", "stop"));
 
         ChatResponse updated = service.chat("Cambia la descripción de mi método Yape a Yape personal", (UUID) null);
         ChatResponse deleted = service.chat("Elimina mi método FAVOR", updated.conversationId());
@@ -725,7 +749,7 @@ class GroqProviderIntegrationTest {
         assertThat(deleted.message()).contains("FAVOR", "aplicación", "confirmo").doesNotContain("Ya eliminé");
         assertThat(deleted.resultados()).extracting(ResultadoAgente::tipo).containsExactly("eliminarMetodoCompensacion");
         assertThat(deleted.conversationId()).isEqualTo(updated.conversationId());
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
         verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
         verifyNoMoreInteractions(confirmations);
@@ -737,11 +761,6 @@ class GroqProviderIntegrationTest {
         var proposal = pending(TipoOperacion.ACTUALIZAR_METODO, "Cambiar la descripción de Yape a Yape personal.",
                 Map.of("tipo", "DINERO", "descripcion", "Yape personal", "activo", true));
         when(confirmations.prepararActualizacionMetodo(null, "Yape", null, "Yape personal")).thenReturn(proposal);
-        enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"descripcionActual":"Yape","nuevaDescripcion":"Inventada"}
-                """));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse incomplete = service.chat("Cambia la descripción de mi método Yape", (UUID) null);
 
@@ -755,7 +774,7 @@ class GroqProviderIntegrationTest {
         assertThat(prepared.conversationId()).isEqualTo(incomplete.conversationId());
         assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(prepared.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
-        assertThat(requests).hasSize(3);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
         verifyNoMoreInteractions(confirmations);
     }
@@ -765,8 +784,6 @@ class GroqProviderIntegrationTest {
         var confirmations = useCompensationTools();
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método FAVOR.", Map.of());
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null)).thenReturn(proposal);
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse incomplete = service.chat("Elimina mi método", (UUID) null);
 
@@ -780,7 +797,7 @@ class GroqProviderIntegrationTest {
         assertThat(prepared.conversationId()).isEqualTo(incomplete.conversationId());
         assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(prepared.resultados()).extracting(ResultadoAgente::tipo).containsExactly("eliminarMetodoCompensacion");
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
         verifyNoMoreInteractions(confirmations);
     }
@@ -792,8 +809,6 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, null))
                 .thenReturn(new OperacionResumen(EstadoOperacion.AMBIGUO, null, "Hay varios métodos de tipo FAVOR."));
         when(confirmations.prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Apuntes de clase")).thenReturn(proposal);
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse ambiguous = service.chat("Elimina mi método FAVOR", (UUID) null);
         assertThat(ambiguous.operacion().estado()).isEqualTo(EstadoOperacion.AMBIGUO);
@@ -803,7 +818,7 @@ class GroqProviderIntegrationTest {
 
         assertThat(prepared.conversationId()).isEqualTo(ambiguous.conversationId());
         assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, null);
         verify(confirmations).prepararEliminacionMetodo(TipoCompensacion.FAVOR, "Apuntes de clase");
         verifyNoMoreInteractions(confirmations);
@@ -819,10 +834,6 @@ class GroqProviderIntegrationTest {
         var confirmations = useCompensationTools();
         when(reports.resumen()).thenReturn(new EstadisticasRespuesta(3, 2, 0, 0));
         for (int i = 0; i < 3; i++) enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, toolCall(staleTool, """
-                {"descripcionActual":"Yape","nuevaDescripcion":"Yape personal"}
-                """));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse incomplete = service.chat(incompleteRequest, (UUID) null);
         ChatResponse separate = service.chat(fragment, (UUID) null);
@@ -835,7 +846,8 @@ class GroqProviderIntegrationTest {
         assertThat(late.conversationId()).isEqualTo(incomplete.conversationId());
         assertThat(late.operacion()).isNull();
         assertThat(late.resultados()).isEmpty();
-        assertThat(requests).hasSize(5);
+        assertThat(requests).hasSize(3);
+        assertThat(toolNames(requests.getLast())).doesNotContain(staleTool);
         verify(reports).resumen();
         verifyNoInteractions(confirmations);
     }
@@ -845,7 +857,6 @@ class GroqProviderIntegrationTest {
             "Elimina mi método FAVOR y desactiva mi método Yape", "Elimina mi método Yape o mi método FAVOR"})
     void rejectsGuessedCompensationPreparationWhenTheUserMentionsMultipleActionsOrSelectors(String request) {
         var confirmations = useCompensationTools();
-        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"tipoActual\":\"FAVOR\"}"));
         enqueue(200, completion("Eliminé el método.", "stop"));
 
         ChatResponse response = service.chat(request, (UUID) null);
@@ -853,12 +864,15 @@ class GroqProviderIntegrationTest {
         assertThat(response.message()).containsIgnoringCase("método").doesNotContain("Eliminé el método");
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain("actualizarMetodoCompensacion", "eliminarMetodoCompensacion",
+                "cambiarEstadoMetodoCompensacion");
         verifyNoInteractions(confirmations);
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    void recoversExplicitStatePreparationWhenGroqReturnsStopWithoutTools(boolean active) {
+    void preparesExplicitStateChangesWithoutCallingRateLimitedGroq(boolean active) {
         var confirmations = useCompensationTools();
         var type = active ? TipoCompensacion.GASOLINA : null;
         String description = active ? null : "Yape";
@@ -866,7 +880,7 @@ class GroqProviderIntegrationTest {
         var proposal = pending(TipoOperacion.CAMBIAR_ESTADO_METODO, "Confirma el cambio de estado del método.",
                 Map.of("tipo", active ? "GASOLINA" : "DINERO", "descripcion", active ? "glp" : "Yape", "activo", active));
         when(confirmations.prepararEstadoMetodo(type, description, active)).thenReturn(proposal);
-        enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
+        enqueue(429, rateLimitError());
 
         ChatResponse response = service.chat(previousChoice, (UUID) null);
 
@@ -875,7 +889,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(response.operacion().confirmacion().parametros().path("activo").asBoolean()).isEqualTo(active);
         assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("cambiarEstadoMetodoCompensacion");
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEstadoMetodo(type, description, active);
         verifyNoMoreInteractions(confirmations);
     }
@@ -883,11 +897,10 @@ class GroqProviderIntegrationTest {
     @ParameterizedTest
     @CsvSource({"AMBIGUO,Hay varios métodos de gasolina", "NO_ENCONTRADO,No se encontró un método propio",
             "SIN_CAMBIOS,El método ya está activo"})
-    void recoveredStatePreparationKeepsOwnershipAmbiguityAndNoopResults(EstadoOperacion estado, String detalle) {
+    void directStatePreparationKeepsOwnershipAmbiguityAndNoopResults(EstadoOperacion estado, String detalle) {
         var confirmations = useCompensationTools();
         when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true))
                 .thenReturn(new OperacionResumen(estado, null, detalle));
-        enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
 
         ChatResponse response = service.chat("Activa mi método GASOLINA", (UUID) null);
 
@@ -896,38 +909,29 @@ class GroqProviderIntegrationTest {
         assertThat(response.message()).contains(detalle).doesNotContain(PREFERENCIA_VIAJE);
         verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true);
         verifyNoMoreInteractions(confirmations);
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
     }
 
     @Test
-    void providerStateToolUsesVerifiedSelectorAndToggleInsteadOfInventedArguments() {
+    void simulatedGroqCannotPrepareACompensationStateChangeFromInventedArguments() {
         var confirmations = useCompensationTools();
-        var proposal = pending(TipoOperacion.CAMBIAR_ESTADO_METODO, "Confirma la activación de GASOLINA.",
-                Map.of("tipo", "GASOLINA", "descripcion", "glp", "activo", true));
-        when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true)).thenReturn(proposal);
         enqueue(200, toolCall("cambiarEstadoMetodoCompensacion", "{\"descripcionActual\":\"Método Ajeno\",\"activo\":false}"));
-        enqueue(200, completion("Desactivé un método.", "stop"));
 
-        ChatResponse response = service.chat("Activa mi método GASOLINA", (UUID) null);
-
-        assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
-        assertThat(response.message()).doesNotContain("Método Ajeno", "Desactivé");
-        assertThat(response.resultados()).hasSize(1);
-        verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true);
-        verifyNoMoreInteractions(confirmations);
-        assertThat(requests).hasSize(2);
+        assertThatThrownBy(() -> service.chat("¿Qué opciones tengo?", (UUID) null))
+                .isInstanceOfSatisfying(AgentProviderException.class,
+                        failure -> assertThat(failure.status()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain("cambiarEstadoMetodoCompensacion");
+        verifyNoInteractions(confirmations);
     }
 
     @Test
-    void incompleteRegistrationRejectsModelGuessesAndUsesTheNextDescriptionInTheSameConversation() {
+    void incompleteRegistrationUsesTheNextDescriptionWithoutCallingGroq() {
         var confirmations = useCompensationTools();
         var method = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
         var proposal = pending(TipoOperacion.REGISTRAR_METODO, "Registrar FAVOR con la descripción Apuntes de clase.",
                 Map.of("tipo", "FAVOR", "descripcion", "Apuntes de clase", "activo", true));
         when(confirmations.prepararMetodo(method)).thenReturn(proposal);
-        enqueue(200, toolCall("registrarMetodoCompensacion", "{\"tipo\":\"DINERO\",\"descripcion\":\"Inventada\"}"));
-        enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse first = service.chat("Registra un método FAVOR", (UUID) null);
 
@@ -943,7 +947,7 @@ class GroqProviderIntegrationTest {
         assertThat(second.resultados()).extracting(ResultadoAgente::tipo).containsExactly("registrarMetodoCompensacion");
         verify(confirmations).prepararMetodo(method);
         verifyNoMoreInteractions(confirmations);
-        assertThat(requests).hasSize(3);
+        assertThat(requests).isEmpty();
     }
 
     @Test
@@ -951,8 +955,6 @@ class GroqProviderIntegrationTest {
         var confirmations = useCompensationTools();
         when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true))
                 .thenReturn(pending(TipoOperacion.CAMBIAR_ESTADO_METODO, "Confirma la activación de GASOLINA.", Map.of()));
-        enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
-        enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
 
         ChatResponse activation = service.chat("Activa mi método GASOLINA", (UUID) null);
         ChatResponse registration = service.chat("Prefiero compensar con Favor, agrégalo", activation.conversationId());
@@ -963,7 +965,7 @@ class GroqProviderIntegrationTest {
         assertThat(registration.message()).contains("descripción", "FAVOR").doesNotContain(PREFERENCIA_VIAJE);
         verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, true);
         verifyNoMoreInteractions(confirmations);
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
     }
 
     @Test
@@ -971,8 +973,6 @@ class GroqProviderIntegrationTest {
         var confirmations = useCompensationTools();
         when(reports.resumen()).thenReturn(new EstadisticasRespuesta(3, 2, 0, 0));
         for (int i = 0; i < 3; i++) enqueue(200, completion(GENERIC_COMPLETION, "stop"));
-        enqueue(200, toolCall("registrarMetodoCompensacion", "{\"tipo\":\"FAVOR\",\"descripcion\":\"Apuntes de clase\"}"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse draft = service.chat("Registra un método FAVOR", (UUID) null);
         ChatResponse other = service.chat("Apuntes de clase", (UUID) null);
@@ -984,7 +984,8 @@ class GroqProviderIntegrationTest {
         assertThat(stats.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisEstadisticas");
         assertThat(late.operacion()).isNull();
         assertThat(late.resultados()).isEmpty();
-        assertThat(requests).hasSize(5);
+        assertThat(requests).hasSize(3);
+        assertThat(toolNames(requests.getLast())).doesNotContain("registrarMetodoCompensacion");
         verify(reports).resumen();
         verifyNoInteractions(confirmations);
     }
@@ -992,7 +993,7 @@ class GroqProviderIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"Sí", "Si", "Confirmo", "Sí, confirmo", "Confirmar", "Hazlo", "Procede", "Adelante",
             "De   acuerdo", "Está bien, hazlo", "  ¡ACEPTO LA OPERACION!  "})
-    void affirmationUsesThePersistedReceiptAndDoesNotCallTheProviderAgain(String affirmation) {
+    void affirmationUsesThePersistedReceiptWithoutCallingGroq(String affirmation) {
         var confirmations = useCompensationTools();
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
         var result = new OperacionResumen(EstadoOperacion.EXITO, 47L, "Método Yape eliminado.");
@@ -1000,8 +1001,6 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
         when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), true))
                 .thenReturn(new ResolucionConfirmacion(Estado.EJECUTADA, receipt));
-        enqueue(200, toolCall("eliminarMetodoCompensacion", "{\"descripcionActual\":\"Yape\"}"));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse pending = service.chat("Elimina mi método Yape", (UUID) null);
         ChatResponse followUp = service.chat(affirmation, pending.conversationId());
@@ -1016,7 +1015,7 @@ class GroqProviderIntegrationTest {
         ChatResponse repeated = service.chat("Sí", pending.conversationId());
         assertThat(repeated.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
         assertThat(repeated.operacion()).isNull();
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), true);
         verifyNoMoreInteractions(confirmations);
@@ -1032,7 +1031,6 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
         when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), false))
                 .thenReturn(new ResolucionConfirmacion(Estado.CANCELADA, receipt));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
         ChatResponse followUp = service.chat(rejection, prepared.conversationId());
@@ -1047,7 +1045,7 @@ class GroqProviderIntegrationTest {
         assertThat(afterCancellation.resolucionConfirmacion())
                 .isEqualTo(new ResolucionConfirmacion(Estado.YA_CANCELADA, receipt));
         assertThat(afterCancellation.operacion()).isNull();
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), false);
         verifyNoMoreInteractions(confirmations);
@@ -1061,7 +1059,6 @@ class GroqProviderIntegrationTest {
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
         when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), true))
                 .thenReturn(new ResolucionConfirmacion(Estado.EXPIRADA, receipt));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
         ChatResponse followUp = service.chat("Sí", prepared.conversationId());
@@ -1069,7 +1066,7 @@ class GroqProviderIntegrationTest {
         assertThat(followUp.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.EXPIRADA, receipt));
         assertThat(followUp.conversationId()).isEqualTo(prepared.conversationId());
         assertThat(followUp.operacion()).isNull();
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), true);
         verifyNoMoreInteractions(confirmations);
@@ -1086,7 +1083,6 @@ class GroqProviderIntegrationTest {
         when(confirmations.resolverDesdeChat(id, true))
                 .thenThrow(new TransientDataAccessResourceException("internal database fixture"))
                 .thenReturn(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
         ChatResponse uncertain = service.chat("Sí", prepared.conversationId());
@@ -1100,7 +1096,7 @@ class GroqProviderIntegrationTest {
         ChatResponse repeated = service.chat("Sí", prepared.conversationId());
         assertThat(repeated.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.YA_EJECUTADA, receipt));
         assertThat(repeated.operacion()).isNull();
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verify(confirmations, times(2)).resolverDesdeChat(id, true);
         verifyNoMoreInteractions(confirmations);
@@ -1112,7 +1108,6 @@ class GroqProviderIntegrationTest {
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
         when(reports.resumen()).thenReturn(new EstadisticasRespuesta(3, 2, 0, 0));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
@@ -1130,7 +1125,7 @@ class GroqProviderIntegrationTest {
             assertThat(affirmation.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null));
             assertThat(affirmation.message()).doesNotContain(proposal.confirmacion().id().toString());
         }
-        assertThat(requests).hasSize(2);
+        assertThat(requests).hasSize(1);
         verify(reports).resumen();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verifyNoMoreInteractions(confirmations);
@@ -1157,7 +1152,6 @@ class GroqProviderIntegrationTest {
         var confirmations = useCompensationTools();
         var proposal = pending(TipoOperacion.ELIMINAR_METODO, "Eliminar el método Yape.", Map.of());
         when(confirmations.prepararEliminacionMetodo(null, "Yape")).thenReturn(proposal);
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse prepared = service.chat("Elimina mi método Yape", (UUID) null);
         ChatResponse clarification = service.chat(answer, prepared.conversationId());
@@ -1166,7 +1160,7 @@ class GroqProviderIntegrationTest {
         assertThat(clarification.operacion()).isNull();
         assertThat(clarification.resolucionConfirmacion().estado()).isEqualTo(Estado.ACLARACION_REQUERIDA);
         assertThat(detached.resolucionConfirmacion()).isEqualTo(new ResolucionConfirmacion(Estado.SIN_PENDIENTE, null));
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verify(confirmations).prepararEliminacionMetodo(null, "Yape");
         verifyNoMoreInteractions(confirmations);
     }
@@ -1188,17 +1182,13 @@ class GroqProviderIntegrationTest {
         var queries = mock(AgentQueryService.class);
         var confirmations = mock(ConfirmationService.class);
         service = service(Duration.ofSeconds(3), new MetodoCompensacionAgentTools(queries, confirmations), confirmations);
-        enqueue(200, toolCall("actualizarMetodoCompensacion", """
-                {"descripcionActual":"Yape","nuevoTipo":"FAVOR"}
-                """));
-        enqueue(200, completion("Actualicé el método.", "stop"));
 
         ChatResponse response = service.chat("owner", "Cambia mi método Yape al tipo BITCOIN");
 
         assertThat(response.message()).contains("DINERO", "GASOLINA", "FAVOR").doesNotContain("Actualicé el método");
         assertThat(response.operacion()).isNull();
         assertThat(response.resultados()).isEmpty();
-        assertThat(requests).hasSize(2);
+        assertThat(requests).isEmpty();
         verifyNoInteractions(confirmations, queries);
     }
 
@@ -1227,10 +1217,8 @@ class GroqProviderIntegrationTest {
         verifyNoInteractions(reports);
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void asksForPeriodClarificationWithoutPreparingPdfEvenIfProviderCallsTool(boolean providerCallsTool) {
-        if (providerCallsTool) enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF, "{\"desde\":\"2026-10-01\"}"));
+    @Test
+    void asksForPeriodClarificationAndDoesNotExposeAnIncompletePdfTool() {
         enqueue(200, completion("Ya descargué tu historial.", "stop"));
 
         ChatResponse response = service.chat("Genera mi historial del último mes", (UUID) null);
@@ -1239,8 +1227,8 @@ class GroqProviderIntegrationTest {
                 .doesNotContain("/api/historial/pdf", "Ya descargué");
         assertThat(response.resultados()).isEmpty();
         assertThat(response.operacion()).isNull();
-        assertThat(requests).hasSize(providerCallsTool ? 2 : 1);
-        if (providerCallsTool) assertThat(providerToolContent()).doesNotContain("urlDescarga", "2026-10-01");
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain(DESCARGA_HISTORIAL_PDF);
         verify(users).usuarioActual();
         verifyNoInteractions(reports);
     }
@@ -1269,16 +1257,14 @@ class GroqProviderIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"¿Cómo descargo mi historial en PDF?", "Muéstrame mi historial de viajes."})
-    void ignoresAPdfToolCallWithoutAnExplicitExportRequest(String question) {
+    void rejectsAPdfToolCallWithoutAnExplicitExportRequest(String question) {
         enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF));
-        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
-        ChatResponse response = service.chat(question, (UUID) null);
-
-        assertThat(response.resultados()).isEmpty();
-        assertThat(response.operacion()).isNull();
-        assertThat(requests).hasSize(2);
-        assertThat(providerToolContent()).doesNotContain("urlDescarga", "/api/historial/pdf");
+        assertThatThrownBy(() -> service.chat(question, (UUID) null))
+                .isInstanceOfSatisfying(AgentProviderException.class,
+                        failure -> assertThat(failure.status()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain(DESCARGA_HISTORIAL_PDF);
         verify(users).usuarioActual();
         verifyNoInteractions(reports);
     }
@@ -1286,7 +1272,7 @@ class GroqProviderIntegrationTest {
     @Test
     void statisticsRequestDoesNotAuthorizeTheProviderToPrepareADownload() {
         when(reports.resumen()).thenReturn(new EstadisticasRespuesta(7, 5, 2, 1));
-        enqueue(200, toolCall(DESCARGA_HISTORIAL_PDF));
+        enqueue(200, toolCall("consultarMisEstadisticas"));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         ChatResponse response = service.chat("¿Cuántos viajes he completado?", (UUID) null);
@@ -1295,6 +1281,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.message()).contains("12 viajes").doesNotContain("/api/historial/pdf");
         assertThat(response.operacion()).isNull();
         assertThat(requests).hasSize(2);
+        assertThat(toolNames()).doesNotContain(DESCARGA_HISTORIAL_PDF);
         verify(users).usuarioActual();
         verify(reports).resumen();
         verifyNoMoreInteractions(reports);
@@ -1310,6 +1297,15 @@ class GroqProviderIntegrationTest {
         return StreamSupport.stream(requests.get(1).path("messages").spliterator(), false)
                 .filter(message -> "tool".equals(message.path("role").asText()))
                 .findFirst().orElseThrow().path("content").toString();
+    }
+
+    private List<String> toolNames() {
+        return toolNames(requests.getFirst());
+    }
+
+    private List<String> toolNames(JsonNode request) {
+        return StreamSupport.stream(request.path("tools").spliterator(), false)
+                .map(tool -> tool.path("function").path("name").asText()).toList();
     }
 
     @ParameterizedTest
@@ -1339,14 +1335,14 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void propagatesRankingPermissionFailureWhenTheProviderOmitsTheTool() {
+    void rejectsAnExplicitRankingRequestFromAPassengerBeforeCallingTheProvider() {
         when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
         assertThatThrownBy(() -> service.chat(RANKING_QUESTION, (UUID) null))
-                .isInstanceOf(NoPermitidoException.class).hasMessageContaining("CONDUCTOR");
+                .isInstanceOf(NoPermitidoException.class).hasMessageMatching("(?iu).*conductor.*");
 
-        assertThat(requests).hasSize(1);
+        assertThat(requests).isEmpty();
         verifyNoInteractions(reports);
     }
 
@@ -1614,14 +1610,15 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void passengerCannotAccessRankingEvenWhenProviderSelectsIt() {
+    void passengerCannotAccessRankingEvenWhenProviderForgesItsToolCall() {
         when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
         enqueue(200, toolCall("consultarRankingMisRutas"));
 
-        assertThatThrownBy(() -> service.chat("¿Cuáles son mis rutas más utilizadas?", (UUID) null))
-                .isInstanceOf(NoPermitidoException.class)
-                .hasMessageContaining("CONDUCTOR");
+        assertThatThrownBy(() -> service.chat("Ayúdame con UniRide.", (UUID) null))
+                .isInstanceOfSatisfying(AgentProviderException.class,
+                        failure -> assertThat(failure.status()).isEqualTo(HttpStatus.BAD_GATEWAY));
         assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain("consultarRankingMisRutas", "consultarMisRutas", "consultarMisViajes");
         verifyNoInteractions(reports);
     }
 
@@ -1644,8 +1641,11 @@ class GroqProviderIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"consultarMisRutas", "buscarViajes", "consultarMisViajes", "consultarMisMetodosCompensacion"})
+    @ValueSource(strings = {"consultarMisRutas", "buscarViajes", "consultarMisViajes"})
     void keepsStructuredDataFromActualToolsEvenWhenModelInventsJson(String tool) {
+        if ("buscarViajes".equals(tool)) {
+            when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        }
         enqueue(200, toolCall(tool));
         enqueue(200, completion("{\"message\":\"Inventado\",\"rutas\":[{\"rutaId\":999}]}", "stop"));
 
@@ -1658,49 +1658,46 @@ class GroqProviderIntegrationTest {
         assertThat(response.message()).doesNotContain("Inventado");
         switch (tool) {
             case "consultarMisRutas" -> assertThat(response.rutas()).extracting(RutaResumen::rutaId).containsExactly(13L);
-            case "consultarMisMetodosCompensacion" -> assertThat(response.metodosCompensacion()).extracting(MetodoCompensacionResumen::id).containsExactly(17L);
             default -> assertThat(response.viajes()).extracting(ViajeResumen::viajeId).containsExactly(23L);
         }
         assertThat(requests.get(1).path("messages").toString()).contains("\"role\":\"tool\"");
     }
 
     @Test
-    void recoversCompletedResultAfterProviderRejectsJsonWithoutRepeatingAction() {
-        var confirmations = useCompensationTools();
-        var request = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
-        var proposal = pending(TipoOperacion.REGISTRAR_METODO, "Confirma el registro de Apuntes de clase.", Map.of());
-        when(confirmations.prepararMetodo(request)).thenReturn(proposal);
-        enqueue(200, toolCall("registrarMetodoCompensacion", "{\"tipo\":\"FAVOR\",\"descripcion\":\"Apuntes de clase\"}"));
-        enqueue(400, error(JSON_TOOL_ERROR));
+    void preservesThePendingPreparationIfGroqIsRateLimitedWhileHandlingTheRestOfAMixedRequest() {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        var proposal = pending(TipoOperacion.CREAR_RUTA, "Confirma la ruta de Surco.", Map.of());
+        when(confirmations.prepararRuta(any())).thenReturn(proposal);
+        enqueue(200, toolCall("crearRuta", """
+                {"origen":"Surco","capacidadMaxima":3,"puntosReferencia":"Parque"}
+                """));
+        enqueue(429, rateLimitError());
 
-        ChatResponse response = service.chat("owner", REGISTRO_COMPLETO);
+        ChatResponse response = service.chat("owner", "Crea una ruta de Surco. También muéstrame mis rutas.");
 
         assertThat(requests).hasSize(2);
-        assertThat(response.advertencia().codigo()).isEqualTo("PROVIDER_REJECTED");
+        assertThat(response.advertencia().codigo()).isEqualTo("PROVIDER_RATE_LIMIT");
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(response.message()).contains(proposal.confirmacion().resumen(), "aplicación", "confirmo");
-        verify(confirmations).prepararMetodo(request);
+        verify(confirmations).prepararRuta(any());
         verifyNoMoreInteractions(confirmations);
     }
 
     @Test
     void repeatedToolCallInSameTurnUsesReceipt() {
-        var confirmations = useCompensationTools();
-        var request = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
-        var proposal = pending(TipoOperacion.REGISTRAR_METODO, "Confirma el registro de Apuntes de clase.", Map.of());
-        when(confirmations.prepararMetodo(request)).thenReturn(proposal);
-        enqueue(200, toolCall("registrarMetodoCompensacion", "{\"tipo\":\"FAVOR\",\"descripcion\":\"Apuntes de clase\"}"));
-        enqueue(200, toolCall("registrarMetodoCompensacion", "{\"descripcion\":\"Apuntes de clase\",\"tipo\":\"FAVOR\"}"));
-        enqueue(200, completion("Terminó la preparación.", "stop"));
+        enqueue(200, toolCall("consultarMisRutas"));
+        enqueue(200, toolCall("consultarMisRutas"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
-        ChatResponse response = service.chat("owner", REGISTRO_COMPLETO);
+        ChatResponse response = service.chat("owner", "Consulta mis rutas");
 
         assertThat(requests).hasSize(3);
-        assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
-        assertThat(response.resultados()).hasSize(1);
-        verify(confirmations).prepararMetodo(request);
-        verifyNoMoreInteractions(confirmations);
+        assertThat(response.operacion()).isNull();
+        assertThat(response.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisRutas");
+        assertThat(simulatedTools.executions).hasValue(1);
     }
 
     @Test
@@ -1816,6 +1813,11 @@ class GroqProviderIntegrationTest {
     private String error(String message) {
         return mapper.writeValueAsString(Map.of("error", Map.of("message", message,
                 "type", "invalid_request_error", "code", "tool_use_failed")));
+    }
+
+    private String rateLimitError() {
+        return mapper.writeValueAsString(Map.of("error", Map.of("message", "Provider-only rate limit detail",
+                "type", "tokens", "code", "rate_limit_exceeded")));
     }
 
     private String completion(String text, String finishReason) {

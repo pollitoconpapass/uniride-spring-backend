@@ -73,6 +73,10 @@ final class CompensationIntent {
     private static final Pattern TERMINAL_PUNCTUATION = Pattern.compile("^[¿¡]+|[.!?]+$");
     private static final Pattern WHITESPACE = Pattern.compile("[^\\S\\r\\n]+");
     private static final Pattern METHOD_WORD = pattern("\\bm[eé]todos?\\b");
+    private static final Pattern OWN_METHOD_LIST = pattern("^(?:por favor,? )?"
+            + "(?:(?:mu[eé]strame|ens[eé][ñn]ame|lista(?:me)?|consulta(?:me)?|dame|"
+            + "cu[aá]les son|(?:quiero|quisiera) (?:ver|consultar)|puedes (?:mostrarme|listar|consultar)) )?"
+            + "mis m[eé]todos(?: de compensaci[oó]n)?$");
 
     private CompensationIntent() { }
 
@@ -169,6 +173,10 @@ final class CompensationIntent {
 
     static boolean isTripRequest(String message) {
         return message != null && TRIP.matcher(message).find();
+    }
+
+    static boolean isOwnMethodList(String message) {
+        return OWN_METHOD_LIST.matcher(clean(message)).matches();
     }
 
     private static Decision changeState(String verb, String subject) {

@@ -20,6 +20,7 @@ public class AgentConversationStore {
     private static final Duration TTL = Duration.ofMinutes(30);
     private static final int MAX_SESSIONS = 1000;
     private static final int MAX_PER_USER = 5;
+    private static final int PROVIDER_HISTORY_MESSAGES = 8;
     private static final Pattern SECRET = Pattern.compile(
             "(?i)(?:bearer\\s+\\S+|eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+|gsk_[A-Za-z0-9]{12,}|sk-[A-Za-z0-9_-]{12,}|(?:password|contrase[nñ]a|clave(?: de api)?|api[_ -]?key|jwt_secret|groq_api_key)[\"']?\\s*(?:[:=]|\\b(?:es|is)\\b)\\s*[\"']?\\S+)");
     private final Clock clock;
@@ -119,6 +120,11 @@ public class AgentConversationStore {
         private Lease(UUID id, Session session) { this.id = id; this.session = session; }
         public UUID id() { return id; }
         public List<Message> history() { return List.copyOf(session.messages); }
+
+        List<Message> providerHistory() {
+            var history = history();
+            return history.subList(Math.max(0, history.size() - PROVIDER_HISTORY_MESSAGES), history.size());
+        }
 
         CompensationIntent.Draft borrador() { return session.borrador; }
 

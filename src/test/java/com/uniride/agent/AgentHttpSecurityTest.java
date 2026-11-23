@@ -1,7 +1,6 @@
 package com.uniride.agent;
 
 import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -54,16 +53,11 @@ import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import java.time.*;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
@@ -195,14 +189,15 @@ class AgentHttpSecurityTest {
     }
 
     @Test
-    void passengerContinuesContributionFromTextToVoiceWithSimulatedTranscriptionAndGroq() throws Exception {
+    void passengerContinuesContributionFromTextToVoiceWithSimulatedTranscriptionAndNoChatProvider() throws Exception {
         when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
                 Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
                         .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
         var trips = mock(ViajeRepository.class);
         var queries = mock(AgentQueryService.class);
         var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
-        var service = contributionAgent(usuarioService, queries, trips);
+        var chatClient = mock(ChatClient.class);
+        var service = contributionAgent(chatClient, usuarioService, queries, trips);
         when(agent.chat(anyString(), nullable(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
         when(agent.chatVoz(anyString(), nullable(UUID.class)))
@@ -243,7 +238,7 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.costoTotalEstimado").value(12.0))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.aporteEstimado").value(4.0))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.pasajeros").value(3));
-        verifyNoInteractions(confirmations);
+        verifyNoInteractions(confirmations, chatClient);
     }
 
     @Test
@@ -254,7 +249,8 @@ class AgentHttpSecurityTest {
         var queries = new AgentQueryService(mock(RutaRepository.class), trips, mock(MetodoCompensacionRepository.class),
                 mock(SolicitudRepository.class), mock(SolicitudService.class), usuarioService,
                 mock(RutaMapper.class), mock(BusquedaMapper.class), clock);
-        var service = contributionAgent(usuarioService, queries, trips);
+        var chatClient = mock(ChatClient.class);
+        var service = contributionAgent(chatClient, usuarioService, queries, trips);
         when(agent.chat(anyString(), nullable(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
 
@@ -263,17 +259,15 @@ class AgentHttpSecurityTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("PASAJERO")))
                 .andExpect(jsonPath("$.resultados").doesNotExist());
-        verifyNoInteractions(trips, confirmations);
+        verifyNoInteractions(trips, confirmations, chatClient);
     }
 
-    private AgentService contributionAgent(UsuarioService usuarioService, AgentQueryService queries, ViajeRepository trips) {
-        ChatModel model = prompt -> new org.springframework.ai.chat.model.ChatResponse(List.of(new Generation(
-                new AssistantMessage("El aporte obligatorio es de 999 soles."),
-                ChatGenerationMetadata.builder().finishReason("STOP").build())));
+    private AgentService contributionAgent(ChatClient chatClient, UsuarioService usuarioService,
+                                           AgentQueryService queries, ViajeRepository trips) {
         var registry = new AgentToolRegistry(new ObjectMapper(),
                 ToolCallbacks.from(new ContribucionAgentTools(queries, new ContribucionService(trips))));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        return new AgentService(new AgentConfig().chatClient(ChatClient.builder(model)), usuarioService, clock,
+        return new AgentService(chatClient, usuarioService, clock,
                 registry, new AgentConversationStore(clock), confirmations);
     }
 
@@ -326,23 +320,17 @@ class AgentHttpSecurityTest {
     }
 
     @Test
-    void reportDenialReturnsForbiddenForPassengerJwtWhenModelOmitsRanking() throws Exception {
+    void reportDenialReturnsForbiddenForPassengerJwtWithoutCallingTheProvider() throws Exception {
         when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
                 Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
                         .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
         var estadisticas = mock(EstadisticasService.class);
         var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
         var reportes = new ReportesAgentTools(estadisticas, usuarioService);
-        var providerCalls = new AtomicInteger();
-        ChatModel model = prompt -> {
-            providerCalls.incrementAndGet();
-            var generation = new Generation(new AssistantMessage("Puedo ayudarte con una consulta de UniRide."),
-                    ChatGenerationMetadata.builder().finishReason("STOP").build());
-            return new org.springframework.ai.chat.model.ChatResponse(List.of(generation));
-        };
+        var chatClient = mock(ChatClient.class);
         var registry = new AgentToolRegistry(new ObjectMapper(), ToolCallbacks.from(reportes));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        var service = new AgentService(new AgentConfig().chatClient(ChatClient.builder(model)), usuarioService, clock,
+        var service = new AgentService(chatClient, usuarioService, clock,
                 registry, new AgentConversationStore(clock), confirmations);
         when(agent.chat(eq("Ranking de mis rutas"), isNull(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), (UUID) null));
@@ -350,10 +338,9 @@ class AgentHttpSecurityTest {
         mvc.perform(post("/agent/chat").header("Authorization", bearer())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Ranking de mis rutas\"}"))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("CONDUCTOR")))
+                .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsStringIgnoringCase("conductor")))
                 .andExpect(jsonPath("$.resultados").doesNotExist());
-        assertThat(providerCalls).hasValue(1);
-        verifyNoInteractions(estadisticas, confirmations);
+        verifyNoInteractions(estadisticas, confirmations, chatClient);
     }
 
     @Test
@@ -363,14 +350,8 @@ class AgentHttpSecurityTest {
         var tools = new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations);
         var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(tools));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        var providerCalls = new AtomicInteger();
-        ChatModel model = prompt -> {
-            providerCalls.incrementAndGet();
-            return new org.springframework.ai.chat.model.ChatResponse(List.of(new Generation(
-                    new AssistantMessage("Puedo ayudarte con una operación de UniRide."),
-                    ChatGenerationMetadata.builder().finishReason("STOP").build())));
-        };
-        var service = new AgentService(ChatClient.builder(model).build(), userService, clock, registry,
+        var chatClient = mock(ChatClient.class);
+        var service = new AgentService(chatClient, userService, clock, registry,
                 new AgentConversationStore(clock), confirmations);
         doAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)))
                 .when(agent).chat(anyString(), nullable(UUID.class));
@@ -413,7 +394,7 @@ class AgentHttpSecurityTest {
         verify(confirmations).prepararMetodo(parameters);
         verify(confirmations).resolverDesdeChat(id, true);
         verifyNoMoreInteractions(confirmations);
-        assertThat(providerCalls).hasValue(1);
+        verifyNoInteractions(chatClient);
     }
 
     @Test
