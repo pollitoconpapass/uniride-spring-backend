@@ -15,6 +15,12 @@ spring:
         temperature: 0.1
         replay-reasoning-content: false
         parallel-tool-calls: false
+      audio:
+        transcription:
+          model: whisper-large-v3-turbo
+          language: es
+          temperature: 0
+          prompt: "Vocabulario UniRide: ruta, viaje, solicitud, conductor, pasajero, origen, destino, penalidad, Yape, Plin, DINERO, GASOLINA, FAVOR."
 
   datasource:
     driver-class-name: org.postgresql.Driver
