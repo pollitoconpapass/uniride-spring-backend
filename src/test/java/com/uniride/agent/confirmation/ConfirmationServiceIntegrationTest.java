@@ -9,7 +9,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.uniride.agent.AgentConversationFixture;
 import com.uniride.agent.AgentConversationStore;
 import com.uniride.agent.AgentService;
-import com.uniride.agent.AgentToolRegistry;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.entities.*;
@@ -22,17 +21,12 @@ import jakarta.servlet.Filter;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -54,12 +48,11 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest
 class ConfirmationServiceIntegrationTest {
     @Autowired ConfirmationService service;
-    @Autowired AgentToolRegistry agentTools;
+    @Autowired AgentService agent;
     @Autowired AgentConversationStore conversations;
     @Autowired JwtService jwt;
     @Autowired WebApplicationContext web;
     @Autowired @Qualifier("springSecurityFilterChain") Filter securityChain;
-    @Autowired UsuarioService userService;
     @Autowired ConfirmationRepository confirmations;
     @Autowired UsuarioRepository users;
     @Autowired PerfilRepository profiles;
@@ -93,17 +86,8 @@ class ConfirmationServiceIntegrationTest {
         verifyNoInteractions(chatClient);
     }
 
-    @Test void recoveredActivationStaysPendingUntilTheUserConfirmsItInChat() {
+    @Test void directActivationStaysPendingUntilTheUserConfirmsItInChat() {
         var original = metodo(driver, TipoCompensacion.GASOLINA, "glp", false);
-        var providerCalls = new AtomicInteger();
-        ChatModel model = prompt -> {
-            providerCalls.incrementAndGet();
-            var generation = new Generation(new AssistantMessage("¿Prefieres compensar con DINERO, GASOLINA o FAVOR?"),
-                    ChatGenerationMetadata.builder().finishReason("STOP").build());
-            return new org.springframework.ai.chat.model.ChatResponse(List.of(generation));
-        };
-        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools,
-                conversations, service);
         long before = confirmations.count();
 
         var proposal = agent.chat("Activa mi método de compensación gasolina", (UUID) null);
@@ -122,7 +106,6 @@ class ConfirmationServiceIntegrationTest {
         assertThat(acceptance.resolucionConfirmacion().estado().name()).isEqualTo("EJECUTADA");
         assertThat(acceptance.operacion()).isEqualTo(service.obtener(pending.id()).resultado());
         assertThat(acceptance.message()).isEqualTo(acceptance.operacion().detalle());
-        assertThat(providerCalls).hasValue(1);
         assertThat(confirmations.count()).isEqualTo(before + 1);
         assertMetodo(original.getId(), TipoCompensacion.GASOLINA, "glp", true);
         verify(notifications).notificar(any(), eq(TipoNotificacion.EXITO), eq("Método de compensación actualizado"), anyString());
@@ -130,18 +113,13 @@ class ConfirmationServiceIntegrationTest {
 
     @ParameterizedTest
     @EnumSource(Rol.class)
-    void recoveredEditAndDeletionPrepareOnlyOwnedMethodsForEitherRole(Rol role) {
+    void directEditAndDeletionPrepareOnlyOwnedMethodsForEitherRole(Rol role) {
         var owner = role == Rol.CONDUCTOR ? driver : passenger;
         var other = role == Rol.CONDUCTOR ? passenger : driver;
         authenticate(owner);
         var yape = metodo(owner, TipoCompensacion.DINERO, "Yape", false);
         var favor = metodo(owner, TipoCompensacion.FAVOR, "Apuntes", true);
         var foreign = metodo(other, TipoCompensacion.FAVOR, "Apuntes", true);
-        ChatModel model = prompt -> new org.springframework.ai.chat.model.ChatResponse(List.of(
-                new Generation(new AssistantMessage("Operación ejecutada."),
-                        ChatGenerationMetadata.builder().finishReason("STOP").build())));
-        var agent = new AgentService(ChatClient.builder(model).build(), userService, clock, agentTools,
-                conversations, service);
         long before = confirmations.count();
 
         var question = agent.chat("Cambia la descripción de mi método Yape", (UUID) null);

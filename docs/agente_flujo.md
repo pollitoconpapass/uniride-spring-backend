@@ -12,9 +12,10 @@ Java genera el texto visible a partir del resumen de la operación, las páginas
 flowchart TD
     C[AgentController] --> S[AgentService]
     S --> M[AgentConversationStore: RAM limitada]
-    S --> CC[ChatClient / Groq]
+    S -->|Turno que necesita el modelo| CC[ChatClient / Groq]
     CC --> R[AgentToolRegistry: recibos por petición]
-    S -->|Completa reportes, sugerencia y preparaciones omitidas| R
+    S -->|Gestiona compensaciones y US29 en Java| R
+    S -->|Completa reportes omitidos| R
     R --> T[AgentTools]
     T --> Q[AgentQueryService: solo lectura]
     T --> A[EstadisticasService: reportes personales]
@@ -30,7 +31,9 @@ flowchart TD
     B --> DB
 ```
 
-El modelo elige entre las herramientas disponibles para el turno. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+Java resuelve los turnos identificados de métodos de compensación y sugerencias US29. Cuando hace falta Groq, el modelo recibe las herramientas disponibles para el rol activo y la petición. Una preparación de rutas, viajes o solicitudes, o un listado de métodos interpretado por el modelo, puede terminar con el recibo de la herramienta tras la primera ronda con Groq. Los turnos que pueden incluir varias consultas conservan el flujo de varias herramientas.
+
+Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -90,13 +93,16 @@ Continuar sesión:
 
 Omitir `conversationId` inicia una sesión independiente. El ID es aleatorio y está vinculado al usuario; uno ajeno o desconocido devuelve 404. La sesión vive en RAM, conserva como máximo 20 mensajes (diez intercambios), admite 100 peticiones y expira tras 30 minutos sin actividad. Limpieza cada minuto. Se permiten cinco sesiones por usuario (se desplaza la más antigua libre) y mil en total por instancia. Un mensaje simultáneo en la misma sesión devuelve 409. El cambio de rol invalida su contexto (409). Reiniciar la instancia elimina la memoria, sin afectar confirmaciones persistidas. No hay endpoint para recuperar historias ajenas. No enviar contraseñas, JWT ni claves; los patrones de credenciales reconocidos se rechazan antes de llamar al proveedor.
 
+Cuando se consulta a Groq se envían hasta cuatro intercambios anteriores (ocho mensajes) junto con el mensaje actual. La paginación y las aclaraciones que interpreta el modelo se apoyan en esa ventana reciente. Los borradores de compensación y US29 y la referencia de confirmación se resuelven con el estado tipado de la sesión.
+
 Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez elementos por página y `hayMas`. La primera página es cero y se admite hasta la página 10000. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido.
 
 ## Voz
 
 `POST /api/agent/voz` recibe un audio corto (push-to-talk) y devuelve `transcripcion`,
 `textoHablado` y el mismo `ChatResponse` del chat de texto. La transcripción usa Groq Whisper
-y el TTS se ejecuta en el navegador. El flujo, el contrato, los errores y las
+y el TTS se ejecuta en el navegador. Los turnos que Java atiende directamente después
+de transcribir el audio evitan una llamada adicional al modelo de chat. El flujo, el contrato, los errores y las
 responsabilidades de Angular están en [agente_voz.md](agente_voz.md).
 
 ## Sugerencia de contribución (US29)
@@ -116,7 +122,8 @@ servicio usa el número de pasajeros aceptados si existe. Si todavía no hay ace
 el pasajero debe indicar una cantidad de al menos uno. Cuando la cantidad indicada
 difiere del número aceptado, `message` indica cuál se utilizó. La estimación es
 informativa y la contribución final queda sujeta a un acuerdo entre las partes.
-La consulta no requiere confirmación. [Referencia del endpoint US29](endpoints.md#get-apiviajesidsugerencia-contribucion)
+Java ejecuta la consulta en el mismo turno, sin llamar al modelo de chat. La
+consulta no requiere confirmación. [Referencia del endpoint US29](endpoints.md#get-apiviajesidsugerencia-contribucion)
 
 ### Probar US29 en Swagger
 
@@ -429,9 +436,9 @@ Una propuesta válida identifica el método actual, muestra los valores anterior
 
 Si un duplicado o un vínculo aparece entre la preparación y la confirmación, el endpoint devuelve `409`. La desactivación permite dejar de usar un método vinculado y conservarlo junto con su historial. El contrato tradicional se detalla en [Pagos y compensación](endpoints.md#módulo-7--pagos-y-compensación).
 
-El backend contesta directamente las preguntas que identifica sobre los tipos de compensación y cómo gestionar un método. `DINERO` corresponde a aportes monetarios, `GASOLINA` a aportes de combustible y `FAVOR` a ayudas acordadas entre usuarios. Estas respuestas dan orientación en `message` sin consultar a Groq ni usar herramientas, con `operacion: null` y `resultados: []`. Las órdenes negadas, como «No desactives mi método Yape», bloquean la preparación.
+El backend contesta directamente las preguntas que identifica sobre los tipos de compensación y cómo gestionar un método. `DINERO` corresponde a aportes monetarios, `GASOLINA` a aportes de combustible y `FAVOR` a ayudas acordadas entre usuarios. Estas respuestas dan orientación en `message`, con `operacion: null` y `resultados: []`. Las órdenes negadas, como «No desactives mi método Yape», bloquean la preparación.
 
-Si la petición identifica con claridad una acción y contiene sus datos, Java puede completar una preparación de registro, edición, activación, desactivación o eliminación omitida por Groq después de una respuesta final válida. La llamada del modelo y la recuperación usan los argumentos comprobados en Java, el callback habitual, el presupuesto del turno y el límite de una preparación. `ConfirmationService` sigue seleccionando el método propio y aplicando las reglas de negocio. El cambio se aplica al confirmar por chat o desde la aplicación.
+Una petición explícita de listado propio, como «Consulta mis métodos de compensación», usa el callback de consulta en Java. Cuando reconoce una petición de registro, edición, activación, desactivación o eliminación y dispone de los datos necesarios, Java prepara la propuesta directamente con el callback habitual y el límite de una preparación por turno. `ConfirmationService` selecciona el método propio y aplica las reglas de negocio. El cambio se aplica al confirmar por chat o desde la aplicación.
 
 El registro, la edición y la eliminación pueden completarse en varios mensajes con el mismo `conversationId`. Ante una solicitud explícita incompleta, la sesión conserva los campos ya identificados y admite una respuesta breve con el dato que acaba de pedir. Si una edición o eliminación tiene varias coincidencias, el usuario puede precisar el método en la misma conversación. Un cambio de tema limpia el borrador. Para precisar una activación o desactivación, vuelve a indicar la acción junto con el método.
 
@@ -461,12 +468,14 @@ Error de proveedor sin resultados previos:
 | 404 | Sesión/confirmación ajena, desconocida o sesión caducada |
 | 409 | Sesión ocupada/cambio de rol, confirmación cancelada o datos/reglas cambiados |
 | 410 | Confirmación expirada |
-| 429 | Cuota del proveedor o límite de conversaciones |
+| 429 | Cuota del proveedor (`PROVIDER_RATE_LIMIT`) o límite de conversaciones (`CONVERSATION_LIMIT`) |
 | 502 | Herramienta desconocida/rechazada, respuesta inválida/vacía/incompleta |
 | 503 | Proveedor no disponible, credencial Groq rechazada o conexión fallida |
 | 504 | Timeout del proveedor |
 
-Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelve HTTP 200 con los datos existentes y `advertencia:{"codigo":"PROVIDER_REJECTED","mensaje":"..."}`. La confirmación pendiente sigue disponible en `operacion.confirmacion`. El cliente debe mostrar la advertencia y usar el estado real del backend. Nunca inferir éxito de escritura a partir de `message`. Cada turno permite como máximo ocho llamadas y una preparación; las llamadas idénticas del mismo turno usan su recibo. El cliente Groq no reintenta automáticamente; el timeout de cada solicitud es 30 segundos.
+Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelve HTTP 200 con los datos existentes y una `advertencia` con el código del fallo. Ante un 429 de Groq, el código es `PROVIDER_RATE_LIMIT`. Una confirmación pendiente sigue disponible en `operacion.confirmacion`. El cliente muestra la advertencia y utiliza ese estado para decidir si ofrece la confirmación. Cada turno permite como máximo ocho llamadas y una preparación. Las llamadas idénticas del mismo turno usan su recibo. Cada petición a Groq tiene un timeout de 30 segundos y se realiza una sola vez.
+
+Un 429 de Groq puede indicar un límite de solicitudes o tokens compartido por la organización. Consulta los límites de la cuenta y el diagnóstico de la petición para distinguirlos. Los valores de cuota y los intervalos dependen de la organización y del modelo. [Límites y cabeceras de Groq](https://console.groq.com/docs/rate-limits)
 
 ## Swagger y Postman
 
@@ -478,6 +487,24 @@ Si la herramienta ya produjo un recibo antes del fallo del proveedor, se devuelv
 6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
 7. Preparar una escritura en una base local aislada y revisar el resumen. Probar la confirmación y cancelación por chat y mediante los endpoints dedicados.
 8. Reservar las pruebas de escritura para la base aislada. Las pruebas contra Supabase se limitan a consultas.
+
+### Verificar la gestión de cuota en Swagger y Angular
+
+Con una base de desarrollo y las variables privadas de PostgreSQL, JWT y `GROQ_API_KEY`, inicia el backend con `.\mvnw.cmd spring-boot:run`. Abre Swagger en `http://localhost:8080/api/swagger-ui.html` y autoriza el JWT. Para comprobar el mismo flujo en Angular, ejecuta `npm.cmd start` en el repositorio frontend y abre `http://localhost:4200/asistente` después de iniciar sesión. Su proxy de desarrollo dirige `/api` al backend local.
+
+| Petición a `POST /api/agent/chat` | Comprobación |
+|---|---|
+| `{"message":"Consulta mis métodos de compensación"}` | `resultados` contiene `consultarMisMetodosCompensacion`. La consulta se atiende en Java. |
+| `{"message":"Activa mi método de compensación Gasolina"}` | Con un único método `GASOLINA` inactivo, devuelve `CONFIRMACION_REQUERIDA` y su UUID. El método sigue inactivo mientras la propuesta está pendiente. |
+| `{"message":"No","conversationId":"<conversationId>"}` | La propuesta previa de la misma conversación devuelve `CANCELADA`. |
+| `{"message":"Muéstrame mis métodos y mis estadísticas"}` | Un turno combinado puede mostrar el listado de métodos y el resultado de estadísticas en el mismo `ChatResponse`. |
+| `{"message":"Consulta mis rutas"}` con rol `CONDUCTOR` | La consulta general usa Groq. En caso de cuota antes de un resultado, Swagger muestra HTTP 429 con `campos.codigo: "PROVIDER_RATE_LIMIT"` y Angular muestra el mensaje de espera. |
+
+Activa temporalmente `LOGGING_LEVEL_COM_UNIRIDE_AGENT=DEBUG` en el entorno local
+para verificar `rondasHttp`. El listado explícito y la preparación de Gasolina
+se resuelven sin peticiones a `/chat/completions`.
+
+Para reproducir el error de cuota de forma controlada, usa las pruebas HTTP con proveedor simulado en `GroqProviderIntegrationTest`. Cubren el 429 previo a un resultado y la conservación de recibos si la cuota se alcanza después de ejecutar una herramienta. La prueba manual con una cuenta real depende de la cuota disponible.
 
 ### Probar decisiones de confirmación por chat
 

@@ -116,6 +116,10 @@ Las herramientas de escritura preparan propuestas con un resumen. Con el mismo
 la propuesta, o «no» o «cancelar» para descartarla. Los botones de la aplicación
 pueden seguir usando los endpoints de confirmación y cancelación con JWT.
 Ambas vías usan el mismo servicio transaccional, al que el modelo no tiene acceso.
+El backend resuelve las consultas y preparaciones de compensación que reconoce
+con datos suficientes, así como las sugerencias US29, sin una llamada al modelo
+de chat. Si Groq devuelve un 429 después de que una herramienta entregó un
+resultado, el chat conserva ese resultado y muestra una advertencia. [Validación en Swagger y Angular](docs/agente_flujo.md#verificar-la-gestión-de-cuota-en-swagger-y-angular)
 
 El chat admite estadísticas personales y frecuencia histórica por día de la semana
 para ambos roles. Los conductores también pueden consultar el ranking de sus rutas

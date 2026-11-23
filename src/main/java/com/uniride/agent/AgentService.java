@@ -15,8 +15,11 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.model.tool.ToolExecutionResult;
 import com.openai.errors.OpenAIServiceException;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.CamposInvalidosException;
@@ -36,6 +39,9 @@ import org.springframework.transaction.TransactionException;
 public class AgentService {
 
     private static final DateTimeFormatter FORMATO_HORA = DateTimeFormatter.ofPattern("HH:mm");
+    private static final Pattern POSIBLE_SOLICITUD_COMPUESTA = Pattern.compile(
+            "(?iu)[,;\\r\\n]|[.!?]\\s+\\S|\\b(?:y|e|o|adem[aá]s|tambi[eé]n|luego|despu[eé]s|"
+                    + "junto con|as[ií] como|a la vez)\\b");
 
     private final ChatClient chatClient;
     private final UsuarioService usuarioService;
@@ -98,7 +104,9 @@ public class AgentService {
                 // A new request may yield a new receipt, but cannot resume an older confirmation reference.
                 lease.descartarReferenciaConfirmacion();
                 lease.guardarBorrador(compensation.draft());
-                response = compensation.informational() ? soloMensaje(compensation.message())
+                boolean aclaracionLocal = compensation.message() != null && (compensation.informational()
+                        || compensation.draft() != null || !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find());
+                response = aclaracionLocal ? soloMensaje(compensation.message())
                         : execute(usuario, message, lease, compensation, null, voz);
                 lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
             }
@@ -173,42 +181,32 @@ public class AgentService {
     private ChatResponse execute(Usuario usuario, String message, AgentConversationStore.Lease lease,
                                  CompensationIntent.Decision compensation, ContribucionIntent.Solicitud contribucion,
                                  boolean voz) {
-        var history = lease.history();
-        String contexto = "Contexto: hoy es " + LocalDate.now(clock) + " y son las "
-                + LocalTime.now(clock).format(FORMATO_HORA)
-                + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
-                + "Mensaje del usuario: " + message
-                + (voz ? "\nModo voz: responde en máximo dos frases, sin listas, markdown ni IDs; "
-                        + "no enumeres rutas, viajes ni métodos, el sistema los leerá en voz alta." : "");
-
+        var history = lease.providerHistory();
         boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
                 && CompensationIntent.isTripRequest(anterior.getText()));
         var turn = tools.newTurn(contribucion == null ? HistorialPdfIntent.classify(message, clock) : null,
                 compensation, solicitudViaje, contribucion == null ? null : contribucion.filtros());
         try {
-            var response = chatClient.prompt()
-                    .messages(history)
-                    .user(contexto)
-                    .toolCallbacks(turn.callbacks())
-                    .call().chatResponse();
-            if (response == null || response.getResult() == null
-                    || response.hasToolCalls()
-                    || !"STOP".equalsIgnoreCase(response.getResult().getMetadata().getFinishReason())) {
-                throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta incompleta.");
-            }
             if (contribucion != null) {
                 turn.recoverContribucion();
                 return turn.response("");
             }
-            String text = response.getResult().getOutput().getText();
-            if (text == null || text.isBlank() || text.length() > 8000
-                    || text.stripLeading().startsWith("{") || text.stripLeading().startsWith("```")) {
-                throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta inválida.");
+            if (compensation.recoveryArgs() != null) {
+                turn.recoverCompensation();
+                return turn.response("");
             }
-            turn.recoverReports(AgentReportIntent.classify(message));
-            turn.recoverCompensation();
-            return turn.response(text.trim());
+            if (CompensationIntent.isOwnMethodList(message)) {
+                turn.consultOwnMethods();
+                return turn.response("");
+            }
+            var reportes = AgentReportIntent.classify(message);
+            if (reportes.contains(AgentReportIntent.RANKING) && usuario.getRolPrincipal() != Rol.CONDUCTOR) {
+                throw new NoPermitidoException("Esta consulta requiere el rol CONDUCTOR.");
+            }
+            String text = providerAnswer(usuario.getRolPrincipal(), message, history, turn, voz);
+            turn.recoverReports(reportes);
+            return turn.response(text);
         } catch (RuntimeException failure) {
             // No model retries: an earlier tool may already have completed.
             for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -222,13 +220,44 @@ public class AgentService {
             }
             if (turn.hasResults()) {
                 var controlled = providerFailure(failure);
-                return turn.response("El proveedor no completó la explicación. Estos son los resultados obtenidos; no se repitió ninguna acción.",
-                        new com.uniride.agent.dto.AdvertenciaAgente(controlled.code(), controlled.getMessage()));
+                String detail = "PROVIDER_RATE_LIMIT".equals(controlled.code()) ? ""
+                        : "El proveedor no completó la explicación. Estos son los resultados obtenidos; no se repitió ninguna acción.";
+                return turn.response(detail, new AdvertenciaAgente(controlled.code(), controlled.getMessage()));
             }
             throw providerFailure(failure);
         } finally {
             if (contribucion != null && turn.contribucion() != null) {
                 lease.guardarContribucion(contribucion.siguiente(turn.contribucion()));
+            }
+        }
+    }
+
+    private String providerAnswer(Rol role, String message, List<Message> history, AgentToolRegistry.Turn turn, boolean voz) {
+        String contexto = "Lima: " + LocalDate.now(clock) + " " + LocalTime.now(clock).format(FORMATO_HORA)
+                + ". Rol activo: " + role + (voz ? ". Respuesta para voz." : ".") + "\n" + message;
+        boolean terminalResults = !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find();
+        var callbacks = turn.callbacks(role, terminalResults);
+        try (var diagnostics = GroqHttpDiagnostics.open()) {
+            try {
+                var response = chatClient.prompt().messages(history).user(contexto).toolCallbacks(callbacks)
+                        .call().chatResponse();
+                if (response == null || response.getResult() == null || response.hasToolCalls()) {
+                    throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta incompleta.");
+                }
+                String reason = response.getResult().getMetadata().getFinishReason();
+                if (ToolExecutionResult.FINISH_REASON.equals(reason) && turn.hasDirectResult()) return "";
+                if (!"STOP".equalsIgnoreCase(reason)) {
+                    throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta incompleta.");
+                }
+                String text = response.getResult().getOutput().getText();
+                if (text == null || text.isBlank() || text.length() > 8000
+                        || text.stripLeading().startsWith("{") || text.stripLeading().startsWith("```")) {
+                    throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta inválida.");
+                }
+                return text.trim();
+            } catch (RuntimeException failure) {
+                diagnostics.recordRateLimit(failure);
+                throw failure;
             }
         }
     }

@@ -14,6 +14,20 @@ import org.junit.jupiter.params.provider.ValueSource;
 class CompensationIntentTest {
     @ParameterizedTest
     @CsvSource(delimiter = '|', textBlock = """
+            Muéstrame mis métodos de compensación | true
+            ¿Cuáles son mis métodos? | true
+            Muéstrame mis métodos y mis estadísticas | false
+            Muéstrame los métodos de otro usuario | false
+            Muéstrame mis métodos de compensación de la segunda página | false
+            No me muestres mis métodos | false
+            Activa mi método gasolina | false
+            """)
+    void recognizesOnlyStandaloneOwnMethodLists(String message, boolean expected) {
+        assertThat(CompensationIntent.isOwnMethodList(message)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
             Activa mi método de compensación gasolina | GASOLINA | true
             Activa mi método GASOLINA | GASOLINA | true
             Desactiva GASOLINA | GASOLINA | false

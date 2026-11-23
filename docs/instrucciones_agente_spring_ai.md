@@ -18,11 +18,12 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | Componente | Responsabilidad |
 |---|---|
 | AgentController | Validar petición de chat y devolver DTO |
-| AgentService | Resolver usuario y sesión, procesar decisiones explícitas de confirmación y dirigir los demás mensajes al flujo del proveedor |
+| AgentService | Resolver usuario y sesión, procesar los turnos verificables en Java y consultar al proveedor cuando se necesitan sus herramientas |
 | AgentConversationStore | Propiedad, TTL, límites, exclusión de mensajes simultáneos y referencia de la propuesta actual |
 | ConfirmationIntent | Reconocer respuestas completas de confirmación o cancelación y distinguirlas de preguntas y decisiones condicionales |
 | AgentConfig | Prompt y construcción de ChatClient; no contiene permisos efectivos |
-| AgentToolRegistry | Callbacks, límite por turno, recibos y construcción de resultados estructurados |
+| AgentToolRegistry | Filtrado de herramientas por rol e intención, límite por turno, recibos y resultados estructurados |
+| GroqHttpDiagnostics | Contar peticiones HTTP del chat y resumir los datos de cuota admitidos en el log |
 | AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
 | AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
 | ContribucionAgentTools | Identificación autorizada del viaje y sugerencia referencial para el pasajero |
@@ -36,6 +37,23 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
 
 Spring descubre los componentes por `@ComponentScan`; usar inyección por constructor. Evitar dependencias circulares y llamadas manuales a configuración.
+
+## Contexto y consumo del proveedor
+
+El prompt de sistema concentra las reglas generales y usa las descripciones de
+los callbacks para explicar cada herramienta. Un turno general expone hasta once
+herramientas de `CONDUCTOR` o siete de `PASAJERO`, más la descarga de historial
+cuando Java ya validó su solicitud y filtros. El rol y la propiedad de los datos
+también se comprueban al ejecutar los servicios. El historial que recibe Groq se
+limita a los últimos cuatro intercambios completos, además de la petición actual.
+
+Las decisiones de confirmación, las sugerencias US29 reconocidas, las consultas
+explícitas de listado propio de métodos y las preparaciones de compensación con
+datos verificados se resuelven directamente en Java. Cuando el modelo selecciona
+una preparación genérica o un listado de métodos en un turno simple, Spring AI
+puede entregar el recibo de la herramienta directamente al backend. Esta ruta
+ahorra la ronda que pediría al modelo explicar el recibo. Las posibles peticiones
+compuestas conservan las rondas necesarias para combinar resultados.
 
 ## Agregar una herramienta de consulta
 
@@ -54,18 +72,16 @@ Spring descubre los componentes por `@ComponentScan`; usar inyección por constr
 
 `sugerirContribucionViaje` usa `ToolContext` para recibir los filtros tipados que
 Java obtiene del mensaje actual o de una aclaración en la misma conversación.
-El esquema expuesto a Groq está vacío. La identificación y el rol salen de la
-sesión autenticada. El ID se obtiene de la consulta autorizada después de comprobar
-que solo hay una coincidencia. `ContribucionService.sugerencia` calcula el importe
-y devuelve el mismo DTO de US29 que usa `GET /api/viajes/{id}/sugerencia-contribucion`.
+La identificación y el rol salen de la sesión autenticada. El ID se obtiene de
+la consulta autorizada después de comprobar que solo hay una coincidencia.
+`ContribucionService.sugerencia` calcula el importe y devuelve el mismo DTO de
+US29 que usa `GET /api/viajes/{id}/sugerencia-contribucion`.
 La selección y el cálculo ocurren en una transacción de solo lectura con una
 vista coherente del viaje.
 
-En un turno de contribución, el registro habilita la herramienta de consulta. Si
-Groq termina con `STOP` y omite la llamada, Java ejecuta el mismo callback con los
-mismos filtros y el presupuesto vigente. El recibo del turno evita repetir la
-consulta. El texto de éxito o aclaración y `resultados` proceden del recibo Java.
-La sugerencia es informativa y no requiere confirmación.
+En un turno de contribución reconocido, Java llama al callback con los filtros
+verificados y el presupuesto vigente. El texto de éxito o aclaración y `resultados`
+proceden del recibo Java. La sugerencia es informativa y no requiere confirmación.
 
 La continuidad usa filtros tipados, limitados a la conversación y al rol del
 pasajero. Ante una aclaración, la herramienta vuelve a verificar las coincidencias
@@ -110,13 +126,13 @@ La resolución por chat inspecciona el estado persistido bajo el mismo bloqueo q
 
 ### Gestión de métodos de compensación
 
-`MetodoCompensacionAgentTools` expone `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. El modelo describe el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
+`MetodoCompensacionAgentTools` define `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. Java identifica el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
 
 `ConfirmationService` guarda el estado del método al preparar la operación y compara ese estado al confirmar. Los tres tipos nuevos reutilizan `MetodoCompensacionService` para aplicar los cambios, validar duplicados y conservar las solicitudes vinculadas. Flyway V8 amplía la restricción `CHECK` del tipo en `agent_confirmaciones`. El protocolo conserva el límite de una preparación por turno y comparte las validaciones entre chat y endpoints dedicados.
 
-La detección de compensación evalúa el mensaje actual. Las preguntas reconocidas sobre tipos o procedimientos reciben una respuesta Java antes de llamar a Groq, con `operacion: null` y `resultados: []`. Las órdenes negadas bloquean la preparación. El registro exige que la herramienta de compensación corresponda a la intención actual y usa los argumentos validados a partir de la petición, incluso cuando Groq aporta otros valores.
+La detección de compensación evalúa el mensaje actual y los borradores de la sesión. Las preguntas reconocidas sobre tipos o procedimientos reciben una respuesta Java con `operacion: null` y `resultados: []`. Las órdenes negadas bloquean la preparación. El registro exige que la herramienta de compensación corresponda a la intención actual y usa los argumentos comprobados a partir de la petición.
 
-Con una solicitud explícita y completa de registrar, editar, cambiar el estado o eliminar, el turno puede invocar el callback de preparación si Groq lo omitió y devolvió una respuesta válida con `STOP`. La llamada original y la recuperación comparten el presupuesto del turno, la captura de resultados y el límite de una preparación. Al confirmar por cualquiera de las vías, el servicio guarda la ejecución de negocio, la notificación y el recibo en una transacción.
+Las peticiones reconocidas de registro, edición, cambio de estado o eliminación usan el callback de preparación desde Java cuando los argumentos están completos. La llamada usa el presupuesto del turno, la captura de resultados y el límite de una preparación. Al confirmar por cualquiera de las vías, el servicio guarda la ejecución de negocio, la notificación y el recibo en una transacción.
 
 La sesión mantiene borradores tipados para registrar, editar o eliminar. Un borrador conserva los datos explícitos de la petición y admite una respuesta breve al dato solicitado. La referencia de la propuesta actual se guarda por separado y depende de un recibo estructurado del servidor. Un cambio de tema desvincula la referencia de la conversación. La propuesta persistida permanece consultable con su UUID y el JWT del propietario. Para las pruebas manuales, consulta [Gestión de métodos de compensación en Swagger](agente_flujo.md#probar-la-gestión-de-métodos-de-compensación).
 
@@ -125,6 +141,16 @@ La sesión mantiene borradores tipados para registrar, editar o eliminar. Un bor
 La salida del LLM es texto no confiable. El servidor valida que conserve contenido y que respete el formato esperado. Las listas, operaciones, confirmaciones, cifras, descriptores de descarga e IDs proceden exclusivamente de callbacks Java y persistencia. El mensaje de una operación usa el resumen o resultado del backend. En los reportes, Java compone `message` a partir de las respuestas registradas en `resultados`, incluso si un turno combina estadísticas y una descarga PDF.
 
 Un fallo antes de resultados se traduce a ErrorRespuesta con HTTP apropiado y código estable: 429 cuota, 502 formato/herramienta rechazada, 503 indisponibilidad/credencial del proveedor y 504 timeout. No exponer cuerpos de error Groq, prompts ni secretos en mensajes o logs. Si existen recibos, se devuelven con `advertencia` sin repetir llamadas. Ninguna solución debe crear una herramienta ficticia `json` ni desactivar la validación.
+
+`GroqHttpDiagnostics` registra a nivel `DEBUG` el estado HTTP y la cantidad
+de peticiones a `/chat/completions` del turno. Un 429 registra a nivel `WARN`
+el tipo de límite reconocido, `Retry-After` en segundos y los valores válidos
+de límite, saldo y reinicio de solicitudes y tokens. Los reinicios se registran
+como duraciones ISO 8601. Los valores ausentes o inválidos quedan sin dato. El
+tipo desconocido se registra como `DESCONOCIDO`.
+La instrumentación del chat registra solo campos de diagnóstico validados.
+Activa el nivel `DEBUG` para el paquete `com.uniride.agent` en desarrollo para
+contar peticiones en los turnos exitosos. [Referencia de límites de Groq](https://console.groq.com/docs/rate-limits)
 
 ## Memoria
 

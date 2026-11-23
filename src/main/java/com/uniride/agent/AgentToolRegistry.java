@@ -8,6 +8,7 @@ import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
+import com.uniride.enums.Rol;
 import java.util.*;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.support.ToolCallbacks;
@@ -27,6 +28,12 @@ public class AgentToolRegistry {
             "eliminarMetodoCompensacion", "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
     private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "actualizarMetodoCompensacion", "eliminarMetodoCompensacion");
+    private static final Set<String> CONDUCTOR_TOOLS = Set.of("consultarMisRutas", "consultarMisViajes", "crearRuta",
+            "editarRuta", "eliminarRuta", "crearViaje", "reprogramarViaje", "consultarRankingMisRutas");
+    private static final Set<String> PASAJERO_TOOLS = Set.of("buscarViajes", "consultarMisSolicitudes", "solicitarUnirse",
+            "cancelarSolicitud");
+    private static final String OWN_METHODS = "consultarMisMetodosCompensacion";
+    private static final ToolMetadata RETURN_DIRECT = ToolMetadata.builder().returnDirect(true).build();
     private static final String NO_ARGUMENTS = "{}";
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
@@ -83,16 +90,39 @@ public class AgentToolRegistry {
         }
 
         public ToolCallback[] callbacks() {
+            return callbacks(null, false);
+        }
+
+        ToolCallback[] callbacks(Rol role, boolean terminalResults) {
             return Arrays.stream(AgentToolRegistry.this.callbacks)
-                    .filter(delegate -> NOMBRE.equals(delegate.getToolDefinition().name()) == (filtrosContribucion != null))
+                    .filter(delegate -> available(delegate.getToolDefinition().name(), role))
                     .map(delegate -> new ToolCallback() {
                 public ToolDefinition getToolDefinition() { return delegate.getToolDefinition(); }
-                public ToolMetadata getToolMetadata() { return delegate.getToolMetadata(); }
+                public ToolMetadata getToolMetadata() {
+                    String name = getToolDefinition().name();
+                    return terminalResults && (PREPARATIONS.contains(name) || OWN_METHODS.equals(name))
+                            ? RETURN_DIRECT : delegate.getToolMetadata();
+                }
                 public String call(String input) { return call(input, new ToolContext(Map.of())); }
                 public String call(String input, ToolContext context) {
                     return execute(delegate, input, context);
                 }
             }).toArray(ToolCallback[]::new);
+        }
+
+        private boolean available(String name, Rol role) {
+            if (NOMBRE.equals(name) || filtrosContribucion != null)
+                return NOMBRE.equals(name) && filtrosContribucion != null;
+            if (role == null) return true;
+            if (CONDUCTOR_TOOLS.contains(name) && role != Rol.CONDUCTOR) return false;
+            if (PASAJERO_TOOLS.contains(name) && role != Rol.PASAJERO) return false;
+            if (RECOVERABLE_COMPENSATION.contains(name)) return false;
+            if (compensation.blockPreparations() && PREPARATIONS.contains(name)) return false;
+            return !DESCARGA_HISTORIAL_PDF.equals(name) || (historialPdf != null && historialPdf.filtros() != null);
+        }
+
+        synchronized void consultOwnMethods() {
+            recoverRead(OWN_METHODS);
         }
 
         synchronized void recoverReports(Set<AgentReportIntent> requested) {
@@ -204,7 +234,7 @@ public class AgentToolRegistry {
                     items.forEach(item -> viajes.add(mapper.treeToValue(item, ViajeResumen.class)));
                 case "consultarMisRutas" ->
                     items.forEach(item -> rutas.add(mapper.treeToValue(item, RutaResumen.class)));
-                case "consultarMisMetodosCompensacion" ->
+                case OWN_METHODS ->
                     items.forEach(item -> metodos.add(mapper.treeToValue(item, MetodoCompensacionResumen.class)));
                 default -> {
                     if (data.has("estado") && data.has("detalle"))
@@ -214,6 +244,10 @@ public class AgentToolRegistry {
         }
 
         public boolean hasResults() { return !results.isEmpty(); }
+
+        boolean hasDirectResult() {
+            return operation != null || results.stream().anyMatch(result -> OWN_METHODS.equals(result.tipo()));
+        }
 
         ContribucionResultado contribucion() { return contribucion; }
 
@@ -229,7 +263,8 @@ public class AgentToolRegistry {
         private String message(String text, AdvertenciaAgente warning) {
             if (contribucion != null) return contribucion.mensaje();
             // The operation receipt or controlled warning takes precedence over model text.
-            String primary = operation != null ? operation.detalle() : warning != null ? text : compensation.message();
+            String primary = operation != null ? operation.detalle()
+                    : warning != null && !text.isBlank() ? text : compensation.message();
             if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
                     && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
                 primary += " Puedes confirmar desde la aplicación o escribir «sí» o «confirmo» en este chat. "

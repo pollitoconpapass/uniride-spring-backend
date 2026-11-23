@@ -55,6 +55,9 @@ class AgentConversationStoreTest {
         try (var lease = store.open(1L, Rol.PASAJERO, id)) {
             assertThat(lease.history()).hasSize(20);
             assertThat(((UserMessage) lease.history().getFirst()).getText()).isEqualTo("mensaje 5");
+            assertThat(lease.providerHistory()).hasSize(8);
+            assertThat(lease.providerHistory().getFirst().getText()).isEqualTo("mensaje 11");
+            assertThat(lease.providerHistory().get(6).getText()).isEqualTo("mensaje 14");
         }
     }
 
