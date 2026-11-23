@@ -3,6 +3,7 @@ package com.uniride.agent;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.*;
 import com.uniride.exceptions.*;
@@ -47,6 +48,18 @@ class AgentQueryServiceTest {
         assertThatThrownBy(() -> service.buscar(null, null, null, null, null, null)).isInstanceOf(NoPermitidoException.class);
         assertThatThrownBy(() -> service.solicitudes(null, null)).isInstanceOf(NoPermitidoException.class);
         verifyNoInteractions(viajes, solicitudes);
+    }
+
+    @Test void contribucionValidaSesionYRolAntesDeCualquierLecturaDeViajes() {
+        var filtros = new ContribucionFiltros(null, null, null, null, null, null, null, false);
+        when(usuarios.usuarioActual()).thenThrow(new NoAutorizadoException("Debes iniciar sesión"))
+                .thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.CONDUCTOR).build())
+                .thenReturn(Usuario.builder().id(8L).rolPrincipal(Rol.PASAJERO).build());
+
+        assertThatThrownBy(() -> service.identificarViajes(filtros)).isInstanceOf(NoAutorizadoException.class);
+        assertThatThrownBy(() -> service.identificarViajes(filtros)).isInstanceOf(NoPermitidoException.class);
+        assertThat(service.identificarViajes(filtros)).isEmpty();
+        verifyNoInteractions(viajes);
     }
 
     @Test void fechaNormalizacionYPaginaSeAplicanAntesDeLaConsultaLimitada() {

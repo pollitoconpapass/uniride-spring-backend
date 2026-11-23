@@ -2,14 +2,17 @@ package com.uniride.agent;
 
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.MetodoCompensacionResumen;
+import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.dto.ViajeResumen;
+import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.enums.EstadoRuta;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import tools.jackson.databind.JsonNode;
 
 /** Builds the spoken text from verified data. The screen keeps the full detail. */
 final class TextoHablado {
@@ -25,7 +28,8 @@ final class TextoHablado {
 
     static String desde(ChatResponse respuesta) {
         List<String> partes = new ArrayList<>();
-        String mensaje = limpiar(respuesta.message());
+        String mensaje = contribucion(respuesta.resultados());
+        if (mensaje == null) mensaje = limpiar(respuesta.message());
         if (!mensaje.isBlank()) partes.add(mensaje);
         if (!respuesta.rutas().isEmpty())
             partes.add(enumerar("ruta", "rutas", respuesta.rutas().stream().map(TextoHablado::ruta).toList()));
@@ -38,6 +42,30 @@ final class TextoHablado {
                 && respuesta.resultados().stream().anyMatch(r -> r.datos().path("hayMas").asBoolean(false)))
             partes.add("Hay más resultados en pantalla.");
         return limitar(String.join(" ", partes));
+    }
+
+    private static String contribucion(List<ResultadoAgente> resultados) {
+        if (resultados == null) return null;
+        return resultados.stream()
+                .filter(r -> ContribucionAgentTools.NOMBRE.equals(r.tipo()))
+                .map(r -> r.datos().path("sugerencia"))
+                .filter(s -> s.isObject())
+                .findFirst()
+                .map(sugerencia -> {
+                    int pasajeros = sugerencia.path("pasajeros").asInt();
+                    String aporte = decimalHablado(sugerencia.path("aporteEstimado"));
+                    String litros = decimalHablado(sugerencia.path("litrosGasolinaAprox"));
+                    return "Para %d %s, el aporte estimado por pasajero es de %s %s o %s %s de gasolina. "
+                            .formatted(pasajeros, pasajeros == 1 ? "pasajero" : "pasajeros", aporte,
+                                    aporte.equals("1") ? "sol" : "soles", litros,
+                                    litros.equals("1") ? "litro" : "litros")
+                            + "También puedes ofrecer un favor equivalente. El aporte final depende del acuerdo con el conductor.";
+                })
+                .orElse(null);
+    }
+
+    private static String decimalHablado(JsonNode valor) {
+        return valor.decimalValue().stripTrailingZeros().toPlainString().replace('.', ',');
     }
 
     private static String ruta(RutaResumen ruta) {

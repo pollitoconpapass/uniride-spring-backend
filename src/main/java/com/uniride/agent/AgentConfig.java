@@ -30,6 +30,7 @@ public class AgentConfig {
             - consultarMisSolicitudes: solicitudes del pasajero autenticado.
             - consultarMisRutas: todas las rutas del conductor autenticado (activas, llenas y vencidas).
             - consultarMisMetodosCompensacion: métodos de compensación propios.
+            - sugerirContribucionViaje: consulta informativa US29 para pasajeros. Java obtiene los filtros del mensaje y de la conversación.
             - consultarMisEstadisticas: totales propios de viajes completados por rol, cancelaciones y penalidades acumuladas.
             - consultarMiFrecuenciaViajes: frecuencia histórica propia por día de la semana y cancelaciones propias y de terceros.
             - consultarRankingMisRutas: ranking de rutas propias por viajes completados con penalidades del conductor por ruta.
@@ -55,6 +56,12 @@ public class AgentConfig {
             - Las preguntas sobre cómo realizar una acción son informativas. Llama a una herramienta de preparación solo si el usuario pide la acción.
             - Una decisión aislada como «sí» o «no» corresponde a una propuesta previa del servidor y nunca inicia una preparación nueva.
             - Si un método tiene solicitudes asociadas, puedes explicar que desactivarlo conserva el historial. Prepara esa acción solo ante una solicitud explícita.
+
+            # SUGERENCIA DE CONTRIBUCIÓN
+            - Para estimar un aporte en soles, en litros de gasolina o como favor en un viaje, usa sugerirContribucionViaje sin argumentos cuando esté disponible.
+            - El servidor identifica el viaje usando el origen, destino, día, fecha y hora que indicó el pasajero. Si faltan filtros o pasajeros, conserva la pregunta de la herramienta. Si coincide más de un viaje, pide el dato que los distingue.
+            - Usa solamente los importes y cantidades verificados por la herramienta. La sugerencia es informativa y el aporte definitivo depende del acuerdo entre las partes.
+            - Una consulta de contribución no solicita cupo ni registra métodos. No prepares operaciones, no pidas confirmación y no afirmes que se pagó o se acordó un aporte.
 
             # GESTIÓN DE RUTAS, VIAJES Y SOLICITUDES
             - Identifica rutas y viajes por origen, destino, día, fecha y hora actuales. Nunca pidas ni uses IDs.

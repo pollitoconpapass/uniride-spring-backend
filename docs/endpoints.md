@@ -781,7 +781,7 @@ Elimina un método propio (US28).
 - `409` si existe **cualquier solicitud asociada**, independientemente de su estado o de la confirmación del viaje; se preserva la integridad e historial.
 
 #### `GET /api/viajes/{id}/sugerencia-contribucion`
-Sugerencia de contribución estimada para un viaje (US29).
+Sugerencia de contribución estimada para un viaje (US29). Requiere rol `PASAJERO`.
 
 | Path | Tipo |
 |---|---|
@@ -791,14 +791,22 @@ Sugerencia de contribución estimada para un viaje (US29).
 |---|---|---|---|
 | `pasajeros` | int | – | Se usa el conteo de aceptados si es mayor que cero; solo si no hay aceptados se requiere indicar un valor mínimo de 1 |
 
-**Fórmula:** `total = S/8.00 × 1.5` si es hora pico (06:00–10:00 o 17:00–21:00), si no `× 1.0`; `aporte = total / pasajeros`.
+La tarifa base es `S/ 8.00` y se multiplica por `1.5` en hora pico. Los intervalos
+comienzan a las 06:00 y 17:00 inclusive y terminan antes de las 10:00 y 21:00,
+respectivamente. El aporte estimado es el total dividido por la cantidad de pasajeros.
+La equivalencia referencial en gasolina usa `S/ 5.40` por litro.
 
 **Respuestas**
 - `200` ✅ `{viajeId, origen, destino, dia, fecha, hora, pasajeros, esHoraPico, costoTotalEstimado, aporteEstimado, litrosGasolinaAprox, sugerenciaFavor, nota}`
 - `400` `pasajeros` ausente o menor a 1 cuando el viaje aún no tiene aceptados
 - `404` viaje no encontrado
 - `409` viaje no `PROGRAMADO`
-- `403` sin token
+- `403` sin token o con un rol distinto de `PASAJERO`
+
+El pasajero también puede pedir la estimación en lenguaje natural mediante
+`POST /api/agent/chat` o `POST /api/agent/voz`. El agente identifica el viaje y
+usa el mismo servicio de cálculo. La consulta es informativa y no requiere
+confirmación. [Contrato y ejemplos de Swagger para US29](agente_flujo.md#sugerencia-de-contribución-us29)
 
 ---
 

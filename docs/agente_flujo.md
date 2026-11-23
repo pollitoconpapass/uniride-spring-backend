@@ -4,7 +4,7 @@ Implementación vigente: Java 21, Spring Boot 4.1.1, Spring AI 2.0.2 y Groq medi
 
 ## Componentes y descubrimiento
 
-Java genera el texto visible a partir del resumen de la operación, las páginas consultadas, los reportes ejecutados o un catálogo de preguntas aclaratorias. El texto libre del modelo puede orientar una aclaración. El backend exige un recibo para comunicar el estado de una escritura e intercepta las excepciones de los callbacks antes del procesador de Spring AI.
+Java genera el texto visible a partir del resumen de la operación, las páginas consultadas, los reportes ejecutados, la sugerencia de contribución o un catálogo de preguntas aclaratorias. El texto libre del modelo puede orientar una aclaración. El backend exige un recibo para comunicar el estado de una escritura e intercepta las excepciones de los callbacks antes del procesador de Spring AI.
 
 `@SpringBootApplication` escanea `com.uniride`. Spring descubre `AgentConfig`, crea el `ChatClient` e inyecta los componentes por constructor. No se instancia la configuración manualmente.
 
@@ -14,10 +14,11 @@ flowchart TD
     S --> M[AgentConversationStore: RAM limitada]
     S --> CC[ChatClient / Groq]
     CC --> R[AgentToolRegistry: recibos por petición]
-    S -->|Completa reportes y preparaciones omitidas| R
+    S -->|Completa reportes, sugerencia y preparaciones omitidas| R
     R --> T[AgentTools]
     T --> Q[AgentQueryService: solo lectura]
     T --> A[EstadisticasService: reportes personales]
+    T --> O[ContribucionService: estimación US29]
     T --> P[ConfirmationService: preparar]
     D[HistorialController: descarga con JWT] --> A
     H[ConfirmationController: JWT y UUID] --> E[ConfirmationService: confirmar/cancelar/consultar]
@@ -29,7 +30,7 @@ flowchart TD
     B --> DB
 ```
 
-El modelo elige entre las veinte herramientas registradas. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+El modelo elige entre las herramientas disponibles para el turno. Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 
@@ -43,6 +44,7 @@ Todas las rutas `/api/agent/**` requieren Bearer JWT válido de una cuenta verif
 | editarRuta, eliminarRuta, reprogramarViaje | CONDUCTOR |
 | buscarViajes, consultarMisSolicitudes, solicitarUnirse | PASAJERO |
 | cancelarSolicitud | PASAJERO |
+| sugerirContribucionViaje | PASAJERO |
 | consultarMisMetodosCompensacion, registrarMetodoCompensacion | Ambos |
 | actualizarMetodoCompensacion, cambiarEstadoMetodoCompensacion, eliminarMetodoCompensacion | Ambos |
 | consultarMisEstadisticas, consultarMiFrecuenciaViajes | Ambos |
@@ -96,6 +98,102 @@ Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez 
 `textoHablado` y el mismo `ChatResponse` del chat de texto. La transcripción usa Groq Whisper
 y el TTS se ejecuta en el navegador. El flujo, el contrato, los errores y las
 responsabilidades de Angular están en [agente_voz.md](agente_voz.md).
+
+## Sugerencia de contribución (US29)
+
+Un pasajero autenticado puede consultar la estimación en texto o por voz. El agente
+identifica el viaje por origen, destino, día, fecha u hora. Considera las salidas
+futuras programadas con cupo o con una solicitud aceptada del pasajero, siempre que
+la ruta siga publicada. «Mi viaje» sin filtros restringe la consulta a las salidas
+con una solicitud aceptada del pasajero. Cuando coinciden
+varios viajes, la respuesta incluye alternativas reales y pide completar el filtro.
+Si el horario coincide y cambia el conductor, puedes aclarar con «Con Ana». Cuando
+todos los filtros coinciden, el agente conserva la ambigüedad. Las fechas sin año
+usan el año actual en Lima. Para la tarde, indica `20:00` u «8 de la noche».
+
+Solo cuando hay un viaje único se llama a `ContribucionService.sugerencia`. El
+servicio usa el número de pasajeros aceptados si existe. Si todavía no hay aceptados,
+el pasajero debe indicar una cantidad de al menos uno. Cuando la cantidad indicada
+difiere del número aceptado, `message` indica cuál se utilizó. La estimación es
+informativa y la contribución final queda sujeta a un acuerdo entre las partes.
+La consulta no requiere confirmación. [Referencia del endpoint US29](endpoints.md#get-apiviajesidsugerencia-contribucion)
+
+### Probar US29 en Swagger
+
+Autoriza el JWT de una cuenta con rol activo `PASAJERO`. Envía una petición a
+`POST /api/agent/chat`. Usa un origen, un destino y una fecha que existan en tu
+base de pruebas. Para probar ambigüedad, programa más de una salida de la misma ruta.
+
+```json
+{"message":"¿Cuánto tendría que aportar por un viaje de Surco a la UPC?"}
+```
+
+Si el agente pide identificar la salida, vuelve a enviar el `conversationId`
+que devolvió en el turno anterior.
+
+```json
+{"message":"Al del 25 de noviembre de 2027 a las 08:00","conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"}
+```
+
+Si el agente pide cuántos pasajeros harán el viaje, responde en la misma conversación.
+
+```json
+{"message":"Vamos 3 pasajeros","conversationId":"2c54e29b-701e-44af-a745-87aa311b9661"}
+```
+
+También puedes proporcionar ruta, fecha, hora y cantidad en un solo turno.
+
+```json
+{"message":"¿Qué contribución sugieres para el viaje de Miraflores a la UPC del 2027-11-25 a las 08:00 con 2 pasajeros?"}
+```
+
+«¿Cuánta gasolina correspondería aportar en ese viaje?» y «¿Qué favor podría
+ofrecer como compensación?» también consultan US29. Reutiliza el `conversationId`
+para referirte a la misma salida.
+
+### Resultado estructurado
+
+`ChatResponse.resultados` incluye un elemento con `tipo` igual a
+`sugerirContribucionViaje`. En `datos`, `estado` indica si se obtuvo la sugerencia
+o hace falta una aclaración. `mensaje` contiene el texto construido por Java.
+`sugerencia` conserva los campos de US29 cuando `estado` es `SUGERIDA`. Fragmento
+ilustrativo de `resultados` para un viaje de Surco a UPC a las 08:00 con tres pasajeros.
+
+```json
+{
+  "tipo": "sugerirContribucionViaje",
+  "datos": {
+    "estado": "SUGERIDA",
+    "mensaje": "El viaje de Surco a UPC sale el 2027-11-25 a las 08:00 (hora pico). El costo total referencial es S/ 12.00 para 3 pasajeros. El aporte estimado es S/ 4.00 por pasajero, equivalente a 0.74 litros de gasolina. Como alternativa puedes ofrecer «Un favor acordado con el conductor de valor equivalente al aporte estimado». Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros.",
+    "sugerencia": {
+      "viajeId": 42,
+      "origen": "Surco",
+      "destino": "UPC",
+      "dia": "Jueves",
+      "fecha": "2027-11-25",
+      "hora": "08:00:00",
+      "pasajeros": 3,
+      "esHoraPico": true,
+      "costoTotalEstimado": 12.0,
+      "aporteEstimado": 4.0,
+      "litrosGasolinaAprox": 0.74,
+      "sugerenciaFavor": "Un favor acordado con el conductor de valor equivalente al aporte estimado",
+      "nota": "Estimación referencial basada en la hora del viaje y la cantidad de pasajeros; el monto final puede variar según la ruta y el acuerdo entre conductor y pasajeros."
+    },
+    "alternativas": [],
+    "hayMasAlternativas": false
+  }
+}
+```
+
+Con `AMBIGUA`, `alternativas` contiene los datos de las salidas que se pueden
+distinguir por ruta, fecha, hora o conductor. `hayMasAlternativas` indica si hay
+coincidencias adicionales. `NO_ENCONTRADO` indica que los filtros quedaron sin
+coincidencias. `FALTAN_FILTROS` pide un dato para identificar la salida y
+`FALTAN_PASAJEROS` muestra la salida identificada en `alternativas` para que el
+usuario indique la cantidad. Usa `message` como texto del chat y los campos de
+`sugerencia` para presentar los importes y la nota. `operacion` es `null` y
+`resolucionConfirmacion` solo se incluye al resolver propuestas de otros flujos.
 
 ## Reportes de viajes por chat
 

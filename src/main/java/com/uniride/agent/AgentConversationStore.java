@@ -104,6 +104,7 @@ public class AgentConversationStore {
         private volatile Instant lastUsed;
         private int turns;
         private CompensationIntent.Draft borrador;
+        private ContribucionIntent.Borrador contribucion;
         private UUID confirmacionPendiente;
         private ConfirmacionResumen confirmacionResuelta;
         private Session(Long userId, Rol role, Instant now) {
@@ -125,6 +126,10 @@ public class AgentConversationStore {
             if (borrador != null) borrador.validateNoSecrets();
             session.borrador = borrador;
         }
+
+        ContribucionIntent.Borrador contribucion() { return session.contribucion; }
+
+        void guardarContribucion(ContribucionIntent.Borrador borrador) { session.contribucion = borrador; }
 
         UUID confirmacionPendiente() { return session.confirmacionPendiente; }
         ConfirmacionResumen confirmacionResuelta() { return session.confirmacionResuelta; }

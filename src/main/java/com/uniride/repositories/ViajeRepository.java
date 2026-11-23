@@ -16,6 +16,12 @@ import org.springframework.data.repository.query.Param;
 
 public interface ViajeRepository extends JpaRepository<Viaje, Long> {
 
+    String VIAJES_FUTUROS_PROGRAMADOS = "SELECT v FROM Viaje v JOIN v.ruta r "
+            + "WHERE (v.fecha > :hoy OR (v.fecha = :hoy AND v.hora > :horaActual)) "
+            + "AND v.estado = :estado AND r.estado <> :rutaEliminada ";
+    String FILTROS_HORARIO = "AND LOWER(v.dia) = COALESCE(:dia, LOWER(v.dia)) "
+            + "AND v.hora = COALESCE(:hora, v.hora) AND v.fecha = COALESCE(:fecha, v.fecha) ";
+
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
     @Query("SELECT v FROM Viaje v WHERE v.ruta.conductor.id = :conductorId "
             + "AND v.estado = COALESCE(:estado, v.estado) "
@@ -111,16 +117,11 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
      * Se preserva buscarViajes() para los consumidores y tests existentes.
      */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
-    @Query("SELECT v FROM Viaje v JOIN v.ruta r "
-            + "WHERE (v.fecha > :hoy OR (v.fecha = :hoy AND v.hora > :horaActual)) "
-            + "AND v.estado = :estado "
-            + "AND r.estado <> :rutaEliminada "
+    @Query(VIAJES_FUTUROS_PROGRAMADOS
             + "AND v.pasajeros < r.capacidadMaxima "
             + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') "
             + "AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') "
-            + "AND LOWER(v.dia) = COALESCE(:dia, LOWER(v.dia)) "
-            + "AND v.hora = COALESCE(:hora, v.hora) "
-            + "AND v.fecha = COALESCE(:fecha, v.fecha) "
+            + FILTROS_HORARIO
             + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:distrito, ''), '%') "
             + "ORDER BY "
             + "(CASE WHEN COALESCE(:origen, '') = '' OR LOWER(r.origen) = :origen THEN 0 ELSE 4 END "
@@ -135,6 +136,24 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual,
             @Param("fecha") LocalDate fecha,
             Pageable pageable);
+
+    /** US29: public departures with seats or accepted trips of the authenticated passenger. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
+    @Query(VIAJES_FUTUROS_PROGRAMADOS + FILTROS_HORARIO
+            + "AND ((:soloPropios = false AND v.pasajeros < r.capacidadMaxima) "
+            + "OR EXISTS (SELECT s.id FROM Solicitud s "
+            + "WHERE s.viaje = v AND s.pasajero.id = :pasajeroId "
+            + "AND s.estado = com.uniride.enums.EstadoSolicitud.ACEPTADA)) "
+            + "AND LOCATE(COALESCE(:origen, ''), LOWER(r.origen)) > 0 "
+            + "AND LOCATE(COALESCE(:destino, ''), LOWER(r.destino)) > 0 "
+            + "AND LOWER(r.conductor.nombre) = COALESCE(:conductor, LOWER(r.conductor.nombre)) "
+            + "ORDER BY v.fecha ASC, v.hora ASC, v.id ASC")
+    Page<Viaje> identificarParaContribucion(@Param("pasajeroId") Long pasajeroId,
+            @Param("soloPropios") boolean soloPropios, @Param("origen") String origen, @Param("destino") String destino,
+            @Param("conductor") String conductor, @Param("dia") String dia,
+            @Param("hora") LocalTime hora, @Param("fecha") LocalDate fecha,
+            @Param("estado") EstadoViaje estado, @Param("rutaEliminada") com.uniride.enums.EstadoRuta rutaEliminada,
+            @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual, Pageable pageable);
 
     /** Preserve existing consumers while sharing the exact same availability predicates. */
     default Page<Viaje> buscarViajesRelevantes(String origen, String destino, String dia, LocalTime hora,

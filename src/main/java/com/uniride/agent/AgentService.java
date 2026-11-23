@@ -3,9 +3,11 @@ package com.uniride.agent;
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.AdvertenciaAgente;
+import com.uniride.agent.dto.ContribucionResultado;
 import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResolucionConfirmacion.Estado;
 import com.uniride.entities.Usuario;
+import com.uniride.enums.Rol;
 import com.uniride.services.UsuarioService;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -14,7 +16,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import com.openai.errors.OpenAIServiceException;
 import com.uniride.exceptions.BusinessException;
@@ -69,7 +70,24 @@ public class AgentService {
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
             ChatResponse response;
             var decision = ConfirmationIntent.classify(message);
-            if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
+            var borradorContribucion = lease.contribucion();
+            var contribucion = ContribucionIntent.classify(message, borradorContribucion, clock);
+            lease.guardarContribucion(null);
+            if (contribucion != null) {
+                if (usuario.getRolPrincipal() != Rol.PASAJERO)
+                    throw new NoPermitidoException("Esta consulta requiere el rol PASAJERO.");
+                lease.descartarReferenciaConfirmacion();
+                lease.guardarBorrador(null);
+                if (contribucion.aclaracion() != null) {
+                    if (contribucion.filtros() != null) {
+                        lease.guardarContribucion(new ContribucionIntent.Borrador(contribucion.filtros(),
+                                ContribucionResultado.Estado.FALTAN_FILTROS));
+                    }
+                    response = soloMensaje(contribucion.aclaracion());
+                } else {
+                    response = execute(usuario, message, lease, CompensationIntent.classify("", null), contribucion, voz);
+                }
+            } else if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
                 response = resolverConfirmacion(lease, decision == ConfirmationIntent.CONFIRMAR);
             } else if (decision == ConfirmationIntent.AMBIGUA && lease.confirmacionPendiente() != null) {
                 lease.guardarBorrador(null);
@@ -81,7 +99,7 @@ public class AgentService {
                 lease.descartarReferenciaConfirmacion();
                 lease.guardarBorrador(compensation.draft());
                 response = compensation.informational() ? soloMensaje(compensation.message())
-                        : execute(usuario, message, lease.history(), compensation, voz);
+                        : execute(usuario, message, lease, compensation, null, voz);
                 lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
             }
             response = response.withConversationId(lease.id());
@@ -152,8 +170,10 @@ public class AgentService {
         return new ChatResponse(message, List.of(), List.of(), List.of(), null);
     }
 
-    private ChatResponse execute(Usuario usuario, String message, List<Message> history,
-                                 CompensationIntent.Decision compensation, boolean voz) {
+    private ChatResponse execute(Usuario usuario, String message, AgentConversationStore.Lease lease,
+                                 CompensationIntent.Decision compensation, ContribucionIntent.Solicitud contribucion,
+                                 boolean voz) {
+        var history = lease.history();
         String contexto = "Contexto: hoy es " + LocalDate.now(clock) + " y son las "
                 + LocalTime.now(clock).format(FORMATO_HORA)
                 + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
@@ -164,7 +184,8 @@ public class AgentService {
         boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
                 && CompensationIntent.isTripRequest(anterior.getText()));
-        var turn = tools.newTurn(HistorialPdfIntent.classify(message, clock), compensation, solicitudViaje);
+        var turn = tools.newTurn(contribucion == null ? HistorialPdfIntent.classify(message, clock) : null,
+                compensation, solicitudViaje, contribucion == null ? null : contribucion.filtros());
         try {
             var response = chatClient.prompt()
                     .messages(history)
@@ -175,6 +196,10 @@ public class AgentService {
                     || response.hasToolCalls()
                     || !"STOP".equalsIgnoreCase(response.getResult().getMetadata().getFinishReason())) {
                 throw AgentToolRegistry.invalid("INVALID_RESPONSE", "El proveedor devolvió una respuesta incompleta.");
+            }
+            if (contribucion != null) {
+                turn.recoverContribucion();
+                return turn.response("");
             }
             String text = response.getResult().getOutput().getText();
             if (text == null || text.isBlank() || text.length() > 8000
@@ -201,6 +226,10 @@ public class AgentService {
                         new com.uniride.agent.dto.AdvertenciaAgente(controlled.code(), controlled.getMessage()));
             }
             throw providerFailure(failure);
+        } finally {
+            if (contribucion != null && turn.contribucion() != null) {
+                lease.guardarContribucion(contribucion.siguiente(turn.contribucion()));
+            }
         }
     }
 
