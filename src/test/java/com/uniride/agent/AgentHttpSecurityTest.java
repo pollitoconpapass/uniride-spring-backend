@@ -13,6 +13,7 @@ import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResultadoAgente;
+import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.confirmation.*;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
@@ -20,6 +21,7 @@ import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
+import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.exceptions.BusinessException;
@@ -52,6 +54,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.test.context.web.WebAppConfiguration;
@@ -74,13 +77,14 @@ class AgentHttpSecurityTest {
     @Autowired WebApplicationContext context;
     @Autowired UsuarioRepository usuarios;
     @Autowired AgentService agent;
+    @Autowired TranscripcionService transcripcion;
     @Autowired ConfirmationService confirmations;
     @Autowired JwtService jwt;
     MockMvc mvc;
 
     @BeforeEach
     void setup() {
-        reset(usuarios, agent, confirmations);
+        reset(usuarios, agent, transcripcion, confirmations);
         when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
                 Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
                         .rolPrincipal(Rol.CONDUCTOR).cuentaVerificada(true).build()));
@@ -140,6 +144,52 @@ class AgentHttpSecurityTest {
                 .andExpect(status().isOk());
         verify(agent).chat("Continúa", conversation);
         verify(usuarios).findByCorreoInstitucional("ana@upc.edu.pe");
+    }
+
+    @Test
+    void voiceWithoutJwtDoesNotReachTranscription() throws Exception {
+        mvc.perform(multipart("/agent/voz").file(audio()))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(transcripcion, agent);
+    }
+
+    @Test
+    void voiceReturnsTranscriptSpokenTextAndChatEnvelope() throws Exception {
+        UUID conversation = UUID.randomUUID();
+        var ruta = new RutaResumen(7L, "Surco", "UPC", null, null, 4, EstadoRuta.ACTIVA);
+        when(transcripcion.transcribir(any())).thenReturn("¿Cuáles son mis rutas?");
+        when(agent.chatVoz("¿Cuáles son mis rutas?", conversation)).thenReturn(
+                new ChatResponse("Tienes una ruta.", List.of(), List.of(ruta), List.of(), null,
+                        List.of(), null, conversation));
+
+        mvc.perform(multipart("/agent/voz").file(audio())
+                        .param("conversationId", conversation.toString())
+                        .header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("¿Cuáles son mis rutas?"))
+                .andExpect(jsonPath("$.textoHablado",
+                        org.hamcrest.Matchers.containsString("Surco a UPC")))
+                .andExpect(jsonPath("$.respuesta.message").value("Tienes una ruta."))
+                .andExpect(jsonPath("$.respuesta.rutas.length()").value(1))
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversation.toString()));
+
+        verify(transcripcion).transcribir(any());
+        verify(agent).chatVoz("¿Cuáles son mis rutas?", conversation);
+    }
+
+    @Test
+    void voiceReturnsControlledTranscriptionError() throws Exception {
+        when(transcripcion.transcribir(any())).thenThrow(new AgentProviderException(
+                HttpStatus.BAD_REQUEST, "VOICE_NOT_UNDERSTOOD", "No se entendió el audio."));
+
+        mvc.perform(multipart("/agent/voz").file(audio()).header("Authorization", bearer()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.campos.codigo").value("VOICE_NOT_UNDERSTOOD"));
+        verifyNoInteractions(agent);
+    }
+
+    private static MockMultipartFile audio() {
+        return new MockMultipartFile("audio", "voz.webm", "audio/webm", new byte[2048]);
     }
 
     @Test
@@ -395,11 +445,12 @@ class AgentHttpSecurityTest {
     @org.springframework.context.annotation.Configuration
     @EnableWebMvc
     @Import({SecurityConfig.class, JwtAuthFilter.class, JwtService.class, UsuarioDetailsService.class,
-            LimiteAutenticacion.class, AgentController.class, ConfirmationController.class,
+            LimiteAutenticacion.class, AgentController.class, AgentVozController.class, ConfirmationController.class,
             GlobalExceptionHandler.class, MensajeService.class})
     static class Configuration {
         @Bean UsuarioRepository usuarios() { return mock(UsuarioRepository.class); }
         @Bean AgentService agent() { return mock(AgentService.class); }
+        @Bean TranscripcionService transcripcion() { return mock(TranscripcionService.class); }
         @Bean ConfirmationService confirmations() { return mock(ConfirmationService.class); }
         @Bean Clock clock() { return Clock.fixed(NOW, ZoneId.of("America/Lima")); }
     }

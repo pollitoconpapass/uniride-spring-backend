@@ -90,6 +90,13 @@ Omitir `conversationId` inicia una sesión independiente. El ID es aleatorio y e
 
 Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez elementos por página y `hayMas`. La primera página es cero y se admite hasta la página 10000. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido.
 
+## Voz
+
+`POST /api/agent/voz` recibe un audio corto (push-to-talk) y devuelve `transcripcion`,
+`textoHablado` y el mismo `ChatResponse` del chat de texto. La transcripción usa Groq Whisper
+y el TTS se ejecuta en el navegador. El flujo, el contrato, los errores y las
+responsabilidades de Angular están en [agente_voz.md](agente_voz.md).
+
 ## Reportes de viajes por chat
 
 Las herramientas de reportes permiten consultar estadísticas del usuario autenticado y preparar la descarga de su historial en PDF. Envía una pregunta en lenguaje natural a `POST /api/agent/chat`. Los endpoints tradicionales siguen disponibles para consultar los datos directamente.

@@ -55,6 +55,15 @@ public class AgentService {
     }
 
     public ChatResponse chat(String message, UUID conversationId) {
+        return chat(message, conversationId, false);
+    }
+
+    /** Same orchestration as the text chat; only the response style changes. */
+    public ChatResponse chatVoz(String message, UUID conversationId) {
+        return chat(message, conversationId, true);
+    }
+
+    private ChatResponse chat(String message, UUID conversationId, boolean voz) {
         AgentConversationStore.validateMessage(message);
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
@@ -72,7 +81,7 @@ public class AgentService {
                 lease.descartarReferenciaConfirmacion();
                 lease.guardarBorrador(compensation.draft());
                 response = compensation.informational() ? soloMensaje(compensation.message())
-                        : execute(usuario, message, lease.history(), compensation);
+                        : execute(usuario, message, lease.history(), compensation, voz);
                 lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
             }
             response = response.withConversationId(lease.id());
@@ -144,11 +153,13 @@ public class AgentService {
     }
 
     private ChatResponse execute(Usuario usuario, String message, List<Message> history,
-                                 CompensationIntent.Decision compensation) {
+                                 CompensationIntent.Decision compensation, boolean voz) {
         String contexto = "Contexto: hoy es " + LocalDate.now(clock) + " y son las "
                 + LocalTime.now(clock).format(FORMATO_HORA)
                 + " (America/Lima); rol activo: " + usuario.getRolPrincipal() + ".\n"
-                + "Mensaje del usuario: " + message;
+                + "Mensaje del usuario: " + message
+                + (voz ? "\nModo voz: responde en máximo dos frases, sin listas, markdown ni IDs; "
+                        + "no enumeres rutas, viajes ni métodos, el sistema los leerá en voz alta." : "");
 
         boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
