@@ -6,6 +6,7 @@ import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.agent.dto.ContribucionResultado.Estado;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.tools.ContribucionAgentTools;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.*;
 import com.uniride.enums.*;
 import com.uniride.mappers.*;
@@ -17,6 +18,7 @@ import com.uniride.services.UsuarioService;
 import jakarta.persistence.EntityManager;
 import java.sql.Connection;
 import java.time.*;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -69,6 +71,72 @@ class AgentQueryPersistenceTest {
         assertThat(queries.rutas(10).items()).hasSize(7);
         assertThat(queries.rutas(0).hayMas()).isTrue();
         assertThat(queries.rutas(10).hayMas()).isFalse();
+    }
+
+    @Test void selectorListaRutasActivasLlenasYVencidasEnPaginasEstablesConFiltrosLiterales() {
+        Usuario owner = user(Rol.CONDUCTOR);
+        var elegibles = new ArrayList<Ruta>();
+        var vencida = route(owner, "Surco 100%", EstadoRuta.VENCIDA);
+        var llena = route(owner, "Surco 100X", EstadoRuta.LLENA);
+        elegibles.add(vencida);
+        elegibles.add(llena);
+        for (int i = 0; i < 10; i++) elegibles.add(route(owner, "Surco " + i, EstadoRuta.ACTIVA));
+        var fechaEmpatada = LocalDateTime.of(2026, 11, 1, 8, 0);
+        elegibles.forEach(r -> r.setFechaCreacion(fechaEmpatada));
+        route(owner, "Surco eliminada", EstadoRuta.ELIMINADA);
+        route(user(Rol.CONDUCTOR), "Surco ajena", EstadoRuta.ACTIVA);
+        em.flush();
+        em.clear();
+        when(current.usuarioActual()).thenReturn(owner);
+
+        var paginaInicial = queries.rutasParaCrearViaje(null, null, 0);
+        var paginaFinal = queries.rutasParaCrearViaje(null, null, 1);
+
+        assertThat(paginaInicial.getTotalElements()).isEqualTo(12);
+        assertThat(paginaInicial.hasNext()).isTrue();
+        assertThat(paginaInicial.getContent()).extracting(RutaRespuesta::id)
+                .containsExactlyElementsOf(elegibles.reversed().subList(0, 10).stream().map(Ruta::getId).toList());
+        assertThat(paginaFinal.hasNext()).isFalse();
+        assertThat(paginaFinal.getContent()).extracting(RutaRespuesta::id)
+                .containsExactly(llena.getId(), vencida.getId());
+        assertThat(paginaFinal.getContent()).extracting(RutaRespuesta::estado)
+                .containsExactly(EstadoRuta.LLENA, EstadoRuta.VENCIDA);
+        assertThat(queries.rutasParaCrearViaje("  SURCO 100% ", " upc ", 0))
+                .extracting(RutaRespuesta::id).containsExactly(vencida.getId());
+        assertThat(routes.findById(vencida.getId()).orElseThrow().getEstado()).isEqualTo(EstadoRuta.VENCIDA);
+    }
+
+    @Test void releeRutaExactaConDatosVigentesYExcluyeRutasAjenasOEliminadas() {
+        Usuario owner = user(Rol.CONDUCTOR);
+        var rutaOriginal = route(owner, "Surco", EstadoRuta.ACTIVA);
+        rutaOriginal.setPuntosReferencia("Parque Central");
+        var rutaElegida = route(owner, "Surco", EstadoRuta.LLENA);
+        rutaElegida.setPuntosReferencia("Mercado");
+        var ajena = route(user(Rol.CONDUCTOR), "Surco", EstadoRuta.ACTIVA);
+        when(current.usuarioActual()).thenReturn(owner);
+        em.flush();
+        em.clear();
+
+        var opciones = queries.rutasParaCrearViaje("Surco", "UPC", 0);
+        assertThat(opciones.getContent()).extracting(RutaRespuesta::id)
+                .containsExactlyInAnyOrder(rutaElegida.getId(), rutaOriginal.getId());
+        assertThat(queries.rutaParaCrearViaje(rutaElegida.getId())).hasValueSatisfying(
+                elegida -> assertThat(elegida.puntosReferencia()).isEqualTo("Mercado"));
+        assertThat(queries.rutaParaCrearViaje(ajena.getId())).isEmpty();
+
+        var vigente = routes.findById(rutaElegida.getId()).orElseThrow();
+        vigente.setPuntosReferencia("Mercado y biblioteca");
+        em.flush();
+        em.clear();
+        assertThat(queries.rutaParaCrearViaje(rutaElegida.getId())).hasValueSatisfying(
+                elegida -> assertThat(elegida.puntosReferencia()).isEqualTo("Mercado y biblioteca"));
+
+        routes.findById(rutaElegida.getId()).orElseThrow().setEstado(EstadoRuta.ELIMINADA);
+        em.flush();
+        em.clear();
+        assertThat(queries.rutaParaCrearViaje(rutaElegida.getId())).isEmpty();
+        assertThat(queries.rutasParaCrearViaje("Surco", "UPC", 0))
+                .extracting(RutaRespuesta::id).containsExactly(rutaOriginal.getId());
     }
 
     @Test void fechaSeFiltraAntesDelLimiteSinFalsosNoEncontradosNiUnicidadFalsa() {

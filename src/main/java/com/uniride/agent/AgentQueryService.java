@@ -26,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -85,8 +86,25 @@ public class AgentQueryService {
     /** Two rows are sufficient to detect ambiguity across the whole matching set. */
     public Page<RutaRespuesta> identificarRutas(String origen, String destino) {
         Usuario owner = requireRole(Rol.CONDUCTOR);
-        return rutas.consultarRutasAgente(owner.getId(), EstadoRuta.ELIMINADA,
-                normalizar(origen), normalizar(destino), PageRequest.of(0, 2)).map(rutaMapper::toRutaRespuesta);
+        return respuestasRutasPropias(owner.getId(), origen, destino, PageRequest.of(0, 2));
+    }
+
+    /** ViajeService permite programar sobre cualquier ruta propia que siga sin eliminarse. */
+    public Page<RutaRespuesta> rutasParaCrearViaje(String origen, String destino, Integer pagina) {
+        Usuario owner = requireRole(Rol.CONDUCTOR);
+        return respuestasRutasPropias(owner.getId(), origen, destino, pageable(pagina, PAGE_SIZE));
+    }
+
+    /** Revalida una referencia del servidor sin adquirir el bloqueo de la escritura definitiva. */
+    public Optional<RutaRespuesta> rutaParaCrearViaje(Long rutaId) {
+        Usuario owner = requireRole(Rol.CONDUCTOR);
+        return rutas.findByIdAndConductorIdAndEstadoNot(rutaId, owner.getId(), EstadoRuta.ELIMINADA)
+                .map(rutaMapper::toRutaRespuesta);
+    }
+
+    private Page<RutaRespuesta> respuestasRutasPropias(Long conductorId, String origen, String destino, PageRequest pagina) {
+        return rutas.consultarRutasAgente(conductorId, EstadoRuta.ELIMINADA,
+                normalizar(origen), normalizar(destino), pagina).map(rutaMapper::toRutaRespuesta);
     }
 
     public Page<BusquedaRespuesta> identificarViajes(String origen, String destino, String dia,

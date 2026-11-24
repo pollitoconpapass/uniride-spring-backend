@@ -246,13 +246,27 @@ public class AgentToolRegistry {
                 contribucionInvocada = true;
                 context = new ToolContext(Map.of(CONTEXTO_FILTROS, filtrosContribucion));
             }
+            var borrador = seleccion == null ? rutaOViaje : seleccion;
+            SeleccionRutaViaje seleccionRuta = null;
+            if ("crearViaje".equals(name) && borrador != null && borrador.rutaViaje() != null) {
+                seleccionRuta = new SeleccionRutaViaje(borrador.rutaViaje());
+                context = new ToolContext(Map.of(SeleccionRutaViaje.CONTEXTO, seleccionRuta));
+            }
             if (prepara) prepared = true;
             String output = llamar(delegate, noArguments ? NO_ARGUMENTS : input, context, prepara);
             if (AgentConversationStore.containsSecrets(output))
                 throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
             JsonNode data = mapper.readTree(output);
             capture(name, data);
-            if (seleccion != null) rutaOViaje = seleccion;
+            if (seleccionRuta != null) {
+                rutaOViaje = borrador.conRutaViaje(seleccionRuta.estado());
+                if (data instanceof ObjectNode objeto && objeto.has("aclaracion")) {
+                    objeto.remove("aclaracion");
+                    output = mapper.writeValueAsString(objeto);
+                }
+            } else if (seleccion != null) {
+                rutaOViaje = seleccion;
+            }
             receipts.put(key, output);
             return output;
         }

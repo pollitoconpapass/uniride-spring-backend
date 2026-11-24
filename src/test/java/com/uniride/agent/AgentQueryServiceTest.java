@@ -12,6 +12,7 @@ import com.uniride.repositories.*;
 import com.uniride.services.*;
 import java.time.*;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -91,5 +92,35 @@ class AgentQueryServiceTest {
         assertThatThrownBy(() -> service.rutas(-1)).isInstanceOf(CamposInvalidosException.class);
         assertThatThrownBy(() -> service.viajes(null, 10001)).isInstanceOf(CamposInvalidosException.class);
         verifyNoInteractions(rutas, viajes);
+    }
+
+    @Test void selectorDeRutaVerificaAutenticacionYRolAntesDeConsultar() {
+        when(usuarios.usuarioActual()).thenThrow(new NoAutorizadoException("Debes iniciar sesión"))
+                .thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+
+        assertThatThrownBy(() -> service.rutasParaCrearViaje(null, null, 0))
+                .isInstanceOf(NoAutorizadoException.class);
+        assertThatThrownBy(() -> service.rutasParaCrearViaje(null, null, 0))
+                .isInstanceOf(NoPermitidoException.class);
+        assertThatThrownBy(() -> service.rutaParaCrearViaje(8L)).isInstanceOf(NoPermitidoException.class);
+        verifyNoInteractions(rutas);
+    }
+
+    @Test void selectorDeRutaLimitaLaPaginaYLaRelecturaUsaElConductorActual() {
+        when(usuarios.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.CONDUCTOR).build());
+        var pagina = PageRequest.of(1, 10);
+        when(rutas.consultarRutasAgente(7L, EstadoRuta.ELIMINADA, "surco", "upc", pagina))
+                .thenReturn(new PageImpl<>(List.of(), pagina, 10));
+        when(rutas.findByIdAndConductorIdAndEstadoNot(8L, 7L, EstadoRuta.ELIMINADA))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.rutasParaCrearViaje(null, null, 10001))
+                .isInstanceOf(CamposInvalidosException.class);
+        assertThat(service.rutasParaCrearViaje(" Surco ", "UPC", 1)).isEmpty();
+        assertThat(service.rutaParaCrearViaje(8L)).isEmpty();
+
+        verify(rutas).consultarRutasAgente(7L, EstadoRuta.ELIMINADA, "surco", "upc", pagina);
+        verify(rutas).findByIdAndConductorIdAndEstadoNot(8L, 7L, EstadoRuta.ELIMINADA);
+        verifyNoMoreInteractions(rutas);
     }
 }

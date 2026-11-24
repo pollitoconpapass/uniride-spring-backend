@@ -3,28 +3,36 @@ package com.uniride.agent.tools;
 import static com.uniride.agent.tools.RutaAgentTools.aclararAmbiguedad;
 import static com.uniride.agent.tools.RutaAgentTools.faltantes;
 import static com.uniride.agent.tools.RutaAgentTools.filtrosDeRuta;
-import static com.uniride.agent.tools.RutaAgentTools.rutaAmbigua;
 
 import com.uniride.agent.Aclaraciones;
 import com.uniride.agent.Aclaraciones.Campo;
+import com.uniride.agent.AgentConversationStore;
 import com.uniride.agent.AgentQueryService;
+import com.uniride.agent.SeleccionRutaViaje;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.config.TiempoConfig;
 import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.requests.ViajeRequest;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.enums.*;
 import com.uniride.exceptions.*;
 import com.uniride.services.UsuarioService;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -33,6 +41,8 @@ public class ViajeAgentTools {
     private final ConfirmationService confirmaciones;
     private final UsuarioService usuarioService;
     private final Clock clock;
+    private static final String CREAR_VIAJE = "crearViaje";
+    private static final String RUTA_CAMBIO = "La ruta elegida cambió o ya no está disponible.";
 
     @Autowired
     public ViajeAgentTools(AgentQueryService consultas, ConfirmationService confirmaciones, UsuarioService usuarioService,
@@ -97,26 +107,113 @@ public class ViajeAgentTools {
             @ToolParam(description = "Origen de la ruta propia", required = false) String origenRuta,
             @ToolParam(description = "Destino, si lo indicó el usuario", required = false) String destinoRuta,
             @ToolParam(description = "Fecha yyyy-MM-dd", required = false) LocalDate fecha,
-            @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora) {
+            @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora,
+            ToolContext contexto) {
         if (!rol(Rol.CONDUCTOR))
             return new OperacionResumen(EstadoOperacion.ERROR, null, "Solo un conductor puede crear viajes.");
-        var campos = filtrosDeRuta(origenRuta, destinoRuta, Campo.ORIGEN, Campo.DESTINO);
-        if (blanco(origenRuta)) campos.addFirst(Campo.ORIGEN.obligatorio());
-        if (fecha == null) campos.add(Campo.FECHA.obligatorio());
-        if (hora == null) campos.add(Campo.HORA.obligatorio());
-        if (!campos.isEmpty()) return faltantes("crearViaje", campos);
+        var turno = contexto != null && contexto.getContext().get(SeleccionRutaViaje.CONTEXTO) instanceof SeleccionRutaViaje s
+                ? s : null;
+        var seleccion = turno == null ? SeleccionRutaViaje.INICIAL : turno.estado();
+        var ruta = seleccion.elegida();
+        if (ruta != null && consultas.rutaParaCrearViaje(ruta.id()).filter(ruta::equals).isEmpty())
+            return ofrecerAlternativas(turno, fecha, hora, RUTA_CAMBIO);
+        if (ruta == null) {
+            boolean filtrado = !blanco(origenRuta) || !blanco(destinoRuta);
+            if (!filtrosDeRuta(origenRuta, destinoRuta, Campo.ORIGEN, Campo.DESTINO).isEmpty()) {
+                return ofrecerAlternativas(turno, fecha, hora, "El origen o destino indicado es demasiado largo.");
+            }
+            var rutas = consultas.rutasParaCrearViaje(origenRuta, destinoRuta, seleccion.pagina());
+            if (rutas.isEmpty() && seleccion.pagina() > 0)
+                rutas = consultas.rutasParaCrearViaje(origenRuta, destinoRuta, 0);
+            if (filtrado && rutas.isEmpty())
+                return ofrecerAlternativas(turno, fecha, hora, "No encontré una ruta propia con esos datos.");
+            if (!filtrado || rutas.getTotalElements() != 1 || !seleccion.opciones().isEmpty()) {
+                String detalle = filtrado && rutas.getTotalElements() > 1 ? "Coinciden varias de tus rutas." : null;
+                return opcionesRuta(turno, rutas, fecha, hora, detalle, false);
+            }
+            ruta = rutas.getContent().getFirst();
+        }
+        if (turno != null) turno.actualizar(new SeleccionRutaViaje.Estado(ruta, Map.of(), 0, false, false));
+        var horario = camposHorario(fecha, hora);
+        if (!horario.isEmpty()) return faltantes(CREAR_VIAJE, horario);
         try {
-            var rutas = consultas.identificarRutas(origenRuta, destinoRuta);
-            if (rutas.isEmpty())
-                return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No encontré una ruta propia con esos datos.");
-            if (rutas.getTotalElements() > 1)
-                return rutaAmbigua("crearViaje", rutas, Campo.ORIGEN, Campo.DESTINO);
-            return confirmaciones.prepararViaje(rutas.getContent().getFirst().id(), new ViajeRequest(fecha, hora));
+            return confirmaciones.prepararViaje(ruta, new ViajeRequest(fecha, hora));
         } catch (CamposInvalidosException | SalidaConPocaAnticipacionException e) {
-            return corregirHorario("crearViaje", fecha, Campo.FECHA, Campo.HORA, e.getMessage());
-        } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
+            return corregirHorario(CREAR_VIAJE, fecha, Campo.FECHA, Campo.HORA, e.getMessage());
+        } catch (ResourceNotFoundException e) {
+            return ofrecerAlternativas(turno, fecha, hora, RUTA_CAMBIO);
+        } catch (BusinessException e) {
+            if (consultas.rutaParaCrearViaje(ruta.id()).isEmpty())
+                return ofrecerAlternativas(turno, fecha, hora, RUTA_CAMBIO);
+            return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
+        } catch (NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
+    }
+
+    public OperacionResumen crearViaje(String origenRuta, String destinoRuta, LocalDate fecha, LocalTime hora) {
+        return crearViaje(origenRuta, destinoRuta, fecha, hora, null);
+    }
+
+    private OperacionResumen ofrecerAlternativas(SeleccionRutaViaje turno, LocalDate fecha, LocalTime hora, String detalle) {
+        return opcionesRuta(turno, consultas.rutasParaCrearViaje(null, null, 0), fecha, hora, detalle, true);
+    }
+
+    private OperacionResumen opcionesRuta(SeleccionRutaViaje turno, Page<RutaRespuesta> rutas,
+                                         LocalDate fecha, LocalTime hora, String detalle, boolean limpiarFiltros) {
+        if (rutas.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null,
+                    (detalle == null ? "" : detalle + " ")
+                            + "Registra una ruta antes de programar un viaje. No tienes rutas disponibles.");
+        }
+        var opciones = new ArrayList<OpcionAclaracion>();
+        var referencias = new LinkedHashMap<String, RutaRespuesta>();
+        int ordinal = rutas.getNumber() * 10;
+        for (var ruta : rutas.getContent()) {
+            String referencia = UUID.randomUUID().toString();
+            referencias.put(referencia, ruta);
+            opciones.add(new OpcionAclaracion(referencia, etiquetaRuta(++ordinal, ruta)));
+        }
+        if (turno != null) {
+            turno.actualizar(new SeleccionRutaViaje.Estado(null, referencias, rutas.getNumber(),
+                    rutas.hasNext(), limpiarFiltros));
+        }
+        var campos = camposHorario(fecha, hora);
+        campos.addFirst(Campo.RUTA.conOpciones(opciones));
+        var aclaracion = Aclaraciones.crear(CREAR_VIAJE, campos.toArray(CampoAclaracion[]::new));
+        if (campos.size() == 1) aclaracion = aclaracion.conOpcionesRapidas().conRespuestaBreve("valor");
+        String mensaje = (detalle == null ? "" : detalle + " ") + "Selecciona una de tus rutas registradas."
+                + (fecha == null ? " Indica la fecha de salida." : "") + (hora == null ? " Indica la hora de salida." : "");
+        if (rutas.hasNext() || rutas.hasPrevious()) {
+            mensaje += " Página " + (rutas.getNumber() + 1) + " de " + rutas.getTotalPages() + "."
+                    + (rutas.hasNext() ? " Escribe «siguiente página» para ver más rutas." : "")
+                    + (rutas.hasPrevious() ? " Escribe «página anterior» para volver." : "")
+                    + " También puedes indicar un origen.";
+        }
+        return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, mensaje).conAclaracion(aclaracion);
+    }
+
+    private List<CampoAclaracion> camposHorario(LocalDate fecha, LocalTime hora) {
+        var campos = new ArrayList<CampoAclaracion>();
+        if (fecha == null) campos.add(Campo.FECHA.obligatorio());
+        if (hora == null) campos.add(Campo.HORA.obligatorio());
+        return campos;
+    }
+
+    private String etiquetaRuta(int ordinal, RutaRespuesta ruta) {
+        String origen = fragmento(ruta.origen(), 60, "Origen sin descripción disponible");
+        String destino = fragmento(ruta.destino(), 60, "Destino sin descripción disponible");
+        String referencias = fragmento(ruta.puntosReferencia(), 80, "");
+        return ordinal + ". " + origen + " → " + destino + " · Capacidad " + ruta.capacidadMaxima()
+                + (referencias.isBlank() ? "" : " · " + referencias);
+    }
+
+    private String fragmento(String texto, int maximo, String alternativa) {
+        if (texto == null) return alternativa;
+        String limpio = texto.replaceAll("\\s+", " ").strip();
+        if (!AclaracionAgente.textoSeguro(limpio, limpio.length()) || AgentConversationStore.containsSecrets(limpio))
+            return alternativa;
+        return limpio.length() <= maximo ? limpio : limpio.substring(0, maximo - 1) + "…";
     }
 
     @Tool(description = """

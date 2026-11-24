@@ -76,7 +76,14 @@ final class EnvioAclaracion {
 
     static String paraHistorial(AclaracionAgente esquema, Map<String, String> campos) {
         return esquema.campos().stream().filter(c -> campos.containsKey(c.id()))
-                .map(c -> c.etiqueta() + ": " + campos.get(c.id())).collect(java.util.stream.Collectors.joining(", "));
+                .map(c -> c.etiqueta() + ": " + valorParaHistorial(c, campos.get(c.id())))
+                .collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    private static String valorParaHistorial(CampoAclaracion campo, String valor) {
+        if (!"ruta".equals(campo.id())) return valor;
+        return campo.opciones().stream().filter(opcion -> opcion.valor().equals(valor)).findFirst()
+                .orElseThrow(EnvioAclaracion::invalido).etiqueta();
     }
 
     private static CamposInvalidosException invalido() {

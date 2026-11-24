@@ -95,9 +95,9 @@ Continuar sesión:
 
 Omitir `conversationId` inicia una sesión independiente. El ID es aleatorio y está vinculado al usuario; uno ajeno o desconocido devuelve 404. La sesión vive en RAM, conserva como máximo 20 mensajes (diez intercambios), admite 100 peticiones y expira tras 30 minutos sin actividad. Limpieza cada minuto. Se permiten cinco sesiones por usuario (se desplaza la más antigua libre) y mil en total por instancia. Un mensaje simultáneo en la misma sesión devuelve 409. El cambio de rol invalida su contexto (409). Reiniciar la instancia elimina la memoria, sin afectar confirmaciones persistidas. No hay endpoint para recuperar historias ajenas. No enviar contraseñas, JWT ni claves; los patrones de credenciales reconocidos se rechazan antes de llamar al proveedor.
 
-Cuando se consulta a Groq se envían hasta cuatro intercambios anteriores (ocho mensajes) junto con el mensaje actual. La paginación y las aclaraciones que interpreta el modelo se apoyan en esa ventana reciente. Los borradores de compensación y US29 y la referencia de confirmación se resuelven con el estado tipado de la sesión.
+Cuando se consulta a Groq se envían hasta cuatro intercambios anteriores (ocho mensajes) junto con el mensaje actual. La paginación y las aclaraciones que interpreta el modelo se apoyan en esa ventana reciente. Los borradores de rutas y viajes, compensación y US29 y la referencia de confirmación se resuelven con el estado tipado de la sesión.
 
-Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez elementos por página y `hayMas`. La primera página es cero y se admite hasta la página 10000. La selección para escribir filtra todos los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. Las rutas muestran el estado persistido.
+Las consultas paginadas de rutas, viajes, solicitudes y métodos devuelven diez elementos por página y `hayMas`. La primera página es cero y se admite hasta la página 10000. La identificación para otras preparaciones filtra los criterios en SQL y comprueba dos coincidencias para detectar ambigüedad global. La fecha se aplica antes de limitar. La creación de viajes usa una consulta paginada de rutas elegibles que permite ofrecer hasta diez opciones por turno. Las rutas muestran el estado persistido.
 
 ## Voz
 
@@ -317,6 +317,17 @@ Cuando los datos son válidos, `operacion` es:
 
 El frontend puede mostrar `resumen` y los botones Confirmar y Cancelar. El identificador y la expiración proceden del backend. La confirmación caduca a los diez minutos y se permiten veinte pendientes vigentes por usuario. Preparar solamente inserta metadatos de confirmación, sin rutas, viajes, solicitudes, métodos ni notificaciones de negocio.
 
+### Creación de un viaje sobre una ruta registrada
+
+Como conductor, envía `{"message":"Crea un viaje"}` a `POST /api/agent/chat`. Java consulta tus rutas registradas en orden estable y devuelve un selector `ruta` junto con la fecha y hora que todavía falten. Se incluyen rutas propias que no estén eliminadas. La consulta es de solo lectura y las comprobaciones de horario se aplican al preparar y al confirmar.
+
+- Si el origen identifica una sola ruta, el formulario solicita los datos de salida que falten. Si no coincide, el agente ofrece las rutas propias vigentes y conserva la fecha y hora. Si coincide con varias, muestra las alternativas.
+- Si la página es parcial, escribe «siguiente página» o «página anterior». Puedes precisar la búsqueda con «Origen: Surco». Conserva el mismo `conversationId`. Usa el UUID y las opciones del último descriptor para enviar el formulario.
+- Si no hay rutas elegibles, el agente pide registrar una antes de programar el viaje.
+- Si eliges una opción, Java vuelve a comprobar la ruta exacta, la propiedad y la elegibilidad. Una ruta que cambió o dejó de estar disponible requiere elegir una opción vigente. Si la ruta y el horario son válidos, el agente devuelve la propuesta de tipo `CREAR_VIAJE`.
+
+La selección utiliza el formulario genérico de Angular. También se puede continuar con texto o voz. El modelo no genera las opciones y los recorridos identificados en Java se resuelven sin una petición a Groq. [Contrato v1 y ejemplos JSON](agente_aclaraciones.md#seleccionar-una-ruta-para-crear-un-viaje)
+
 ### Confirmar o cancelar por chat
 
 Después de revisar la propuesta, envía otro `POST /api/agent/chat` con el JWT del propietario y el mismo `conversationId` recibido al preparar.
@@ -486,7 +497,7 @@ Un 429 de Groq puede indicar un límite de solicitudes o tokens compartido por l
 3. CONDUCTOR: «Consulta mis rutas», «Consulta mis viajes».
 4. PASAJERO: «Busca viajes disponibles el viernes a las 07:00», «Consulta mis solicitudes».
 5. Ambos: «Consulta mis métodos de compensación».
-6. «Crea un viaje en mi ruta de Surco»: debe pedir fecha/hora, sin crear nada.
+6. Como conductor, envía «Crea un viaje». Comprueba que el formulario muestre tus rutas, fecha y hora. Envía primero una opción y la fecha con el UUID de la aclaración. Envía la hora con el UUID nuevo y comprueba que la propuesta use la ruta elegida.
 7. Preparar una escritura en una base local aislada y revisar el resumen. Probar la confirmación y cancelación por chat y mediante los endpoints dedicados.
 8. Reservar las pruebas de escritura para la base aislada. Las pruebas contra Supabase se limitan a consultas.
 

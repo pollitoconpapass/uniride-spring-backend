@@ -4,6 +4,7 @@ import com.uniride.agent.AgentConversationStore;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.dto.responses.MetodoCompensacionRespuesta;
+import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.*;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoViaje;
@@ -65,13 +66,36 @@ public class ConfirmationService {
 
     @Transactional(timeout = 10)
     public OperacionResumen prepararViaje(Long rutaId, ViajeRequest request) {
+        return prepararViaje(rutaId, request, null);
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararViaje(RutaRespuesta esperada, ViajeRequest request) {
+        return prepararViaje(esperada.id(), request, esperada);
+    }
+
+    private OperacionResumen prepararViaje(Long rutaId, ViajeRequest request, RutaRespuesta esperada) {
         Usuario usuario = autorizado(TipoOperacion.CREAR_VIAJE);
         validar(request);
         Ruta ruta = viajes.validarCreacion(rutaId, request);
+        if (esperada != null && !coincideRuta(ruta, esperada))
+            throw new ResourceNotFoundException("La ruta elegida cambió.");
         return guardar(usuario, TipoOperacion.CREAR_VIAJE, rutaId, request, snapshot(ruta),
                 "Programar un viaje desde " + ruta.getOrigen() + " hacia " + ruta.getDestino()
                         + " el " + request.fecha() + " a las " + request.hora()
                         + ", capacidad " + ruta.getCapacidadMaxima() + ". Referencias: " + ruta.getPuntosReferencia() + ".");
+    }
+
+    private boolean coincideRuta(Ruta ruta, RutaRespuesta esperada) {
+        return Objects.equals(ruta.getId(), esperada.id())
+                && Objects.equals(ruta.getConductor().getId(), esperada.conductorId())
+                && Objects.equals(ruta.getOrigen(), esperada.origen())
+                && Objects.equals(ruta.getDestino(), esperada.destino())
+                && Objects.equals(ruta.getPuntosReferencia(), esperada.puntosReferencia())
+                && Objects.equals(ruta.getZonasSinParada(), esperada.zonasSinParada())
+                && Objects.equals(ruta.getNotaContribucion(), esperada.notaContribucion())
+                && Objects.equals(ruta.getCapacidadMaxima(), esperada.capacidadMaxima())
+                && ruta.getEstado() == esperada.estado();
     }
 
     @Transactional(timeout = 10)

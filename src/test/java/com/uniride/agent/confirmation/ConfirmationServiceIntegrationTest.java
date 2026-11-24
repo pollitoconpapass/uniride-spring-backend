@@ -473,6 +473,67 @@ class ConfirmationServiceIntegrationTest {
         verifyNoInteractions(notifications);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void registeredRouteSelectorPreparesTheExactRouteAndWaitsForConfirmation(boolean accept) {
+        Ruta parque = route();
+        Ruta puente = route();
+        puente.setPuntosReferencia("Puente peatonal");
+        routes.save(puente);
+        long before = confirmations.count();
+        long tripsBefore = trips.count();
+
+        var question = agent.chat("Crea un viaje", (UUID) null);
+        var descriptor = question.aclaracion();
+        var choice = descriptor.campos().getFirst().opciones().stream()
+                .filter(option -> option.etiqueta().contains("Puente peatonal")).findFirst().orElseThrow();
+        assertThat(confirmations.count()).isEqualTo(before);
+        var request = tripRequest();
+        var data = mapper.writeValueAsString(Map.of("ruta", choice.valor(), "fecha", request.fecha().toString(),
+                "hora", request.hora().toString()));
+        var prepared = agent.chat("Datos de aclaración " + descriptor.id() + ": " + data, question.conversationId());
+
+        var proposal = prepared.operacion().confirmacion();
+        assertThat(prepared.aclaracion()).isNull();
+        assertThat(proposal.tipo()).isEqualTo(TipoOperacion.CREAR_VIAJE);
+        assertThat(confirmations.findById(proposal.id()).orElseThrow().getRecursoId()).isEqualTo(puente.getId());
+        assertThat(confirmations.count()).isEqualTo(before + 1);
+        assertThat(trips.count()).isEqualTo(tripsBefore);
+        verifyNoInteractions(notifications);
+
+        var resolved = agent.chat(accept ? "sí" : "no", question.conversationId());
+        assertThat(resolved.resolucionConfirmacion().estado().name()).isEqualTo(accept ? "EJECUTADA" : "CANCELADA");
+        assertThat(trips.existsByRutaId(parque.getId())).isFalse();
+        assertThat(trips.existsByRutaId(puente.getId())).isEqualTo(accept);
+        assertThat(trips.count()).isEqualTo(tripsBefore + (accept ? 1 : 0));
+    }
+
+    @Test void replacesAnEditedRouteOptionAndKeepsTheScheduleWithoutCreatingAProposal() {
+        Ruta ruta = route();
+        long before = confirmations.count();
+        var question = agent.chat("Crea un viaje", (UUID) null);
+        var descriptor = question.aclaracion();
+        var choice = descriptor.campos().getFirst().opciones().getFirst();
+        ruta.setPuntosReferencia("Puente peatonal");
+        routes.save(ruta);
+
+        var request = tripRequest();
+        var data = mapper.writeValueAsString(Map.of("ruta", choice.valor(), "fecha", request.fecha().toString(),
+                "hora", request.hora().toString()));
+        var refreshed = agent.chat("Datos de aclaración " + descriptor.id() + ": " + data, question.conversationId());
+
+        assertThat(refreshed.message()).contains("cambió");
+        assertThat(refreshed.aclaracion().id()).isNotEqualTo(descriptor.id());
+        assertThat(refreshed.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("ruta");
+        assertThat(refreshed.aclaracion().campos().getFirst().opciones()).singleElement().satisfies(option -> {
+            assertThat(option.etiqueta()).contains("Puente peatonal");
+            assertThat(option.valor()).isNotEqualTo(choice.valor());
+        });
+        assertThat(confirmations.count()).isEqualTo(before);
+        assertThat(trips.existsByRutaId(ruta.getId())).isFalse();
+        verifyNoInteractions(notifications);
+    }
+
     @Test void validatesThePreparedParametersAgainBeforeExecutionInChat() throws Exception {
         var prepared = service.prepararRuta(routeRequest());
         UUID id = prepared.confirmacion().id();

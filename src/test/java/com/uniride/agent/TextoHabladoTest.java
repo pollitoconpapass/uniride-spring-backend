@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.MetodoCompensacionResumen;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.dto.ViajeResumen;
@@ -36,6 +37,18 @@ class TextoHabladoTest {
         String texto = TextoHablado.desde(respuesta("Tienes dos rutas.", List.of(), rutas, List.of()));
 
         assertThat(texto).contains("Tus rutas son: Surco a UPC; San Miguel a UPC, llena.");
+    }
+
+    @Test
+    void readsRegisteredRouteLabelsWithoutTheirOpaqueValues() {
+        var opciones = IntStream.rangeClosed(1, 7).mapToObj(i -> new OpcionAclaracion("valor-opaco-" + i,
+                i + ". Surco → UPC · Capacidad 4 · Referencia " + i)).toList();
+        var esquema = Aclaraciones.crear("crearViaje", Aclaraciones.Campo.RUTA.conOpciones(opciones));
+        var respuesta = respuesta("Selecciona una de tus rutas.", List.of(), List.of(), List.of()).conAclaracion(esquema);
+
+        assertThat(TextoHablado.desde(respuesta)).contains("Ruta 1. Surco a UPC, Capacidad 4, Referencia 1",
+                "Referencia 5", "Hay más opciones en pantalla.", "Puedes indicar el número de la ruta.")
+                .doesNotContain("valor-opaco", "Referencia 6");
     }
 
     @Test

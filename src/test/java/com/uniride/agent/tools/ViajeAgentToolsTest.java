@@ -103,22 +103,30 @@ class ViajeAgentToolsTest {
     @Test
     void crearViajeNoCreaNadaSiLaRutaEsAmbigua() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        when(consultas.identificarRutas("Surco", null)).thenReturn(
-                new PageImpl<>(List.of(ruta(1L), ruta(101L)), PageRequest.of(0, 2), 2));
-        assertThat(tools.crearViaje("Surco", null, LocalDate.now().plusDays(2), LocalTime.of(7, 0)).estado())
-                .isEqualTo(EstadoOperacion.AMBIGUO);
+        when(consultas.rutasParaCrearViaje("Surco", null, 0)).thenReturn(
+                new PageImpl<>(List.of(ruta(1L), ruta(101L)), PageRequest.of(0, 10), 2));
+        var resultado = tools.crearViaje("Surco", null, LocalDate.of(2026, 12, 1), LocalTime.of(7, 0));
+
+        assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
+            assertThat(campo.id()).isEqualTo("ruta");
+            assertThat(campo.tipo()).isEqualTo(TipoCampoAclaracion.SELECT);
+            assertThat(campo.opciones()).hasSize(2);
+            assertThat(campo.opciones()).extracting(OpcionAclaracion::valor).doesNotContain("1", "101");
+        });
         verifyNoInteractions(confirmaciones);
     }
 
     @Test
     void crearViajePreparaLaRutaUnicaEncontrada() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        when(consultas.identificarRutas("Surco", null)).thenReturn(new PageImpl<>(List.of(ruta(1L))));
-        LocalDate fecha = LocalDate.now().plusDays(2);
+        var surco = ruta(1L);
+        when(consultas.rutasParaCrearViaje("Surco", null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        LocalDate fecha = LocalDate.of(2026, 12, 1);
+        var request = new ViajeRequest(fecha, LocalTime.of(7, 0));
         var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma el viaje.");
-        when(confirmaciones.prepararViaje(eq(1L), any())).thenReturn(pendiente);
+        when(confirmaciones.prepararViaje(surco, request)).thenReturn(pendiente);
         assertThat(tools.crearViaje("Surco", null, fecha, LocalTime.of(7, 0))).isSameAs(pendiente);
-        verify(confirmaciones).prepararViaje(1L, new ViajeRequest(fecha, LocalTime.of(7, 0)));
+        verify(confirmaciones).prepararViaje(surco, request);
     }
 
     @Test
@@ -130,15 +138,17 @@ class ViajeAgentToolsTest {
     }
 
     @Test
-    void fechaFaltanteNoPreparaNiConsulta() {
+    void rutaUnicaConHorarioIncompletoSoloSolicitaLaFechaOLaHora() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(consultas.rutasParaCrearViaje("Surco", null, 0)).thenReturn(new PageImpl<>(List.of(ruta(1L))));
         var faltaFecha = tools.crearViaje("Surco", null, null, LocalTime.of(8, 30));
         var faltaHora = tools.crearViaje("Surco", null, LocalDate.of(2026, 12, 1), null);
 
         assertThat(faltaFecha.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
         assertThat(faltaFecha.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("fecha");
         assertThat(faltaHora.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("hora");
-        verifyNoInteractions(consultas, confirmaciones);
+        verify(consultas, times(2)).rutasParaCrearViaje("Surco", null, 0);
+        verifyNoInteractions(confirmaciones);
     }
 
     @Test

@@ -90,6 +90,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -404,29 +405,54 @@ class GroqProviderIntegrationTest {
         verifyNoInteractions(confirmations);
     }
 
-    @Test
-    void semanticTripRequestContinuesWithItsStructuredDateAndTime() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void semanticTripRequestContinuesWithItsStructuredDateAndTime(boolean limitedAfterTool) {
         var confirmations = mock(ConfirmationService.class);
         var queries = mock(AgentQueryService.class);
         service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
-        when(queries.identificarRutas("Surco", null)).thenReturn(new PageImpl<>(List.of(route(13L, "Surco"))));
+        var surco = route(13L, "Surco");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        when(queries.rutaParaCrearViaje(13L)).thenReturn(Optional.of(surco));
         var ride = new ViajeRequest(FECHA_VIAJE, LocalTime.of(8, 30));
         var proposal = pending(TipoOperacion.CREAR_VIAJE, "Confirma el viaje desde Surco.", Map.of("rutaId", 13L));
-        when(confirmations.prepararViaje(13L, ride)).thenReturn(proposal);
+        when(confirmations.prepararViaje(surco, ride)).thenReturn(proposal);
         enqueue(200, toolCall("crearViaje"));
+        if (limitedAfterTool) enqueue(429, rateLimitError());
 
-        ChatResponse first = service.chat("¿Me puedes ayudar a programar un viaje?", (UUID) null);
+        String message = "¿Me puedes ayudar a programar un viaje?"
+                + (limitedAfterTool ? " También muéstrame mis viajes." : "");
+        ChatResponse first = service.chat(message, (UUID) null);
 
-        assertThat(clarificationFields(first, "crearViaje")).containsExactly("origen", "fecha", "hora");
-        ChatResponse partial = submit(first, Map.of("origen", "Surco", "fecha", FECHA_VIAJE.toString()));
+        assertThat(clarificationFields(first, "crearViaje")).containsExactly("ruta", "fecha", "hora");
+        var options = tripRouteOptions(first);
+        assertThat(options).singleElement().satisfies(option -> {
+            assertThat(option.etiqueta()).contains("Surco", "UPC");
+            assertThat(option.valor()).isNotEqualTo("13");
+        });
+        if (limitedAfterTool) {
+            assertThat(first.advertencia().codigo()).isEqualTo("PROVIDER_RATE_LIMIT");
+            assertThat(requests.get(1).path("messages").valueStream()
+                    .filter(item -> "tool".equals(item.path("role").asText())).map(item -> item.path("content").asText()))
+                    .singleElement().satisfies(output ->
+                            assertThat(output).doesNotContain(options.getFirst().valor(), "\"aclaracion\""));
+        } else {
+            assertThat(first.advertencia()).isNull();
+        }
+        ChatResponse partial = submit(first, Map.of("ruta", options.getFirst().valor(), "fecha", FECHA_VIAJE.toString()));
         assertThat(clarificationFields(partial, "crearViaje")).containsExactly("hora");
-        verifyNoInteractions(queries, confirmations);
+        assertThat(partial.conversationId()).isEqualTo(first.conversationId());
+        assertThat(partial.aclaracion().id()).isNotEqualTo(first.aclaracion().id());
+        assertThatThrownBy(() -> submit(first, Map.of("hora", "08:30")))
+                .isInstanceOfSatisfying(AgentProviderException.class, failure ->
+                        assertThat(failure.code()).isEqualTo("CLARIFICATION_EXPIRED"));
+        verifyNoInteractions(confirmations);
 
         assertPending(submit(partial, Map.of("hora", "08:30")), proposal);
-        assertThat(requests).hasSize(1);
-        verify(queries).identificarRutas("Surco", null);
-        verify(confirmations).prepararViaje(13L, ride);
-        verifyNoMoreInteractions(queries, confirmations);
+        assertThat(requests).hasSize(limitedAfterTool ? 2 : 1);
+        verify(queries).rutasParaCrearViaje(null, null, 0);
+        verify(confirmations).prepararViaje(surco, ride);
+        verifyNoMoreInteractions(confirmations);
     }
 
     @Test
@@ -434,24 +460,151 @@ class GroqProviderIntegrationTest {
         var confirmations = mock(ConfirmationService.class);
         var queries = mock(AgentQueryService.class);
         service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
-        when(queries.identificarRutas("Surco", null))
+        var surco = route(13L, "Surco");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        when(queries.rutaParaCrearViaje(13L))
                 .thenThrow(new TransientDataAccessResourceException("simulated transient lookup failure"))
-                .thenReturn(new PageImpl<>(List.of(route(13L, "Surco"))));
+                .thenReturn(Optional.of(surco));
         var ride = new ViajeRequest(FECHA_VIAJE, LocalTime.of(8, 30));
         var proposal = pending(TipoOperacion.CREAR_VIAJE, "Confirma el viaje desde Surco.", Map.of("rutaId", 13L));
-        when(confirmations.prepararViaje(13L, ride)).thenReturn(proposal);
+        when(confirmations.prepararViaje(surco, ride)).thenReturn(proposal);
         ChatResponse initial = service.chat("Crea un viaje", (UUID) null);
-        var values = Map.of("origen", "Surco", "fecha", FECHA_VIAJE.toString(), "hora", "08:30");
+        var values = Map.of("ruta", tripRouteOptions(initial).getFirst().valor(), "fecha", FECHA_VIAJE.toString(),
+                "hora", "08:30");
 
         assertThatThrownBy(() -> submit(initial, values)).isInstanceOf(AgentProviderException.class);
-        verify(queries).identificarRutas("Surco", null);
+        verify(queries).rutaParaCrearViaje(13L);
         verifyNoInteractions(confirmations);
 
         assertPending(submit(initial, values), proposal);
         assertThat(requests).isEmpty();
-        verify(queries, times(2)).identificarRutas("Surco", null);
-        verify(confirmations).prepararViaje(13L, ride);
-        verifyNoMoreInteractions(queries, confirmations);
+        verify(queries, times(2)).rutaParaCrearViaje(13L);
+        verify(confirmations).prepararViaje(surco, ride);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void modelCannotSelectARouteIdOrInventItsOriginInASemanticTripRequest() {
+        var confirmations = mock(ConfirmationService.class);
+        var queries = mock(AgentQueryService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
+        when(queries.rutasParaCrearViaje(null, null, 0))
+                .thenReturn(new PageImpl<>(List.of(route(13L, "Surco"), route(14L, "San Miguel"))));
+        enqueue(200, toolCall("crearViaje", """
+                {"rutaId":999,"ruta":"inventada","origenRuta":"Surco","fecha":"2026-11-25","hora":"08:30"}
+                """));
+
+        ChatResponse response = service.chat("¿Me ayudas a programar un viaje?", (UUID) null);
+
+        assertThat(clarificationFields(response, "crearViaje")).containsExactly("ruta", "fecha", "hora");
+        assertThat(tripRouteOptions(response)).extracting(OpcionAclaracion::etiqueta)
+                .anySatisfy(etiqueta -> assertThat(etiqueta).contains("Surco"))
+                .anySatisfy(etiqueta -> assertThat(etiqueta).contains("San Miguel"));
+        verify(queries).rutasParaCrearViaje(null, null, 0);
+        verifyNoMoreInteractions(queries);
+        verifyNoInteractions(confirmations);
+        assertThat(requests).hasSize(1);
+        JsonNode schema = requests.getFirst().path("tools").valueStream().map(tool -> tool.path("function"))
+                .filter(tool -> "crearViaje".equals(tool.path("name").asText())).findFirst().orElseThrow()
+                .path("parameters").path("properties");
+        assertThat(schema.properties()).extracting(Map.Entry::getKey)
+                .containsExactlyInAnyOrder("origenRuta", "destinoRuta", "fecha", "hora");
+    }
+
+    @Test
+    void localTripRequestKeepsItsScheduleWhenTheTypedOriginDoesNotExist() {
+        var confirmations = mock(ConfirmationService.class);
+        var queries = mock(AgentQueryService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
+        var surco = route(13L, "Surco");
+        var sanMiguel = route(14L, "San Miguel");
+        when(queries.rutasParaCrearViaje("Barranco", null, 0)).thenReturn(Page.empty());
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco, sanMiguel)));
+        when(queries.rutaParaCrearViaje(14L)).thenReturn(Optional.of(sanMiguel));
+        var ride = new ViajeRequest(FECHA_VIAJE, LocalTime.of(8, 0));
+        var proposal = pending(TipoOperacion.CREAR_VIAJE, "Confirma el viaje desde San Miguel.", Map.of("rutaId", 14L));
+        when(confirmations.prepararViaje(sanMiguel, ride)).thenReturn(proposal);
+
+        ChatResponse response = service.chat("Crea un viaje desde Barranco el 25 de noviembre a las 8 de la mañana.",
+                (UUID) null);
+
+        assertThat(response.message()).containsIgnoringCase("no encontr");
+        assertThat(clarificationFields(response, "crearViaje")).containsExactly("ruta");
+        assertThat(tripRouteOptions(response)).hasSize(2);
+        verifyNoInteractions(confirmations);
+        assertPending(submit(response, Map.of("ruta", tripRouteOptions(response).getLast().valor())), proposal);
+        verify(confirmations).prepararViaje(sanMiguel, ride);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void coincidentRoutesAreDistinguishedByReferencesAndPrepareTheExactSelection(boolean byVoice) {
+        var confirmations = mock(ConfirmationService.class);
+        var queries = mock(AgentQueryService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
+        var parque = route(13L, "Surco");
+        var mercado = new RutaRespuesta(14L, "Surco", "UPC", "Mercado central", null,
+                null, 3, EstadoRuta.VENCIDA, null, 7L, "Ana");
+        when(queries.rutasParaCrearViaje("Surco", null, 0)).thenReturn(new PageImpl<>(List.of(parque, mercado)));
+        when(queries.rutaParaCrearViaje(14L)).thenReturn(Optional.of(mercado));
+        var ride = new ViajeRequest(FECHA_VIAJE, LocalTime.of(8, 0));
+        var proposal = pending(TipoOperacion.CREAR_VIAJE, "Confirma el viaje desde el mercado.", Map.of("rutaId", 14L));
+        when(confirmations.prepararViaje(mercado, ride)).thenReturn(proposal);
+
+        ChatResponse response = service.chat("Crea un viaje desde Surco el 25 de noviembre a las 8 de la mañana.",
+                (UUID) null);
+
+        assertThat(clarificationFields(response, "crearViaje")).containsExactly("ruta");
+        var opciones = tripRouteOptions(response);
+        assertThat(opciones).hasSize(2);
+        assertThat(opciones.getFirst().etiqueta()).contains("Surco", "UPC", "Parque central");
+        assertThat(opciones.getLast().etiqueta()).contains("Surco", "UPC", "Mercado central");
+        assertThat(opciones.getFirst().valor()).isNotEqualTo(opciones.getLast().valor());
+        verifyNoInteractions(confirmations);
+        ChatResponse pending = byVoice ? service.chatVoz("ruta 2", response.conversationId())
+                : submit(response, Map.of("ruta", opciones.getLast().valor()));
+        assertPending(pending, proposal);
+        verify(confirmations).prepararViaje(mercado, ride);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).isEmpty();
+    }
+
+    @Test
+    void routePagesReachTheEleventhOptionWithoutDiscardingThePartiallySubmittedSchedule() {
+        var confirmations = mock(ConfirmationService.class);
+        var queries = mock(AgentQueryService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
+        var first = java.util.stream.LongStream.rangeClosed(1L, 10L)
+                .mapToObj(id -> route(id, "Origen " + id)).toList();
+        var last = route(11L, "Magdalena");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(first, PageRequest.of(0, 10), 11));
+        when(queries.rutasParaCrearViaje(null, null, 1)).thenReturn(new PageImpl<>(List.of(last), PageRequest.of(1, 10), 11));
+        when(queries.rutaParaCrearViaje(11L)).thenReturn(Optional.of(last));
+        var ride = new ViajeRequest(FECHA_VIAJE, LocalTime.of(8, 30));
+        var proposal = pending(TipoOperacion.CREAR_VIAJE, "Confirma el viaje desde Magdalena.", Map.of("rutaId", 11L));
+        when(confirmations.prepararViaje(last, ride)).thenReturn(proposal);
+
+        ChatResponse initial = service.chat("Crea un viaje", (UUID) null);
+        assertThat(tripRouteOptions(initial)).hasSize(10);
+        assertThat(initial.message()).containsIgnoringCase("siguiente página");
+        ChatResponse partial = submit(initial, Map.of("fecha", FECHA_VIAJE.toString(), "hora", "08:30"));
+        assertThat(clarificationFields(partial, "crearViaje")).containsExactly("ruta");
+        ChatResponse second = service.chat("siguiente página", partial.conversationId());
+        assertThat(second.conversationId()).isEqualTo(initial.conversationId());
+        assertThat(second.aclaracion().id()).isNotEqualTo(partial.aclaracion().id());
+        assertThat(tripRouteOptions(second)).singleElement().satisfies(option ->
+                assertThat(option.etiqueta()).contains("Magdalena"));
+        assertThatThrownBy(() -> submit(partial, Map.of("ruta", tripRouteOptions(partial).getFirst().valor())))
+                .isInstanceOfSatisfying(AgentProviderException.class, failure ->
+                        assertThat(failure.code()).isEqualTo("CLARIFICATION_EXPIRED"));
+        verifyNoInteractions(confirmations);
+        assertPending(submit(second, Map.of("ruta", tripRouteOptions(second).getFirst().valor())), proposal);
+        verify(queries).rutasParaCrearViaje(null, null, 1);
+        verify(confirmations).prepararViaje(last, ride);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).isEmpty();
     }
 
     @Test
@@ -636,8 +789,10 @@ class GroqProviderIntegrationTest {
     void modelSelectedTravelToolCanReturnOnlyItsMissingTimeWithoutPreparing(
             String tool, String arguments, String missing) {
         var confirmations = mock(ConfirmationService.class);
-        service = service(Duration.ofSeconds(3), new ViajeAgentTools(mock(AgentQueryService.class), confirmations, users),
-                confirmations);
+        var queries = mock(AgentQueryService.class);
+        when(queries.rutasParaCrearViaje("Surco", null, 0))
+                .thenReturn(new PageImpl<>(List.of(route(13L, "Surco"))));
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(queries, confirmations, users), confirmations);
         enqueue(200, toolCall(tool, arguments));
         enqueue(200, completion(GENERIC_COMPLETION, "stop"));
 
@@ -747,6 +902,14 @@ class GroqProviderIntegrationTest {
 
     private JsonNode clarification(ChatResponse response) {
         return mapper.valueToTree(response).path("aclaracion");
+    }
+
+    private List<OpcionAclaracion> tripRouteOptions(ChatResponse response) {
+        var field = response.aclaracion().campos().stream().filter(campo -> campo.id().equals("ruta"))
+                .findFirst().orElseThrow();
+        assertThat(field.tipo()).isEqualTo(TipoCampoAclaracion.SELECT);
+        assertThat(field.obligatorio()).isTrue();
+        return field.opciones();
     }
 
     private ChatResponse submit(ChatResponse prompt, Map<String, ?> fields) {
