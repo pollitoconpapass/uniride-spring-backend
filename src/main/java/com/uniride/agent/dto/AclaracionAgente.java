@@ -15,7 +15,7 @@ public record AclaracionAgente(int version, UUID id, String operacion, String co
             Map.entry("editarRuta", List.of("origenActual", "destinoActual", "nuevoOrigen", "referencias", "capacidad",
                     "zonasSinParada", "notaContribucion")),
             Map.entry("eliminarRuta", List.of("origenActual", "destinoActual")),
-            Map.entry("crearViaje", List.of("origen", "destino", "fecha", "hora")),
+            Map.entry("crearViaje", List.of("ruta", "origen", "destino", "fecha", "hora")),
             Map.entry("reprogramarViaje", List.of("origen", "destino", "dia", "fecha", "hora", "nuevaFecha", "nuevaHora")),
             Map.entry("solicitarUnirse", List.of("origen", "destino", "dia", "fecha", "hora", "compensacion")),
             Map.entry("cancelarSolicitud", List.of("origen", "destino", "dia", "fecha", "hora")),

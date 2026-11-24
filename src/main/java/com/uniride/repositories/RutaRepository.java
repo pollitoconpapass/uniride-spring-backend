@@ -35,6 +35,9 @@ public interface RutaRepository extends JpaRepository<Ruta, Long> {
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     Optional<Ruta> findByIdAndConductorId(Long id, Long conductorId);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"conductor"})
+    Optional<Ruta> findByIdAndConductorIdAndEstadoNot(Long id, Long conductorId, EstadoRuta estado);
+
     boolean existsByConductorId(Long conductorId);
 
     @Query("SELECT r FROM Ruta r WHERE r.conductor.id = :conductorId AND r.estado = :estado")

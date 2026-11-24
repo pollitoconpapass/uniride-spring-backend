@@ -48,6 +48,7 @@ public final class Aclaraciones {
 
     public enum Campo {
         ORIGEN("origen", "Origen", TEXT, 255), DESTINO("destino", "Destino", TEXT, 255),
+        RUTA("ruta", "Ruta registrada", SELECT, null),
         ORIGEN_ACTUAL("origenActual", "Origen actual", TEXT, 255),
         DESTINO_ACTUAL("destinoActual", "Destino actual", TEXT, 255),
         NUEVO_ORIGEN("nuevoOrigen", "Nuevo origen", TEXT, 255),

@@ -23,9 +23,13 @@ import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.agent.tools.RutaAgentTools;
+import com.uniride.agent.tools.ViajeAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.requests.RutaRequest;
+import com.uniride.dto.requests.ViajeRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.dto.responses.RutaRespuesta;
+import com.uniride.dto.responses.ViajeRespuesta;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
 import com.uniride.entities.Viaje;
@@ -37,6 +41,7 @@ import com.uniride.exceptions.GlobalExceptionHandler;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
 import com.uniride.exceptions.ResourceNotFoundException;
+import com.uniride.exceptions.SalidaConPocaAnticipacionException;
 import com.uniride.mappers.UsuarioMapper;
 import com.uniride.mappers.BusquedaMapper;
 import com.uniride.mappers.RutaMapper;
@@ -63,6 +68,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.validation.Validator;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -73,6 +79,7 @@ import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -243,6 +250,229 @@ class AgentHttpSecurityTest {
         verifyNoInteractions(chatClient);
     }
 
+    @Test
+    void tripFormRejectsUnissuedRouteValuesAndInvalidSchedulesWithoutConsumingItsId() throws Exception {
+        var queries = mock(AgentQueryService.class);
+        var surco = tripRoute(13L, "Surco");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        when(queries.rutaParaCrearViaje(13L)).thenReturn(Optional.of(surco));
+        ChatClient chatClient = tripAgent(queries);
+
+        JsonNode form = json(sendChat("Programa una salida", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("ruta", "fecha", "hora")))
+                .andExpect(jsonPath("$.aclaracion.campos[0].opciones.length()").value(1))
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty()));
+        String token = routeOption(form);
+        submitForm(form, Map.of("ruta", "999", "fecha", "2026-11-25", "hora", "08:30"))
+                .andExpect(status().isBadRequest());
+        submitForm(form, Map.of("ruta", UUID.randomUUID().toString(), "fecha", "2026-11-25", "hora", "08:30"))
+                .andExpect(status().isBadRequest());
+        submitForm(form, Map.of("ruta", token, "fecha", "2026-02-30", "hora", "08:30"))
+                .andExpect(status().isBadRequest());
+        submitForm(form, Map.of("ruta", token, "fecha", "2026-11-25", "hora", "25:99"))
+                .andExpect(status().isBadRequest());
+        submitForm(form, Map.of("ruta", token, "fecha", "2026-11-25", "hora", "08:30", "rutaId", 999))
+                .andExpect(status().isBadRequest());
+        verify(queries).rutasParaCrearViaje(null, null, 0);
+        verifyNoMoreInteractions(queries);
+        verifyNoInteractions(confirmations);
+
+        var request = new ViajeRequest(LocalDate.of(2026, 11, 25), LocalTime.of(8, 30));
+        var proposal = UUID.randomUUID();
+        when(confirmations.prepararViaje(surco, request)).thenReturn(pending(proposal, TipoOperacion.CREAR_VIAJE));
+        expectPending(submitForm(form, Map.of("ruta", token, "fecha", "2026-11-25", "hora", "08:30")), proposal,
+                TipoOperacion.CREAR_VIAJE);
+        submitForm(form, Map.of("ruta", token)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verify(queries).rutaParaCrearViaje(13L);
+        verify(confirmations).prepararViaje(surco, request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void tripRouteDeletedAfterTheOfferRefreshesChoicesAndRetainsTheSubmittedSchedule() throws Exception {
+        var queries = mock(AgentQueryService.class);
+        var surco = tripRoute(13L, "Surco");
+        var magdalena = tripRoute(14L, "Magdalena");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco, magdalena)),
+                new PageImpl<>(List.of(magdalena)));
+        when(queries.rutaParaCrearViaje(13L)).thenReturn(Optional.empty());
+        when(queries.rutaParaCrearViaje(14L)).thenReturn(Optional.of(magdalena));
+        ChatClient chatClient = tripAgent(queries);
+
+        JsonNode first = json(sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk()));
+        String obsoleteRoute = routeOption(first);
+        JsonNode updated = json(submitForm(first, Map.of("ruta", obsoleteRoute, "fecha", "2026-11-25", "hora", "08:30"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversationId").value(first.path("conversationId").asText()))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("ruta")))
+                .andExpect(jsonPath("$.aclaracion.campos[0].opciones.length()").value(1))
+                .andExpect(jsonPath("$.aclaracion.campos[0].opciones[0].etiqueta",
+                        org.hamcrest.Matchers.containsString("Magdalena")))
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty()));
+        submitForm(first, Map.of("ruta", obsoleteRoute)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        submitForm(updated, Map.of("ruta", obsoleteRoute)).andExpect(status().isBadRequest());
+        verifyNoInteractions(confirmations);
+
+        var ride = new ViajeRequest(LocalDate.of(2026, 11, 25), LocalTime.of(8, 30));
+        var proposal = UUID.randomUUID();
+        when(confirmations.prepararViaje(magdalena, ride)).thenReturn(pending(proposal, TipoOperacion.CREAR_VIAJE));
+        expectPending(submitForm(updated, Map.of("ruta", routeOption(updated))), proposal, TipoOperacion.CREAR_VIAJE);
+        verify(queries).rutaParaCrearViaje(13L);
+        verify(queries).rutaParaCrearViaje(14L);
+        verify(confirmations).prepararViaje(magdalena, ride);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void canIdentifyTheTripRouteByVoiceAndFinishItsRemainingTimeInText() throws Exception {
+        var queries = mock(AgentQueryService.class);
+        var surco = tripRoute(13L, "Surco");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco, tripRoute(14L, "Miraflores"))));
+        when(queries.rutasParaCrearViaje("Surco", null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        when(queries.rutaParaCrearViaje(13L)).thenReturn(Optional.of(surco));
+        ChatClient chatClient = tripAgent(queries);
+
+        JsonNode first = json(sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk()));
+        JsonNode partial = json(submitForm(first, Map.of("fecha", "2026-11-25"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.aclaracion.campos[*].id", contains("ruta", "hora"))));
+        String conversation = partial.path("conversationId").asText();
+        when(transcripcion.transcribir(any())).thenReturn("Desde Surco");
+        mvc.perform(multipart("/agent/voz").file(audio()).param("conversationId", conversation)
+                        .header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("Desde Surco"))
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversation))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[*].id", contains("hora")))
+                .andExpect(jsonPath("$.respuesta.operacion.confirmacion").isEmpty());
+        verifyNoInteractions(confirmations);
+
+        var ride = new ViajeRequest(LocalDate.of(2026, 11, 25), LocalTime.of(8, 30));
+        var proposal = UUID.randomUUID();
+        when(confirmations.prepararViaje(surco, ride)).thenReturn(pending(proposal, TipoOperacion.CREAR_VIAJE));
+        expectPending(sendChat("08:30", conversation, bearer()), proposal, TipoOperacion.CREAR_VIAJE);
+        verify(queries).rutasParaCrearViaje("Surco", null, 0);
+        verify(confirmations).prepararViaje(surco, ride);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void passengerDoesNotGetTripRouteOptionsEvenWithAValidJwt() throws Exception {
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        var queries = mock(AgentQueryService.class);
+        ChatClient chatClient = tripAgent(queries);
+
+        sendChat("Crea un viaje", null, bearer()).andExpect(status().isForbidden());
+        verifyNoInteractions(queries, confirmations, chatClient);
+    }
+
+    @Test
+    void conductorWithoutEligibleRoutesIsAskedToRegisterOneWithoutAFormOrProposal() throws Exception {
+        var queries = mock(AgentQueryService.class);
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(Page.empty());
+        ChatClient chatClient = tripAgent(queries);
+
+        sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsStringIgnoringCase("registra")))
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty());
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    @Test
+    void correctingAnInvalidScheduleDoesNotRequireSelectingTheRouteAgain() throws Exception {
+        var queries = mock(AgentQueryService.class);
+        var surco = tripRoute(13L, "Surco");
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(surco)));
+        when(queries.rutaParaCrearViaje(13L)).thenReturn(Optional.of(surco));
+        ChatClient chatClient = tripAgent(queries);
+        var badSchedule = new ViajeRequest(LocalDate.of(2026, 11, 21), LocalTime.of(18, 0));
+        when(confirmations.prepararViaje(surco, badSchedule)).thenThrow(new SalidaConPocaAnticipacionException());
+        var ride = new ViajeRequest(LocalDate.of(2026, 11, 22), LocalTime.of(8, 0));
+        var proposal = UUID.randomUUID();
+        when(confirmations.prepararViaje(surco, ride)).thenReturn(pending(proposal, TipoOperacion.CREAR_VIAJE));
+
+        JsonNode first = json(sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk()));
+        JsonNode correction = json(submitForm(first, Map.of("ruta", routeOption(first), "fecha", "2026-11-21",
+                        "hora", "18:00")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", containsInAnyOrder("fecha", "hora")))
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty()));
+        expectPending(submitForm(correction, Map.of("fecha", "2026-11-22", "hora", "08:00")), proposal,
+                TipoOperacion.CREAR_VIAJE);
+        verify(confirmations).prepararViaje(surco, badSchedule);
+        verify(confirmations).prepararViaje(surco, ride);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"sí, EJECUTADA, YA_EJECUTADA, 1", "no, CANCELADA, YA_CANCELADA, 0"})
+    void exactRouteSelectionWritesTheTripOnlyAfterExplicitConfirmation(
+            String decision, String initialState, String repeatedState, int writes) throws Exception {
+        var owner = Usuario.builder().id(7L).rolPrincipal(Rol.CONDUCTOR).build();
+        var selected = tripRoute(14L, "Magdalena");
+        var route = Ruta.builder().id(selected.id()).conductor(owner).origen(selected.origen()).destino(selected.destino())
+                .capacidadMaxima(selected.capacidadMaxima()).puntosReferencia(selected.puntosReferencia())
+                .estado(selected.estado()).build();
+        var queries = mock(AgentQueryService.class);
+        when(queries.rutasParaCrearViaje(null, null, 0)).thenReturn(new PageImpl<>(List.of(tripRoute(13L, "Surco"), selected)));
+        when(queries.rutaParaCrearViaje(14L)).thenReturn(Optional.of(selected));
+        var routeRepository = mock(RutaRepository.class);
+        when(routeRepository.findByIdAndConductorId(14L, 7L)).thenReturn(Optional.of(route));
+        var trips = mock(ViajeService.class);
+        var request = new ViajeRequest(LocalDate.of(2026, 11, 25), LocalTime.of(8, 30));
+        when(trips.validarCreacion(14L, request)).thenReturn(route);
+        when(trips.crear(14L, request)).thenReturn(new ViajeRespuesta(77L, 14L, request.fecha(), request.hora(),
+                "miércoles", false, null, EstadoViaje.PROGRAMADO, 0, null));
+        var pendingStore = mock(ConfirmationRepository.class);
+        var saved = new AtomicReference<PendingConfirmation>();
+        when(pendingStore.save(any(PendingConfirmation.class))).thenAnswer(invocation -> {
+            PendingConfirmation row = invocation.getArgument(0);
+            saved.set(row);
+            return row;
+        });
+        when(pendingStore.bloquearPropia(any(UUID.class), eq(7L))).thenAnswer(invocation ->
+                Optional.ofNullable(saved.get()).filter(row -> row.getId().equals(invocation.getArgument(0))));
+        var validator = mock(Validator.class);
+        when(validator.validate(request)).thenReturn(Set.of());
+        var users = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var service = new ConfirmationService(pendingStore, users, mock(RutaService.class), trips,
+                mock(SolicitudService.class), mock(MetodoCompensacionService.class), routeRepository,
+                mock(ViajeRepository.class), mock(PerfilRepository.class), mock(EntityManager.class),
+                new ObjectMapper(), validator, clock);
+        ChatClient chatClient = localAgent(users, new ViajeAgentTools(queries, service, users, clock), service);
+
+        JsonNode first = json(sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk()));
+        verifyNoInteractions(pendingStore, trips);
+        String secondOption = first.path("aclaracion").path("campos").path(0).path("opciones").path(1).path("valor").asText();
+        String conversation = first.path("conversationId").asText();
+        JsonNode pending = json(submitForm(first, Map.of("ruta", secondOption, "fecha", "2026-11-25", "hora", "08:30"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operacion.confirmacion.tipo").value("CREAR_VIAJE"))
+                .andExpect(jsonPath("$.operacion.confirmacion.estado").value("PENDIENTE"))
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist()));
+        String proposal = pending.path("operacion").path("confirmacion").path("id").asText();
+        verify(trips, never()).crear(anyLong(), any());
+        verify(pendingStore).save(argThat(row -> row.getRecursoId().equals(14L)));
+
+        sendChat(decision, conversation, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.resolucionConfirmacion.estado").value(initialState))
+                .andExpect(jsonPath("$.resolucionConfirmacion.confirmacion.id").value(proposal));
+        sendChat(decision, conversation, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.resolucionConfirmacion.estado").value(repeatedState));
+        verify(trips, times(writes)).crear(14L, request);
+        verify(trips, never()).crear(eq(13L), any());
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
     @ParameterizedTest
     @CsvSource({
             "Crea una ruta con referencias Parque central y capacidad 3,origen,Surco",
@@ -383,17 +613,34 @@ class AgentHttpSecurityTest {
         return localAgent(users -> new RutaAgentTools(mock(AgentQueryService.class), confirmations, users));
     }
 
+    private ChatClient tripAgent(AgentQueryService queries) {
+        return localAgent(users -> new ViajeAgentTools(queries, confirmations, users,
+                Clock.fixed(NOW, ZoneId.of("America/Lima"))));
+    }
+
+    private static RutaRespuesta tripRoute(long id, String origin) {
+        return new RutaRespuesta(id, origin, "UPC", "Parque central", null, null, 3,
+                EstadoRuta.ACTIVA, null, 7L, "Ana");
+    }
+
+    private static String routeOption(JsonNode form) {
+        return form.path("aclaracion").path("campos").path(0).path("opciones").path(0).path("valor").asText();
+    }
+
     private ChatClient compensationAgent() {
         return localAgent(users -> new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations));
     }
 
     private ChatClient localAgent(Function<UsuarioService, Object> callbacks) {
-        var chatClient = mock(ChatClient.class);
         var users = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
-        var registry = new AgentToolRegistry(new ObjectMapper(),
-                ToolCallbacks.from(callbacks.apply(users)));
+        return localAgent(users, callbacks.apply(users), confirmations);
+    }
+
+    private ChatClient localAgent(UsuarioService users, Object callbacks, ConfirmationService confirmationService) {
+        var chatClient = mock(ChatClient.class);
+        var registry = new AgentToolRegistry(new ObjectMapper(), ToolCallbacks.from(callbacks));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        var service = new AgentService(chatClient, users, clock, registry, new AgentConversationStore(clock), confirmations);
+        var service = new AgentService(chatClient, users, clock, registry, new AgentConversationStore(clock), confirmationService);
         when(agent.chat(anyString(), nullable(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
         when(agent.chatVoz(anyString(), nullable(UUID.class)))

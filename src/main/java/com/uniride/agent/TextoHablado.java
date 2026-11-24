@@ -2,6 +2,7 @@ package com.uniride.agent;
 
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.MetodoCompensacionResumen;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.dto.ViajeResumen;
@@ -31,6 +32,10 @@ final class TextoHablado {
         String mensaje = contribucion(respuesta.resultados());
         if (mensaje == null) mensaje = limpiar(respuesta.message());
         if (!mensaje.isBlank()) partes.add(mensaje);
+        if (respuesta.aclaracion() != null && "crearViaje".equals(respuesta.aclaracion().operacion())) {
+            respuesta.aclaracion().campos().stream().filter(campo -> "ruta".equals(campo.id())).findFirst()
+                    .ifPresent(campo -> partes.add(rutasParaSeleccionar(campo.opciones())));
+        }
         if (!respuesta.rutas().isEmpty())
             partes.add(enumerar("ruta", "rutas", respuesta.rutas().stream().map(TextoHablado::ruta).toList()));
         if (!respuesta.viajes().isEmpty())
@@ -72,6 +77,14 @@ final class TextoHablado {
         String texto = "%s a %s".formatted(ruta.origen(), ruta.destino());
         return ruta.estado() == null || ruta.estado() == EstadoRuta.ACTIVA
                 ? texto : texto + ", " + ruta.estado().name().toLowerCase(ES);
+    }
+
+    private static String rutasParaSeleccionar(List<OpcionAclaracion> opciones) {
+        String lista = String.join(". ", opciones.stream().limit(MAX_ITEMS)
+                .map(opcion -> "Ruta " + limpiar(opcion.etiqueta().replace(" → ", " a ").replace(" · ", ", ")))
+                .toList());
+        return lista + "." + (opciones.size() > MAX_ITEMS ? " Hay más opciones en pantalla." : "")
+                + " Puedes indicar el número de la ruta.";
     }
 
     private static String viaje(ViajeResumen viaje) {

@@ -148,7 +148,8 @@ public class AgentService {
                 }
                 throw failure;
             }
-            if (reanudacion && coincideRuta && rutaOViaje != null && response.operacion() != null
+            if (reanudacion && coincideRuta && rutaOViaje != null && rutaOViaje.accion() != IntencionAclarable.Accion.CREAR_VIAJE
+                    && response.operacion() != null
                     && response.operacion().estado() == EstadoOperacion.NO_ENCONTRADO) {
                 lease.guardarRutaOViaje(borradorRuta);
                 response = response.conAclaracion(activa);

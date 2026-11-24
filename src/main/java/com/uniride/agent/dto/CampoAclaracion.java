@@ -9,14 +9,15 @@ import java.util.Set;
 public record CampoAclaracion(String id, String etiqueta, TipoCampoAclaracion tipo, boolean obligatorio,
         Object inicial, List<OpcionAclaracion> opciones, Integer minimo, Integer maximo,
         Integer longitudMaxima, String ayuda) {
-    private static final Set<String> IDS = Set.of("origen", "destino", "origenActual", "destinoActual", "nuevoOrigen",
+    private static final Set<String> IDS = Set.of("ruta", "origen", "destino", "origenActual", "destinoActual", "nuevoOrigen",
             "referencias", "capacidad", "zonasSinParada", "notaContribucion", "dia", "fecha", "hora", "nuevaFecha",
             "nuevaHora", "compensacion", "descripcion", "tipoActual", "descripcionActual", "nuevoTipo",
             "nuevaDescripcion", "activo", "pasajeros", "conductor", "desde", "hasta", "tipo", "periodo", "anio");
 
     public CampoAclaracion {
         Objects.requireNonNull(tipo);
-        if (id == null || !IDS.contains(id) || !AclaracionAgente.textoSeguro(etiqueta, 120)
+        if (id == null || !IDS.contains(id) || "ruta".equals(id) && tipo != TipoCampoAclaracion.SELECT
+                || !AclaracionAgente.textoSeguro(etiqueta, 120)
                 || (ayuda != null && !AclaracionAgente.textoSeguro(ayuda, 240))) {
             throw new IllegalArgumentException("Campo de aclaración inválido");
         }

@@ -4,6 +4,7 @@ import static com.uniride.agent.Aclaraciones.Campo.*;
 
 import com.uniride.agent.Aclaraciones.Campo;
 import com.uniride.agent.dto.AclaracionAgente;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.enums.Rol;
 import java.text.Normalizer;
 import java.time.Clock;
@@ -37,6 +38,16 @@ final class IntencionAclarable {
             + "d[ií]a(?: de la semana)?|origen|destino|fecha|hora)\\s*(?::\\s*|\\s+)(?:de\\s+(?=[+-]?\\d))?");
     private static final Pattern ORIGEN_EXPLICITO = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida|solicitud|cupo|reserva) de) "
             + "([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)(?=$|[.,;!?]| (?:a |hacia |con |del? \\d|el \\d))");
+    private static final Pattern DESTINO_VIAJE = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida) de) [^,;!?]+? "
+            + "(?:a (?!las? )|hacia )(?:la |el )?([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)"
+            + "(?=$|[.,;!?]| (?:a las? |con |del? \\d|el \\d|para |por favor))");
+    private static final Pattern RUTA_POR_TEXTO = Pattern.compile("(?iu)^ruta(?: registrada)?\\s*:\\s*(.+)$");
+    private static final Pattern RUTA_NUMERADA = Pattern.compile("^ruta(?: numero)? ([1-9]\\d{0,5}|[a-z]+)$");
+    private static final List<String> NUMEROS_RUTA = List.of("uno", "dos", "tres", "cuatro", "cinco", "seis", "siete",
+            "ocho", "nueve", "diez", "once", "doce", "trece", "catorce", "quince", "dieciseis", "diecisiete",
+            "dieciocho", "diecinueve", "veinte");
+    private static final Pattern SIGUIENTE_PAGINA = Pattern.compile("^(?:siguiente pagina|pagina siguiente|(?:ver )?mas rutas)$");
+    private static final Pattern PAGINA_ANTERIOR = Pattern.compile("^(?:pagina anterior|anterior pagina)$");
     private static final Pattern NUEVO_HORARIO = Pattern.compile("\\bpara (?:el )?([^.!?]+)");
     private static final Pattern ENTERO = Pattern.compile("(?iu)^([+-]?\\d+|un[oa]?|dos|tres|cuatro|cinco|seis)"
             + "(?: pasajeros?)?$");
@@ -110,8 +121,11 @@ final class IntencionAclarable {
 
     record Contexto(Accion accion, String origen, String destino, String fecha, String hora) { }
 
-    record Borrador(Accion accion, Map<Campo, String> datos, boolean todas) {
+    record Borrador(Accion accion, Map<Campo, String> datos, boolean todas, SeleccionRutaViaje.Estado rutaViaje) {
         Borrador(Accion accion, Map<Campo, String> datos) { this(accion, datos, false); }
+        Borrador(Accion accion, Map<Campo, String> datos, boolean todas) {
+            this(accion, datos, todas, accion == Accion.CREAR_VIAJE ? SeleccionRutaViaje.INICIAL : null);
+        }
 
         Borrador { datos = Map.copyOf(datos); }
 
@@ -129,18 +143,43 @@ final class IntencionAclarable {
             accion.campos.forEach(campo -> {
                 if (campos.containsKey(campo.id())) valores.put(campo, campos.get(campo.id()));
             });
-            return new Borrador(accion, valores, todas);
+            var estado = rutaViaje;
+            if (estado != null && campos.containsKey(RUTA.id())) estado = estado.elegir(campos.get(RUTA.id()));
+            return new Borrador(accion, valores, todas, estado);
+        }
+
+        Borrador conRutaViaje(SeleccionRutaViaje.Estado estado) {
+            var valores = new EnumMap<Campo, String>(Campo.class);
+            valores.putAll(datos);
+            if (estado.limpiarFiltros()) {
+                valores.remove(ORIGEN);
+                valores.remove(DESTINO);
+            }
+            return new Borrador(accion, valores, todas, estado);
+        }
+
+        Borrador buscarRuta(String origen, String destino) {
+            var valores = new EnumMap<Campo, String>(Campo.class);
+            valores.putAll(datos);
+            if (origen != null) {
+                valores.put(ORIGEN, origen);
+                valores.remove(DESTINO);
+            }
+            if (destino != null) valores.put(DESTINO, destino);
+            return new Borrador(accion, valores, todas, SeleccionRutaViaje.INICIAL);
         }
 
         Contexto contexto() {
-            return new Contexto(accion, datos.get(ORIGEN), datos.get(DESTINO),
+            var ruta = rutaViaje == null ? null : rutaViaje.elegida();
+            return new Contexto(accion, ruta == null ? datos.get(ORIGEN) : ruta.origen(),
+                    ruta == null ? datos.get(DESTINO) : ruta.destino(),
                     datos.getOrDefault(NUEVA_FECHA, datos.get(FECHA)), datos.getOrDefault(NUEVA_HORA, datos.get(HORA)));
         }
 
         AclaracionAgente completar(AclaracionAgente esquema) {
             var obligatorios = switch (accion) {
                 case CREAR_RUTA -> List.of(ORIGEN, REFERENCIAS, CAPACIDAD);
-                case CREAR_VIAJE -> List.of(ORIGEN, FECHA, HORA);
+                case CREAR_VIAJE -> List.of(FECHA, HORA);
                 case REPROGRAMAR -> List.of(NUEVA_FECHA, NUEVA_HORA);
                 case UNIRSE -> List.of(COMPENSACION);
                 default -> List.<Campo>of();
@@ -158,7 +197,8 @@ final class IntencionAclarable {
         boolean faltanDatos() {
             return switch (accion) {
                 case CREAR_RUTA -> !datos.keySet().containsAll(List.of(ORIGEN, REFERENCIAS, CAPACIDAD));
-                case CREAR_VIAJE -> !datos.keySet().containsAll(List.of(ORIGEN, FECHA, HORA));
+                case CREAR_VIAJE -> (!datos.containsKey(ORIGEN) && !datos.containsKey(DESTINO))
+                        || !datos.keySet().containsAll(List.of(FECHA, HORA));
                 case REPROGRAMAR -> !datos.keySet().containsAll(List.of(NUEVA_FECHA, NUEVA_HORA));
                 case UNIRSE -> !datos.containsKey(COMPENSACION);
                 case EDITAR_RUTA, ELIMINAR_RUTA -> !datos.containsKey(ORIGEN_ACTUAL) && !datos.containsKey(DESTINO_ACTUAL);
@@ -187,7 +227,8 @@ final class IntencionAclarable {
         if (!coincidencia.find()) return new Borrador(accion, Map.of());
         // The explicit bare request or labeled data can be resolved without asking the model.
         if (coincidencia.end() == texto.length()) return new Borrador(accion, Map.of());
-        if (!etiquetado(mensaje) && !(accion == Accion.CREAR_RUTA && ORIGEN_EXPLICITO.matcher(mensaje).find())) return null;
+        if (!etiquetado(mensaje) && !((accion == Accion.CREAR_RUTA || accion == Accion.CREAR_VIAJE)
+                && ORIGEN_EXPLICITO.matcher(mensaje).find())) return null;
         return new Borrador(accion, extraer(mensaje, accion.campos, clock));
     }
 
@@ -261,25 +302,57 @@ final class IntencionAclarable {
         String texto = normalizar(mensaje);
         var solicitados = borrador.accion.campos.stream()
                 .filter(c -> esquema.campos().stream().anyMatch(f -> f.id().equals(c.id()))).toList();
+        var ruta = esquema.campos().stream().filter(c -> c.id().equals(RUTA.id())).findFirst().orElse(null);
+        if (ruta != null && borrador.rutaViaje() != null) {
+            var estado = borrador.rutaViaje();
+            if (SIGUIENTE_PAGINA.matcher(texto).matches())
+                return estado.hayMas() ? borrador.conRutaViaje(estado.pagina(estado.pagina() + 1)) : null;
+            if (PAGINA_ANTERIOR.matcher(texto).matches())
+                return estado.pagina() > 0 ? borrador.conRutaViaje(estado.pagina(estado.pagina() - 1)) : null;
+        }
         if (MISMO_ORIGEN.matcher(texto).matches()) {
             if (contexto == null || contexto.origen == null) return null;
-            return solicitados.stream().filter(c -> c == ORIGEN || c == ORIGEN_ACTUAL).findFirst()
-                    .map(c -> borrador.continuar(Map.of(c.id(), contexto.origen))).orElse(null);
+            if (ruta != null) return borrador.buscarRuta(contexto.origen, null);
+            var campo = solicitados.stream().filter(c -> c == ORIGEN || c == ORIGEN_ACTUAL).findFirst().orElse(null);
+            return campo == null ? null : borrador.continuar(Map.of(campo.id(), contexto.origen));
         }
         if (cambiaDeTema(mensaje) || ConfirmationIntent.classify(mensaje) != ConfirmationIntent.OTRA
                 || mensaje.contains("?") || mensaje.contains("¿")) return null;
         var valores = extraer(mensaje, solicitados, clock);
+        var seleccion = new LinkedHashMap<String, String>();
+        if (ruta != null && borrador.rutaViaje() != null) {
+            var ordinal = RUTA_NUMERADA.matcher(texto);
+            if (ordinal.matches()) {
+                String valor = ordinal.group(1);
+                int numero = Character.isDigit(valor.charAt(0)) ? Integer.parseInt(valor) : NUMEROS_RUTA.indexOf(valor) + 1;
+                String opcion = ruta.opciones().stream().filter(o -> o.etiqueta().startsWith(numero + ". "))
+                        .map(OpcionAclaracion::valor).findFirst().orElse(null);
+                return opcion == null ? null : borrador.continuar(Map.of(RUTA.id(), opcion));
+            }
+            String opcion = ruta.opciones().stream().filter(o -> normalizar(o.etiqueta()).equals(texto))
+                    .map(OpcionAclaracion::valor).findFirst().orElse(null);
+            if (opcion != null) return borrador.continuar(Map.of(RUTA.id(), opcion));
+            var filtros = extraer(mensaje, List.of(ORIGEN, DESTINO), clock);
+            var explicita = RUTA_POR_TEXTO.matcher(mensaje.strip());
+            String origen = filtros.get(ORIGEN);
+            if (origen == null && explicita.matches()) origen = validar(ORIGEN, explicita.group(1), clock);
+            if (origen == null && filtros.isEmpty() && valores.isEmpty() && !etiquetado(mensaje)
+                    && textoAislado(mensaje, texto) && validar(FECHA, mensaje, clock) == null
+                    && validar(HORA, mensaje, clock) == null) {
+                origen = validar(ORIGEN, mensaje, clock);
+            }
+            if (origen != null || filtros.containsKey(DESTINO)) borrador = borrador.buscarRuta(origen, filtros.get(DESTINO));
+            else ruta = null;
+        }
         if (valores.isEmpty() && !etiquetado(mensaje) && solicitados.size() == 1) {
             var campo = solicitados.getFirst();
-            var tipo = esquema.campos().getFirst().tipo();
+            var tipo = esquema.campos().stream().filter(c -> c.id().equals(campo.id())).findFirst().orElseThrow().tipo();
             var valor = switch (tipo) {
                 case NUMBER, DATE, TIME, SELECT -> validar(campo, mensaje, clock);
-                case TEXT, TEXTAREA -> TEXTO_AISLADO.matcher(mensaje.strip()).matches()
-                        && !RESPUESTA_CONVERSACIONAL.matcher(texto).find() ? validar(campo, mensaje, clock) : null;
+                case TEXT, TEXTAREA -> textoAislado(mensaje, texto) ? validar(campo, mensaje, clock) : null;
             };
             if (valor != null) valores.put(campo, valor);
         }
-        var seleccion = new LinkedHashMap<String, String>();
         for (var campo : solicitados) {
             var valor = valores.get(campo);
             var descriptor = esquema.campos().stream().filter(c -> c.id().equals(campo.id())).findFirst().orElseThrow();
@@ -288,7 +361,11 @@ final class IntencionAclarable {
                 seleccion.put(campo.id(), valor);
             }
         }
-        return seleccion.isEmpty() ? null : borrador.continuar(seleccion);
+        return seleccion.isEmpty() && ruta == null ? null : borrador.continuar(seleccion);
+    }
+
+    private static boolean textoAislado(String mensaje, String texto) {
+        return TEXTO_AISLADO.matcher(mensaje.strip()).matches() && !RESPUESTA_CONVERSACIONAL.matcher(texto).find();
     }
 
     static boolean cambiaDeTema(String mensaje) {
@@ -331,6 +408,10 @@ final class IntencionAclarable {
         var campoOrigen = campos.contains(ORIGEN) ? ORIGEN : ORIGEN_ACTUAL;
         if (campos.contains(campoOrigen) && !encontrados.containsKey(campoOrigen) && origen.find())
             agregar(encontrados, campoOrigen, origen.group(1), clock);
+        if (campos.contains(DESTINO) && !encontrados.containsKey(DESTINO)) {
+            var destino = DESTINO_VIAJE.matcher(texto);
+            if (destino.find()) agregar(encontrados, DESTINO, destino.group(1), clock);
+        }
         String normalizado = normalizar(texto);
         if (campos.contains(NUEVA_FECHA) || campos.contains(NUEVA_HORA)) {
             var horario = NUEVO_HORARIO.matcher(normalizado);
