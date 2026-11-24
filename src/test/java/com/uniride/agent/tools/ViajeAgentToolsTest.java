@@ -7,10 +7,12 @@ import static org.mockito.Mockito.*;
 import com.uniride.agent.AgentQueryService;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
+import com.uniride.config.TiempoConfig;
 import com.uniride.dto.requests.*;
 import com.uniride.dto.responses.*;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.*;
+import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.services.UsuarioService;
 import java.time.*;
 import java.util.List;
@@ -26,7 +28,7 @@ class ViajeAgentToolsTest {
     @Mock AgentQueryService consultas;
     @Mock ConfirmationService confirmaciones;
     @Mock UsuarioService usuarioService;
-    @InjectMocks ViajeAgentTools tools;
+    private ViajeAgentTools tools;
     private Usuario pasajero;
     private Usuario conductor;
 
@@ -34,6 +36,8 @@ class ViajeAgentToolsTest {
     void preparar() {
         pasajero = Usuario.builder().id(1L).rolPrincipal(Rol.PASAJERO).build();
         conductor = Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build();
+        tools = new ViajeAgentTools(consultas, confirmaciones, usuarioService,
+                Clock.fixed(Instant.parse("2026-11-23T15:00:00Z"), TiempoConfig.LIMA));
     }
 
     @Test
@@ -57,8 +61,14 @@ class ViajeAgentToolsTest {
     @Test
     void solicitarUnirseExigePreferenciaDeCompensacion() {
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
-        assertThat(tools.solicitarUnirse(null, null, null, null, null, null).estado())
-                .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var resultado = tools.solicitarUnirse("Surco", "UPC", null, null, null, null);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
+            assertThat(campo.id()).isEqualTo("compensacion");
+            assertThat(campo.opciones()).extracting(OpcionAclaracion::valor).containsExactly("DINERO", "GASOLINA", "FAVOR");
+        });
+        assertThat(resultado.aclaracion().opcionesRapidas()).isTrue();
         verifyNoInteractions(consultas, confirmaciones);
     }
 
@@ -122,7 +132,12 @@ class ViajeAgentToolsTest {
     @Test
     void fechaFaltanteNoPreparaNiConsulta() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        assertThat(tools.crearViaje("Surco", null, null, null).estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var faltaFecha = tools.crearViaje("Surco", null, null, LocalTime.of(8, 30));
+        var faltaHora = tools.crearViaje("Surco", null, LocalDate.of(2026, 12, 1), null);
+
+        assertThat(faltaFecha.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(faltaFecha.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("fecha");
+        assertThat(faltaHora.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("hora");
         verifyNoInteractions(consultas, confirmaciones);
     }
 
@@ -145,9 +160,29 @@ class ViajeAgentToolsTest {
     @Test
     void reprogramarViajeExigeLaNuevaSalida() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        assertThat(tools.reprogramarViaje("Surco", null, null, null, null, null, null).estado())
-                .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var faltaNuevaHora = tools.reprogramarViaje("Surco", null, null, null, null,
+                LocalDate.of(2026, 12, 1), null);
+
+        assertThat(faltaNuevaHora.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(faltaNuevaHora.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("nuevaHora");
         verifyNoInteractions(consultas, confirmaciones);
+    }
+
+    @Test
+    void reprogramarUnaFechaPasadaPideCorregirSoloLaFechaNueva() {
+        when(usuarioService.usuarioActual()).thenReturn(conductor);
+        when(consultas.identificarViajesConductor("Surco", null, null, null, null))
+                .thenReturn(new PageImpl<>(List.of(resumen(7L))));
+        LocalDate ayer = LocalDate.of(2026, 11, 22);
+        LocalTime hora = LocalTime.of(9, 0);
+        when(confirmaciones.prepararReprogramacionViaje(7L, ayer, hora))
+                .thenThrow(new CamposInvalidosException("La nueva fecha y hora deben ser futuras"));
+
+        var resultado = tools.reprogramarViaje("Surco", null, null, null, null, ayer, hora);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(resultado.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("nuevaFecha");
+        assertThat(resultado.confirmacion()).isNull();
     }
 
     @Test
@@ -180,6 +215,24 @@ class ViajeAgentToolsTest {
                 .thenReturn(List.of(solicitud(1L), solicitud(2L)));
         assertThat(tools.cancelarSolicitud(null, null, null, null, null, false).estado())
                 .isEqualTo(EstadoOperacion.AMBIGUO);
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
+    void cancelarSolicitudOfreceSoloLasHorasAutorizadasParaDistinguir() {
+        when(usuarioService.usuarioActual()).thenReturn(pasajero);
+        var solicitud = new SolicitudResumen(2L, 102L, "Surco", "UPC", "Lunes", LocalDate.of(2026, 12, 1),
+                LocalTime.of(9, 0), EstadoSolicitud.PENDIENTE);
+        when(consultas.candidatasCancelacion(null, null, null, null, null))
+                .thenReturn(List.of(solicitud(1L), solicitud));
+
+        var resultado = tools.cancelarSolicitud(null, null, null, null, null, false);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
+            assertThat(campo.id()).isEqualTo("hora");
+            assertThat(campo.opciones()).extracting(OpcionAclaracion::valor).containsExactly("07:00", "09:00");
+        });
         verifyNoInteractions(confirmaciones);
     }
 

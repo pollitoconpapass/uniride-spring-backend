@@ -85,6 +85,8 @@ Respuesta de consulta (IDs y contenidos son ilustrativos):
 
 Los cinco campos originales se conservan. `resultados` es un sobre extensible: `tipo` identifica la herramienta y `datos` contiene su resultado Java. Las listas originales siguen disponibles para los clientes existentes. `resolucionConfirmacion` se usa al resolver una propuesta por chat y contiene el estado y, cuando está disponible, el recibo de la confirmación persistida.
 
+Cuando faltan datos para continuar, `aclaracion` puede incluir los campos que Java solicita en ese turno. El mismo contrato está disponible por voz. [Esquema v1 y fixtures de Angular](agente_aclaraciones.md)
+
 Continuar sesión:
 
 ```json

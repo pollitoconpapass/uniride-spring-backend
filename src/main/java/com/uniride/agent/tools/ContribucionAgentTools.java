@@ -1,15 +1,26 @@
 package com.uniride.agent.tools;
 
+import static com.uniride.agent.Aclaraciones.Campo.CONDUCTOR;
+import static com.uniride.agent.Aclaraciones.Campo.DESTINO;
+import static com.uniride.agent.Aclaraciones.Campo.FECHA;
+import static com.uniride.agent.Aclaraciones.Campo.HORA;
+import static com.uniride.agent.Aclaraciones.Campo.ORIGEN;
+import static com.uniride.agent.Aclaraciones.Campo.PASAJEROS;
+
+import com.uniride.agent.Aclaraciones;
 import com.uniride.agent.AgentQueryService;
+import com.uniride.agent.dto.AclaracionAgente;
 import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.agent.dto.ContribucionResultado;
 import com.uniride.agent.dto.ContribucionResultado.Estado;
 import com.uniride.agent.dto.ContribucionResultado.Opcion;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.dto.responses.SugerenciaContribucionRespuesta;
 import com.uniride.exceptions.CamposInvalidosException;
 import com.uniride.services.ContribucionService;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
@@ -42,7 +53,7 @@ public class ContribucionAgentTools {
         if (!filtros.tieneReferenciaViaje()) {
             return new ContribucionResultado(Estado.FALTAN_FILTROS,
                     "¿De qué viaje se trata? Indica el origen y destino, el día, la fecha o la hora.",
-                    null, List.of(), false);
+                    null, List.of(), false, Aclaraciones.alternativa(NOMBRE, ORIGEN, DESTINO, FECHA, HORA));
         }
         if (viajes.isEmpty()) {
             String mensaje = filtros.viajePropio()
@@ -62,7 +73,8 @@ public class ContribucionAgentTools {
                     sugerencia, List.of(), false);
         } catch (CamposInvalidosException datosFaltantes) {
             return new ContribucionResultado(Estado.FALTAN_PASAJEROS, datosFaltantes.getMessage() + ".",
-                    null, List.of(viaje.opcion()), false);
+                    null, List.of(viaje.opcion()), false,
+                    Aclaraciones.crear(NOMBRE, PASAJEROS.obligatorio()).conRespuestaBreve("valor"));
         }
     }
 
@@ -71,6 +83,7 @@ public class ContribucionAgentTools {
         var segunda = opciones.getLast();
         String descripcionPrimera = describir(primera);
         String descripcionSegunda = describir(segunda);
+        AclaracionAgente aclaracion = null;
         String mensaje;
         if (!hayMas && descripcionPrimera.equalsIgnoreCase(descripcionSegunda)) {
             mensaje = "Encontré dos viajes con los mismos datos visibles. Ambos salen de " + descripcionPrimera
@@ -79,14 +92,25 @@ public class ContribucionAgentTools {
             String pregunta = "Indica el origen, el destino o el nombre del conductor del viaje que buscas.";
             if (!primera.fecha().equals(segunda.fecha())) {
                 pregunta = "¿Qué fecha quieres consultar?";
+                aclaracion = selector(FECHA, hayMas, primera.fecha().toString(), segunda.fecha().toString());
             } else if (!primera.hora().equals(segunda.hora())) {
                 pregunta = "¿A qué hora sale el viaje que quieres consultar?";
+                aclaracion = selector(HORA, hayMas, primera.hora().toString(), segunda.hora().toString());
+            } else if (!primera.origen().equalsIgnoreCase(segunda.origen())
+                    || !primera.destino().equalsIgnoreCase(segunda.destino())
+                    || !Objects.equals(primera.conductor(), segunda.conductor())) {
+                aclaracion = Aclaraciones.alternativa(NOMBRE, ORIGEN, DESTINO, CONDUCTOR);
             }
             String inicio = hayMas ? "Encontré varios viajes. Entre ellos están el de " : "Encontré dos viajes. Uno sale de ";
             String separador = hayMas ? " y el de " : " y el otro de ";
             mensaje = inicio + descripcionPrimera + separador + descripcionSegunda + ". " + pregunta;
         }
-        return new ContribucionResultado(Estado.AMBIGUA, mensaje, null, opciones, hayMas);
+        return new ContribucionResultado(Estado.AMBIGUA, mensaje, null, opciones, hayMas, aclaracion);
+    }
+
+    private static AclaracionAgente selector(Aclaraciones.Campo campo, boolean hayMas, String primero, String segundo) {
+        return Aclaraciones.crear(NOMBRE, hayMas ? campo.obligatorio() : campo.conOpciones(List.of(
+                new OpcionAclaracion(primero, primero), new OpcionAclaracion(segundo, segundo))));
     }
 
     private static String describir(Opcion viaje) {

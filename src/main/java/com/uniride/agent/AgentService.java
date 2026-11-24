@@ -1,6 +1,7 @@
 package com.uniride.agent;
 
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.AclaracionAgente;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.AdvertenciaAgente;
 import com.uniride.agent.dto.ContribucionResultado;
@@ -14,6 +15,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.ai.chat.client.ChatClient;
@@ -74,24 +76,47 @@ public class AgentService {
         AgentConversationStore.validateMessage(message);
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
+            var activa = lease.aclaracion();
+            var campos = EnvioAclaracion.leer(message, activa);
+            String anterior = campos == null ? message : EnvioAclaracion.paraHistorial(activa, campos);
             ChatResponse response;
-            var decision = ConfirmationIntent.classify(message);
+            var decision = campos == null ? ConfirmationIntent.classify(message) : ConfirmationIntent.OTRA;
             var borradorContribucion = lease.contribucion();
-            var contribucion = ContribucionIntent.classify(message, borradorContribucion, clock);
+            var borradorRuta = lease.rutaOViaje();
+            var contribucion = campos == null ? ContribucionIntent.classify(message, borradorContribucion, clock)
+                    : "sugerirContribucionViaje".equals(activa.operacion())
+                    ? ContribucionIntent.continuarCampos(campos, borradorContribucion, clock) : null;
+            var anteriorPdf = lease.historial();
+            var historial = historial(message, activa, campos, anteriorPdf);
+            var rutaOViaje = campos == null ? IntencionAclarable.inicioLocal(message, lease.ultimoContexto(), clock)
+                    : borradorRuta == null ? null : borradorRuta.continuar(campos);
+            if (rutaOViaje == null && campos == null && decision == ConfirmationIntent.OTRA && activa != null) {
+                rutaOViaje = IntencionAclarable.continuar(message, borradorRuta, activa, lease.ultimoContexto(), clock);
+            }
+            var compensation = campos == null ? CompensationIntent.classify(message, lease.borrador())
+                    : lease.borrador() == null ? null : CompensationIntent.continuarCampos(campos, lease.borrador());
+            if (campos != null && contribucion == null && historial == null && rutaOViaje == null && compensation == null)
+                throw new CamposInvalidosException("Revisa los campos de la aclaración e intenta de nuevo.");
+
+            lease.guardarAclaracion(null);
+            lease.guardarRutaOViaje(null);
+            lease.guardarHistorial(null);
             lease.guardarContribucion(null);
             if (contribucion != null) {
                 if (usuario.getRolPrincipal() != Rol.PASAJERO)
                     throw new NoPermitidoException("Esta consulta requiere el rol PASAJERO.");
                 lease.descartarReferenciaConfirmacion();
                 lease.guardarBorrador(null);
+                lease.guardarContexto(null);
                 if (contribucion.aclaracion() != null) {
                     if (contribucion.filtros() != null) {
                         lease.guardarContribucion(new ContribucionIntent.Borrador(contribucion.filtros(),
                                 ContribucionResultado.Estado.FALTAN_FILTROS));
                     }
-                    response = soloMensaje(contribucion.aclaracion());
+                    response = soloMensaje(contribucion.aclaracion()).conAclaracion(contribucion.aclaracionEstructurada());
                 } else {
-                    response = execute(usuario, message, lease, CompensationIntent.classify("", null), contribucion, voz);
+                    response = execute(usuario, anterior, lease, CompensationIntent.classify("", null), contribucion,
+                            null, null, false, voz);
                 }
             } else if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
                 response = resolverConfirmacion(lease, decision == ConfirmationIntent.CONFIRMAR);
@@ -100,20 +125,46 @@ public class AgentService {
                 lease.descartarReferenciaConfirmacion();
                 response = respuestaConfirmacion(new ResolucionConfirmacion(Estado.ACLARACION_REQUERIDA, null), null);
             } else {
-                var compensation = CompensationIntent.classify(message, lease.borrador());
                 // A new request may yield a new receipt, but cannot resume an older confirmation reference.
                 lease.descartarReferenciaConfirmacion();
+                if (rutaOViaje != null && usuario.getRolPrincipal() != rutaOViaje.accion().rol)
+                    throw new NoPermitidoException("Esta acción requiere el rol " + rutaOViaje.accion().rol + ".");
+                if (compensation == null || rutaOViaje != null || historial != null && campos != null)
+                    compensation = CompensationIntent.classify("", null);
+                if (rutaOViaje == null) lease.guardarContexto(null);
                 lease.guardarBorrador(compensation.draft());
                 boolean aclaracionLocal = compensation.message() != null && (compensation.informational()
                         || compensation.draft() != null || !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find());
-                response = aclaracionLocal ? soloMensaje(compensation.message())
-                        : execute(usuario, message, lease, compensation, null, voz);
+                response = aclaracionLocal ? soloMensaje(compensation.message()).conAclaracion(compensation.aclaracion())
+                        : execute(usuario, anterior, lease, compensation, null, historial, rutaOViaje,
+                        campos != null || historial != null && anteriorPdf != null
+                                && HistorialPdfIntent.classify(message, clock) == null, voz);
                 lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
+                if (historial != null && response.aclaracion() != null
+                        && response.aclaracion().operacion().equals("prepararDescargaHistorialPdf")) {
+                    lease.guardarHistorial(historial);
+                }
+            }
+            AclaracionAgente esquema = response.aclaracion();
+            if (esquema != null) {
+                esquema = esquema.conId(UUID.randomUUID());
+                lease.guardarAclaracion(esquema);
+                response = response.conAclaracion(esquema);
             }
             response = response.withConversationId(lease.id());
-            lease.complete(message, response);
+            lease.complete(anterior, response);
             return response;
         }
+    }
+
+    private HistorialPdfIntent.Solicitud historial(String message, AclaracionAgente activa, Map<String, String> campos,
+                                                   HistorialPdfIntent.Solicitud anterior) {
+        if (campos != null) {
+            return "prepararDescargaHistorialPdf".equals(activa.operacion())
+                    ? HistorialPdfIntent.continuarCampos(campos, anterior, clock) : null;
+        }
+        var actual = HistorialPdfIntent.classify(message, clock);
+        return actual != null ? actual : HistorialPdfIntent.continuar(message, anterior, clock);
     }
 
     private ChatResponse resolverConfirmacion(AgentConversationStore.Lease lease, boolean confirmar) {
@@ -180,13 +231,15 @@ public class AgentService {
 
     private ChatResponse execute(Usuario usuario, String message, AgentConversationStore.Lease lease,
                                  CompensationIntent.Decision compensation, ContribucionIntent.Solicitud contribucion,
-                                 boolean voz) {
+                                 HistorialPdfIntent.Solicitud historial, IntencionAclarable.Borrador rutaOViaje,
+                                 boolean continuacion, boolean voz) {
         var history = lease.providerHistory();
         boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
                 && CompensationIntent.isTripRequest(anterior.getText()));
-        var turn = tools.newTurn(contribucion == null ? HistorialPdfIntent.classify(message, clock) : null,
+        var turn = tools.newTurn(historial,
                 compensation, solicitudViaje, contribucion == null ? null : contribucion.filtros());
+        turn.contextoAclaracion(message, usuario.getRolPrincipal(), clock);
         try {
             if (contribucion != null) {
                 turn.recoverContribucion();
@@ -194,6 +247,15 @@ public class AgentService {
             }
             if (compensation.recoveryArgs() != null) {
                 turn.recoverCompensation();
+                return turn.response("");
+            }
+            if (rutaOViaje != null && turn.tieneHerramienta(rutaOViaje.accion().herramienta)) {
+                turn.procesar(rutaOViaje);
+                return turn.response("");
+            }
+            if (historial != null && (continuacion || historial.aclaracionEstructurada() != null
+                    && !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find())) {
+                turn.recoverReports(java.util.Set.of());
                 return turn.response("");
             }
             if (CompensationIntent.isOwnMethodList(message)) {
@@ -205,6 +267,11 @@ public class AgentService {
                 throw new NoPermitidoException("Esta consulta requiere el rol CONDUCTOR.");
             }
             String text = providerAnswer(usuario.getRolPrincipal(), message, history, turn, voz);
+            if (!turn.hasResults() && reportes.isEmpty() && historial == null
+                    && !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find()) {
+                var borrador = IntencionAclarable.siFaltanDatos(message, usuario.getRolPrincipal(), clock);
+                if (borrador != null && turn.tieneHerramienta(borrador.accion().herramienta)) turn.procesar(borrador);
+            }
             turn.recoverReports(reportes);
             return turn.response(text);
         } catch (RuntimeException failure) {
@@ -228,6 +295,10 @@ public class AgentService {
         } finally {
             if (contribucion != null && turn.contribucion() != null) {
                 lease.guardarContribucion(contribucion.siguiente(turn.contribucion()));
+            }
+            if (turn.rutaOViaje() != null) {
+                if (turn.propuestaPendiente()) lease.guardarContexto(turn.rutaOViaje().contexto());
+                else if (turn.tieneAclaracion()) lease.guardarRutaOViaje(turn.rutaOViaje());
             }
         }
     }

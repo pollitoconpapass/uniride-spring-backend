@@ -20,7 +20,9 @@ import com.uniride.agent.confirmation.*;
 import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
+import com.uniride.agent.tools.RutaAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
@@ -69,10 +71,12 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.test.context.web.WebAppConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 /** Real security chain and JWT parser; all business and model interactions are simulated. */
 @SpringJUnitConfig(AgentHttpSecurityTest.Configuration.class)
@@ -140,8 +144,111 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.viajes").isArray())
                 .andExpect(jsonPath("$.rutas").isArray())
                 .andExpect(jsonPath("$.metodosCompensacion").isArray())
-                .andExpect(jsonPath("$.operacion").isEmpty());
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist());
         verify(agent).chat("Mis rutas", (UUID) null);
+    }
+
+    @Test
+    void routeFormSurvivesTextToVoiceAndTextSubmissionOnlyPrepares() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta con origen Surco", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.version").value(1))
+                .andExpect(jsonPath("$.aclaracion.contexto").isString())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("crearRuta"))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", org.hamcrest.Matchers.containsInAnyOrder("referencias", "capacidad")))
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty()));
+        String conversationId = first.path("conversationId").asText();
+        String firstForm = first.path("aclaracion").path("id").asText();
+        UUID.fromString(firstForm);
+        verifyNoInteractions(confirmations);
+
+        when(transcripcion.transcribir(any())).thenReturn("Puntos de referencia: Parque central");
+        JsonNode voiced = json(mvc.perform(multipart("/agent/voz").file(audio())
+                        .param("conversationId", conversationId).header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("Puntos de referencia: Parque central"))
+                .andExpect(jsonPath("$.textoHablado").isNotEmpty())
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversationId))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].id").value("capacidad"))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].tipo").value("number"))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].minimo").value(1))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos.length()").value(1)));
+        String form = voiced.path("respuesta").path("aclaracion").path("id").asText();
+        sendChat("Datos de aclaración " + firstForm + ": {\"capacidad\":3}", conversationId, bearer())
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        sendChat("Datos de aclaración " + form + ": {\"capacidad\":3,\"usuarioId\":99}", conversationId, bearer())
+                .andExpect(status().isBadRequest());
+        sendChat("Datos de aclaración " + form + ": {\"capacidad\":3,\"capacidad\":4}", conversationId, bearer())
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(confirmations);
+
+        UUID proposalId = UUID.randomUUID();
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        when(confirmations.prepararRuta(request)).thenReturn(new OperacionResumen(
+                EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Revisa la ruta", confirmation(proposalId, EstadoConfirmacion.PENDIENTE)));
+        String submission = "Datos de aclaración " + form + ": {\"capacidad\":3}";
+        sendChat(submission, conversationId, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.operacion.estado").value("CONFIRMACION_REQUERIDA"))
+                .andExpect(jsonPath("$.operacion.confirmacion.id").value(proposalId.toString()))
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist());
+        sendChat(submission, conversationId, bearer()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verify(confirmations).prepararRuta(request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void staleFormCannotCrossUsersConversationsOrRoles() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta más", null, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos.length()").value(3)));
+        String conversationId = first.path("conversationId").asText();
+        String form = first.path("aclaracion").path("id").asText();
+        String submission = "Datos de aclaración " + form + ": {\"origen\":\"Surco\",\"referencias\":\"Parque\",\"capacidad\":3}";
+
+        when(usuarios.findByCorreoInstitucional("luis@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(8L).correoInstitucional("luis@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.CONDUCTOR).cuentaVerificada(true).build()));
+        sendChat(submission, conversationId, "Bearer " + jwt.generarToken("luis@upc.edu.pe"))
+                .andExpect(status().isNotFound());
+        sendChat(submission, null, bearer()).andExpect(status().is4xxClientError());
+
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        sendChat(submission, conversationId, bearer()).andExpect(status().isConflict());
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    private ChatClient routeAgent() {
+        var chatClient = mock(ChatClient.class);
+        var users = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var registry = new AgentToolRegistry(new ObjectMapper(),
+                ToolCallbacks.from(new RutaAgentTools(mock(AgentQueryService.class), confirmations, users)));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var service = new AgentService(chatClient, users, clock, registry, new AgentConversationStore(clock), confirmations);
+        when(agent.chat(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        when(agent.chatVoz(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chatVoz(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        return chatClient;
+    }
+
+    private ResultActions sendChat(String message, String conversationId, String authorization) throws Exception {
+        var payload = new LinkedHashMap<String, String>();
+        payload.put("message", message);
+        if (conversationId != null) payload.put("conversationId", conversationId);
+        return mvc.perform(post("/agent/chat").header("Authorization", authorization)
+                .contentType(MediaType.APPLICATION_JSON).content(new ObjectMapper().writeValueAsString(payload)));
+    }
+
+    private static JsonNode json(ResultActions result) {
+        return new ObjectMapper().readTree(result.andReturn().getResponse().getContentAsByteArray());
     }
 
     @Test
@@ -216,6 +323,8 @@ class AgentHttpSecurityTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.resultados[0].tipo").value(NOMBRE))
                 .andExpect(jsonPath("$.resultados[0].datos.estado").value("FALTAN_PASAJEROS"))
+                .andExpect(jsonPath("$.aclaracion.operacion").value(NOMBRE))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", org.hamcrest.Matchers.contains("pasajeros")))
                 .andExpect(jsonPath("$.operacion").isEmpty())
                 .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
                 .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
@@ -234,6 +343,7 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.respuesta.conversationId").value(conversation))
                 .andExpect(jsonPath("$.respuesta.operacion").isEmpty())
                 .andExpect(jsonPath("$.respuesta.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.respuesta.aclaracion").doesNotExist())
                 .andExpect(jsonPath("$.respuesta.resultados[0].tipo").value(NOMBRE))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.costoTotalEstimado").value(12.0))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.aporteEstimado").value(4.0))

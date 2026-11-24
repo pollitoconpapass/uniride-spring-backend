@@ -12,7 +12,16 @@ public record ChatResponse(
         List<ResultadoAgente> resultados,
         AdvertenciaAgente advertencia,
         java.util.UUID conversationId,
-        @JsonInclude(JsonInclude.Include.NON_NULL) ResolucionConfirmacion resolucionConfirmacion) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) ResolucionConfirmacion resolucionConfirmacion,
+        @JsonInclude(JsonInclude.Include.NON_NULL) AclaracionAgente aclaracion) {
+
+    public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,
+                        List<MetodoCompensacionResumen> metodosCompensacion, OperacionResumen operacion,
+                        List<ResultadoAgente> resultados, AdvertenciaAgente advertencia, java.util.UUID conversationId,
+                        ResolucionConfirmacion resolucionConfirmacion) {
+        this(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia, conversationId,
+                resolucionConfirmacion, null);
+    }
 
     public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,
                         List<MetodoCompensacionResumen> metodosCompensacion, OperacionResumen operacion,
@@ -28,7 +37,12 @@ public record ChatResponse(
 
     public ChatResponse withConversationId(java.util.UUID id) {
         return new ChatResponse(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia, id,
-                resolucionConfirmacion);
+                resolucionConfirmacion, aclaracion);
+    }
+
+    public ChatResponse conAclaracion(AclaracionAgente dato) {
+        return new ChatResponse(message, viajes, rutas, metodosCompensacion, operacion, resultados, advertencia,
+                conversationId, resolucionConfirmacion, dato);
     }
 
     public ChatResponse(String message, List<ViajeResumen> viajes, List<RutaResumen> rutas,

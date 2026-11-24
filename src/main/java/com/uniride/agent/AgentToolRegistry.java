@@ -9,6 +9,7 @@ import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import com.uniride.enums.Rol;
+import java.time.Clock;
 import java.util.*;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.support.ToolCallbacks;
@@ -19,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /** Each turn owns its receipts and budget; nothing is shared between users or threads. */
 @Component
@@ -77,9 +79,14 @@ public class AgentToolRegistry {
         private final List<RutaResumen> rutas = new ArrayList<>();
         private final List<MetodoCompensacionResumen> metodos = new ArrayList<>();
         private OperacionResumen operation;
+        private AclaracionAgente camposOperacion;
         private ContribucionResultado contribucion;
         private boolean contribucionInvocada;
         private boolean prepared;
+        private String mensajeUsuario;
+        private Rol rolUsuario;
+        private Clock reloj;
+        private IntencionAclarable.Borrador rutaOViaje;
 
         private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
                      boolean solicitudViaje, ContribucionFiltros filtrosContribucion) {
@@ -92,6 +99,31 @@ public class AgentToolRegistry {
         public ToolCallback[] callbacks() {
             return callbacks(null, false);
         }
+
+        void contextoAclaracion(String mensaje, Rol rol, Clock clock) {
+            this.mensajeUsuario = mensaje;
+            this.rolUsuario = rol;
+            this.reloj = clock;
+        }
+
+        boolean tieneHerramienta(String nombre) {
+            return Arrays.stream(AgentToolRegistry.this.callbacks).anyMatch(c -> c.getToolDefinition().name().equals(nombre));
+        }
+
+        void procesar(IntencionAclarable.Borrador borrador) {
+            rutaOViaje = borrador;
+            String nombre = borrador.accion().herramienta;
+            execute(callback(nombre), mapper.writeValueAsString(borrador.argumentos()), new ToolContext(Map.of()));
+        }
+
+        IntencionAclarable.Borrador rutaOViaje() { return rutaOViaje; }
+
+        boolean propuestaPendiente() {
+            return operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE;
+        }
+
+        boolean tieneAclaracion() { return aclaracion() != null; }
 
         ToolCallback[] callbacks(Rol role, boolean terminalResults) {
             return Arrays.stream(AgentToolRegistry.this.callbacks)
@@ -214,6 +246,9 @@ public class AgentToolRegistry {
                 throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
             JsonNode data = mapper.readTree(output);
             capture(name, data);
+            if (rutaOViaje == null && mensajeUsuario != null && prepara && arguments instanceof Map<?, ?> parametros) {
+                rutaOViaje = IntencionAclarable.desdeTool(name, parametros, mensajeUsuario, rolUsuario, reloj);
+            }
             if (prepara) prepared = true;
             receipts.put(key, output);
             return output;
@@ -226,10 +261,13 @@ public class AgentToolRegistry {
         }
 
         private void capture(String name, JsonNode data) {
-            results.add(new ResultadoAgente(name, data));
             JsonNode items = data.isArray() ? data : data.path("items");
             switch (name) {
-                case NOMBRE -> contribucion = mapper.treeToValue(data, ContribucionResultado.class);
+                case NOMBRE -> {
+                    var resultado = mapper.treeToValue(data, ContribucionResultado.class);
+                    validarAclaracion(name, resultado.aclaracion());
+                    contribucion = resultado;
+                }
                 case "buscarViajes", "consultarMisViajes", "consultarMisSolicitudes" ->
                     items.forEach(item -> viajes.add(mapper.treeToValue(item, ViajeResumen.class)));
                 case "consultarMisRutas" ->
@@ -237,9 +275,24 @@ public class AgentToolRegistry {
                 case OWN_METHODS ->
                     items.forEach(item -> metodos.add(mapper.treeToValue(item, MetodoCompensacionResumen.class)));
                 default -> {
-                    if (data.has("estado") && data.has("detalle"))
-                        operation = mapper.treeToValue(data, OperacionResumen.class);
+                    if (data.has("estado") && data.has("detalle")) {
+                        var resultado = mapper.treeToValue(data, OperacionResumen.class);
+                        validarAclaracion(name, resultado.aclaracion());
+                        camposOperacion = resultado.aclaracion();
+                        operation = resultado.conAclaracion(null);
+                    }
                 }
+            }
+            if (data instanceof ObjectNode objeto && objeto.has("aclaracion")) {
+                data = objeto.deepCopy();
+                ((ObjectNode) data).remove("aclaracion");
+            }
+            results.add(new ResultadoAgente(name, data));
+        }
+
+        private void validarAclaracion(String herramienta, AclaracionAgente datos) {
+            if (datos != null && (datos.id() != null || !herramienta.equals(datos.operacion()))) {
+                throw invalid("INVALID_TOOL_RESPONSE", "La herramienta devolvió una aclaración inválida.");
             }
         }
 
@@ -257,7 +310,21 @@ public class AgentToolRegistry {
 
         public ChatResponse response(String text, AdvertenciaAgente warning) {
             return new ChatResponse(message(text, warning), List.copyOf(viajes), List.copyOf(rutas),
-                    List.copyOf(metodos), operation, List.copyOf(results), warning);
+                    List.copyOf(metodos), operation, List.copyOf(results), warning).conAclaracion(aclaracion());
+        }
+
+        private AclaracionAgente aclaracion() {
+            if (operation != null && (operation.confirmacion() != null
+                    || operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA)) return null;
+            if (contribucion != null && contribucion.aclaracion() != null) return contribucion.aclaracion();
+            if (operation != null && camposOperacion != null) {
+                var dato = camposOperacion;
+                if (rutaOViaje != null && rutaOViaje.accion().herramienta.equals(dato.operacion())) {
+                    return operation.estado() == EstadoOperacion.DATOS_FALTANTES ? rutaOViaje.completar(dato) : dato;
+                }
+                if (dato.operacion().equals(compensation.allowedTool()) && compensation.recoveryArgs() != null) return dato;
+            }
+            return historialPdf == null ? null : historialPdf.aclaracionEstructurada();
         }
 
         private String message(String text, AdvertenciaAgente warning) {

@@ -24,6 +24,7 @@ import com.uniride.agent.tools.ReportesAgentTools;
 import com.uniride.agent.tools.RutaAgentTools;
 import com.uniride.agent.tools.ViajeAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.requests.SolicitudRequest;
 import com.uniride.dto.responses.AnalisisSemanalRespuesta;
 import com.uniride.dto.responses.DiaCantidadRespuesta;
@@ -196,6 +197,175 @@ class GroqProviderIntegrationTest {
         var receipt = proposal.confirmacion();
         return new ConfirmacionResumen(receipt.id(), receipt.tipo(), state, receipt.resumen(), receipt.parametros(),
                 receipt.expira(), result);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            Crea una ruta más | origen referencias capacidad
+            Quiero crear una ruta | origen referencias capacidad
+            Crea una ruta con origen Surco | referencias capacidad
+            Crea una ruta con origen Surco, puntos de referencia Parque | capacidad
+            Crea una ruta con origen Surco, puntos de referencia Parque, capacidad 0 | capacidad
+            """)
+    void localRouteClarificationOnlyAsksForTheMissingOrInvalidFields(String message, String fields) {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        enqueue(429, rateLimitError());
+
+        ChatResponse response = service.chat(message, (UUID) null);
+
+        assertThat(clarificationFields(response, "crearRuta")).containsExactlyInAnyOrder(fields.split(" "));
+        assertThat(response.advertencia()).isNull();
+        assertThat(response.resolucionConfirmacion()).isNull();
+        assertThat(requests).isEmpty();
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void newRouteStartsWithoutFieldsAfterPublishingThePreviousOne() {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        var route = new RutaRequest("Surco", 3, "Parque central", null, null);
+        var proposal = pending(TipoOperacion.CREAR_RUTA, "Publicar ruta de Surco a UPC", Map.of());
+        var result = new OperacionResumen(EstadoOperacion.EXITO, 61L, "Ruta publicada.");
+        when(confirmations.prepararRuta(route)).thenReturn(proposal);
+        when(confirmations.resolverDesdeChat(proposal.confirmacion().id(), true)).thenReturn(
+                new ResolucionConfirmacion(Estado.EJECUTADA, resolved(proposal, EstadoConfirmacion.EJECUTADA, result)));
+
+        ChatResponse incomplete = service.chat("Crea una ruta", (UUID) null);
+        String form = mapper.valueToTree(incomplete).path("aclaracion").path("id").asText();
+        ChatResponse pending = service.chat("Datos de aclaración " + form
+                + ": {\"origen\":\"Surco\",\"referencias\":\"Parque central\",\"capacidad\":3}", incomplete.conversationId());
+        ChatResponse confirmed = service.chat("Sí", pending.conversationId());
+        ChatResponse another = service.chat("Crea una ruta más", confirmed.conversationId());
+
+        assertThat(confirmed.resolucionConfirmacion().estado()).isEqualTo(Estado.EJECUTADA);
+        assertThat(clarificationFields(another, "crearRuta")).containsExactlyInAnyOrder("origen", "referencias", "capacidad");
+        assertThat(clarification(another).path("campos").valueStream().noneMatch(campo -> campo.hasNonNull("inicial")))
+                .isTrue();
+        assertThat(requests).isEmpty();
+        verify(confirmations).prepararRuta(route);
+        verify(confirmations).resolverDesdeChat(proposal.confirmacion().id(), true);
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void aChangeOfTopicInvalidatesTheOldFormEvenInTheSameConversation() {
+        var confirmations = mock(ConfirmationService.class);
+        var queries = mock(AgentQueryService.class);
+        when(queries.metodos(null)).thenReturn(new PaginaAgente<>(List.of(), 0, 10, 0, false));
+        service = service(Duration.ofSeconds(3), confirmations, new RutaAgentTools(queries, confirmations, users),
+                new MetodoCompensacionAgentTools(queries, confirmations));
+        ChatResponse incomplete = service.chat("Crea una ruta", (UUID) null);
+        String form = clarification(incomplete).path("id").asText();
+
+        ChatResponse methodList = service.chat("Muéstrame mis métodos", incomplete.conversationId());
+
+        assertThat(clarification(methodList).isMissingNode()).isTrue();
+        assertThat(methodList.resultados()).extracting(ResultadoAgente::tipo).containsExactly("consultarMisMetodosCompensacion");
+        assertThatThrownBy(() -> service.chat("Datos de aclaración " + form
+                        + ": {\"origen\":\"Surco\",\"referencias\":\"Parque\",\"capacidad\":3}", incomplete.conversationId()))
+                .isInstanceOfSatisfying(AgentProviderException.class, failure -> {
+                    assertThat(failure.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(failure.code()).isEqualTo("CLARIFICATION_EXPIRED");
+                });
+        assertThat(requests).isEmpty();
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void rejectsModelInventedExecutableClarificationRatherThanExposingItToAngular() {
+        enqueue(200, completion("""
+                {"aclaracion":{"version":1,"operacion":"crearRuta","campos":[{"id":"jwt",
+                "tipo":"text","etiqueta":"Contraseña","ayuda":"<script>malicioso</script>"}]}}
+                """, "stop"));
+
+        assertThatThrownBy(() -> service.chat("Ayúdame con UniRide", (UUID) null))
+                .isInstanceOfSatisfying(AgentProviderException.class, failure -> {
+                    assertThat(failure.status()).isEqualTo(HttpStatus.BAD_GATEWAY);
+                    assertThat(failure.getMessage()).doesNotContain("Contraseña", "<script>", "jwt");
+                });
+        assertThat(requests).hasSize(1);
+        assertThat(toolNames()).doesNotContain("aclarar", "aclaracion");
+        verifyNoInteractions(reports);
+    }
+
+    @Test
+    void preservesAJavaClarificationAlreadyReturnedByAToolWhenMixedRequestHits429() {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new RutaAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        enqueue(200, toolCall("crearRuta", "{\"origen\":\"Surco\"}"));
+        enqueue(429, rateLimitError());
+
+        ChatResponse response = service.chat("Quiero publicar una ruta desde Surco. También muéstrame mis rutas.", (UUID) null);
+
+        assertThat(response.advertencia().codigo()).isEqualTo("PROVIDER_RATE_LIMIT");
+        assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(response.operacion().confirmacion()).isNull();
+        assertThat(clarificationFields(response, "crearRuta")).containsExactlyInAnyOrder("referencias", "capacidad");
+        assertThat(requests).hasSize(2);
+        verifyNoInteractions(confirmations);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            crearViaje | {"origenRuta":"Surco","fecha":"2026-11-25"} | hora
+            reprogramarViaje | {"origen":"Surco","fecha":"2026-11-25","nuevaFecha":"2026-11-26"} | nuevaHora
+            """)
+    void modelSelectedTravelToolCanReturnOnlyItsMissingTimeWithoutPreparing(
+            String tool, String arguments, String missing) {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        enqueue(200, toolCall(tool, arguments));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        String action = "crearViaje".equals(tool) ? "programar una salida de Surco el 25 de noviembre"
+                : "reprogramar una salida de Surco del 25 de noviembre para el 26 de noviembre";
+        ChatResponse response = service.chat("Ayúdame a " + action + ". También muéstrame mis viajes.", (UUID) null);
+
+        assertThat(clarificationFields(response, tool)).containsExactly(missing);
+        assertThat(clarification(response).path("campos").path(0).path("tipo").asText()).isEqualTo("time");
+        assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(response.operacion().confirmacion()).isNull();
+        assertThat(requests).hasSize(2);
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void seatRequestUsesOnlyTheAllowedCompensationOptions() {
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), new ViajeAgentTools(mock(AgentQueryService.class), confirmations, users),
+                confirmations);
+        enqueue(200, toolCall("solicitarUnirse", "{\"origen\":\"Surco\",\"fecha\":\"2026-11-25\"}"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+
+        ChatResponse response = service.chat("Quiero un cupo en el viaje de Surco del 25 de noviembre. También mira mis solicitudes.", (UUID) null);
+
+        assertThat(clarificationFields(response, "solicitarUnirse")).containsExactly("compensacion");
+        JsonNode preference = clarification(response).path("campos").path(0);
+        assertThat(preference.path("tipo").asText()).isEqualTo("select");
+        assertThat(preference.path("opciones").valueStream().map(o -> o.path("valor").asText()).toList())
+                .containsExactlyInAnyOrder("DINERO", "GASOLINA", "FAVOR");
+        assertThat(response.operacion().confirmacion()).isNull();
+        assertThat(requests).hasSize(2);
+        verifyNoInteractions(confirmations);
+    }
+
+    private List<String> clarificationFields(ChatResponse response, String operation) {
+        JsonNode descriptor = clarification(response);
+        assertThat(descriptor.path("version").asInt()).isEqualTo(1);
+        assertThat(descriptor.path("operacion").asText()).isEqualTo(operation);
+        UUID.fromString(descriptor.path("id").asText());
+        return descriptor.path("campos").valueStream().map(campo -> campo.path("id").asText()).toList();
+    }
+
+    private JsonNode clarification(ChatResponse response) {
+        return mapper.valueToTree(response).path("aclaracion");
     }
 
     @Test
@@ -639,6 +809,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.resultados()).isEmpty();
         assertThat(response.metodosCompensacion()).isEmpty();
         assertThat(response.conversationId()).isNotNull();
+        assertThat(clarification(response).isMissingNode()).isTrue();
         assertThat(requests).isEmpty();
         verifyNoInteractions(confirmations, reports);
     }
@@ -767,6 +938,7 @@ class GroqProviderIntegrationTest {
         assertThat(incomplete.message()).containsIgnoringCase("nueva descripción").doesNotContain("Inventada");
         assertThat(incomplete.operacion()).isNull();
         assertThat(incomplete.resultados()).isEmpty();
+        assertThat(clarificationFields(incomplete, "actualizarMetodoCompensacion")).containsExactly("nuevaDescripcion");
         verifyNoInteractions(confirmations);
 
         ChatResponse prepared = service.chat("Yape personal", incomplete.conversationId());
@@ -774,6 +946,7 @@ class GroqProviderIntegrationTest {
         assertThat(prepared.conversationId()).isEqualTo(incomplete.conversationId());
         assertThat(prepared.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(prepared.resultados()).extracting(ResultadoAgente::tipo).containsExactly("actualizarMetodoCompensacion");
+        assertThat(clarification(prepared).isMissingNode()).isTrue();
         assertThat(requests).isEmpty();
         verify(confirmations).prepararActualizacionMetodo(null, "Yape", null, "Yape personal");
         verifyNoMoreInteractions(confirmations);
@@ -938,6 +1111,7 @@ class GroqProviderIntegrationTest {
         assertThat(first.conversationId()).isNotNull();
         assertThat(first.message()).contains("descripción", "FAVOR").doesNotContain(PREFERENCIA_VIAJE, "Inventada");
         assertThat(first.operacion()).isNull();
+        assertThat(clarificationFields(first, "registrarMetodoCompensacion")).containsExactly("descripcion");
         verifyNoInteractions(confirmations);
 
         ChatResponse second = service.chat("Apuntes de clase", first.conversationId());
@@ -1167,6 +1341,7 @@ class GroqProviderIntegrationTest {
 
     @Test
     void tripStillGetsTheCompensationPreferenceQuestionWhenThatInformationIsMissing() {
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
         enqueue(200, completion(PREFERENCIA_VIAJE, "stop"));
 
         ChatResponse response = service.chat("Quiero unirme a un viaje", (UUID) null);
@@ -1218,8 +1393,8 @@ class GroqProviderIntegrationTest {
     }
 
     @Test
-    void asksForPeriodClarificationAndDoesNotExposeAnIncompletePdfTool() {
-        enqueue(200, completion("Ya descargué tu historial.", "stop"));
+    void asksForPeriodClarificationWithoutCallingGroqAndContinuesLocally() {
+        enqueue(429, rateLimitError());
 
         ChatResponse response = service.chat("Genera mi historial del último mes", (UUID) null);
 
@@ -1227,9 +1402,14 @@ class GroqProviderIntegrationTest {
                 .doesNotContain("/api/historial/pdf", "Ya descargué");
         assertThat(response.resultados()).isEmpty();
         assertThat(response.operacion()).isNull();
-        assertThat(requests).hasSize(1);
-        assertThat(toolNames()).doesNotContain(DESCARGA_HISTORIAL_PDF);
-        verify(users).usuarioActual();
+        assertThat(clarificationFields(response, DESCARGA_HISTORIAL_PDF)).containsExactly("periodo");
+        String form = clarification(response).path("id").asText();
+        var continuacion = service.chat("Datos de aclaración " + form + ": {\"periodo\":\"mes pasado\"}",
+                response.conversationId());
+        assertThat(continuacion.resultados()).extracting(ResultadoAgente::tipo).containsExactly(DESCARGA_HISTORIAL_PDF);
+        assertThat(continuacion.aclaracion()).isNull();
+        assertThat(requests).isEmpty();
+        verify(users, times(3)).usuarioActual();
         verifyNoInteractions(reports);
     }
 
@@ -1682,6 +1862,7 @@ class GroqProviderIntegrationTest {
         assertThat(response.operacion().estado()).isEqualTo(EstadoOperacion.CONFIRMACION_REQUERIDA);
         assertThat(response.operacion().confirmacion()).isEqualTo(proposal.confirmacion());
         assertThat(response.message()).contains(proposal.confirmacion().resumen(), "aplicación", "confirmo");
+        assertThat(clarification(response).isMissingNode()).isTrue();
         verify(confirmations).prepararRuta(any());
         verifyNoMoreInteractions(confirmations);
     }
