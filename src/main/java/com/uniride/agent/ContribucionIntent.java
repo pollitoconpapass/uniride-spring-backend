@@ -1,5 +1,9 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
+
+import com.uniride.agent.dto.AclaracionAgente;
+import com.uniride.agent.dto.CampoAclaracion;
 import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.agent.dto.ContribucionResultado;
 import com.uniride.config.TiempoConfig;
@@ -8,8 +12,11 @@ import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -76,12 +83,19 @@ final class ContribucionIntent {
             + "(?:" + DIAS + ")\\b|" + CANTIDAD + "(?:\\b|:))");
     private static final Pattern DISYUNCION = Pattern.compile("\\b(?:o|u) (?=\\d|(?:" + DIAS
             + ")\\b|a las? |hoy\\b|manana\\b|(?:" + CANTIDAD + ") pasajeros?\\b)");
+    private static final Pattern CAMPO_RESPONDIDO = Pattern.compile(
+            "^(origen|destino|fecha|hora|cantidad de pasajeros|pasajeros|nombre del conductor|conductor):\\s*(.+)$");
+    private static final Set<String> CAMPOS = Set.of("origen", "destino", "fecha", "hora", "pasajeros", "conductor");
 
     private ContribucionIntent() { }
 
     record Borrador(ContribucionFiltros filtros, ContribucionResultado.Estado estado) { }
 
-    record Solicitud(ContribucionFiltros filtros, String aclaracion) {
+    record Solicitud(ContribucionFiltros filtros, String aclaracion, AclaracionAgente aclaracionEstructurada) {
+        Solicitud(ContribucionFiltros filtros, String aclaracion) {
+            this(filtros, aclaracion, null);
+        }
+
         Borrador siguiente(ContribucionResultado resultado) {
             var sugerencia = resultado.sugerencia();
             ContribucionFiltros seleccionado = filtros;
@@ -107,6 +121,17 @@ final class ContribucionIntent {
         String text = Normalizer.normalize(original, Normalizer.Form.NFD).replaceAll("\\p{M}+", "")
                 .toLowerCase(Locale.ROOT).replaceAll("^[¿¡]+\\s*|[.!?…]+$", "");
         if (OTRO_PEDIDO.matcher(text).find()) return null;
+        if (borrador != null && borrador.estado() != ContribucionResultado.Estado.SUGERIDA) {
+            var campo = CAMPO_RESPONDIDO.matcher(text);
+            if (campo.matches()) {
+                String id = switch (campo.group(1)) {
+                    case "nombre del conductor" -> "conductor";
+                    case "cantidad de pasajeros" -> "pasajeros";
+                    default -> campo.group(1);
+                };
+                return continuarCampos(Map.of(id, original.substring(original.indexOf(':') + 1).strip()), borrador, clock);
+            }
+        }
         boolean consulta = CONSULTA.matcher(text).find();
         boolean referencia = consulta && REFERENCIA.matcher(text).find();
         boolean elipsis = consulta && ELIPSIS.matcher(text).find();
@@ -122,36 +147,82 @@ final class ContribucionIntent {
         String destino = tieneRuta ? ruta.group(2).strip() : grupo(DESTINO, original);
         String sinRuta = textoSinRuta(original);
         String calendario = HORA.matcher(sinRuta).replaceAll(" ");
+        var invalidos = EnumSet.noneOf(Aclaraciones.Campo.class);
+        var pasajeros = validar(Aclaraciones.Campo.PASAJEROS, invalidos, () -> pasajeros(text, borrador));
+        String conductor = grupo(CONDUCTOR, original);
+        if (conductor == null && seguimiento && pasajeros == null) conductor = grupo(RESPUESTA_CONDUCTOR, original);
+        LocalTime hora = validar(Aclaraciones.Campo.HORA, invalidos, () -> hora(sinRuta));
+        LocalDate fecha = validar(Aclaraciones.Campo.FECHA, invalidos,
+                () -> fecha(calendario, LocalDate.now(clock.withZone(TiempoConfig.LIMA))));
+        String dia = validar(Aclaraciones.Campo.FECHA, invalidos, () -> unico(DIA, calendario));
+        String sinFecha = FECHA.matcher(calendario).replaceAll(" ").strip();
+        if (FECHA_INCOMPLETA.matcher(sinFecha).find() || (pasajeros == null && SOLO_DIA.matcher(sinFecha).matches())
+                || (fecha == null && DIA_RELATIVO.matcher(calendario).find())) invalidos.add(Aclaraciones.Campo.FECHA);
+        if (HORA_INCOMPLETA.matcher(calendario).find() || FRACCION_HORA_NO_RECONOCIDA.matcher(sinRuta).find()) {
+            invalidos.add(Aclaraciones.Campo.HORA);
+        }
+        if (DISYUNCION.matcher(text).find()) {
+            if (DISYUNCION.matcher(calendario).find()) {
+                invalidos.add(PASAJEROS.matcher(calendario).find() ? Aclaraciones.Campo.PASAJEROS : Aclaraciones.Campo.FECHA);
+            } else invalidos.add(Aclaraciones.Campo.HORA);
+        }
+        boolean tieneFiltros = origen != null || destino != null || conductor != null
+                || fecha != null || dia != null || hora != null;
+        if (consulta && !referencia && (tieneFiltros || !invalidos.isEmpty())) anterior = null;
+        boolean viajePropio = !tieneFiltros && PROPIO.matcher(text).find();
+        var filtros = new ContribucionFiltros(origen, destino, dia,
+                invalidos.contains(Aclaraciones.Campo.FECHA) ? null : fecha,
+                invalidos.contains(Aclaraciones.Campo.HORA) ? null : hora,
+                invalidos.contains(Aclaraciones.Campo.PASAJEROS) ? null : pasajeros, conductor, viajePropio);
+        filtros = anterior == null ? filtros : combinar(anterior, filtros);
+        if (!invalidos.isEmpty()) return corregir(filtros, invalidos);
+        return !consulta && !tieneFiltros && pasajeros == null ? null : new Solicitud(filtros, null);
+    }
+
+    static Solicitud continuarCampos(Map<String, String> campos, Borrador borrador, Clock clock) {
+        if (borrador == null || borrador.estado() == ContribucionResultado.Estado.SUGERIDA || campos.isEmpty()
+                || !CAMPOS.containsAll(campos.keySet())) return null;
+        if (borrador.estado() == ContribucionResultado.Estado.FALTAN_PASAJEROS
+                && !campos.keySet().equals(Set.of("pasajeros"))) return null;
+
+        var invalidos = EnumSet.noneOf(Aclaraciones.Campo.class);
+        LocalDate fecha = campos.containsKey("fecha") ? validar(Aclaraciones.Campo.FECHA, invalidos,
+                () -> fecha(campos.get("fecha"), LocalDate.now(clock.withZone(TiempoConfig.LIMA)))) : null;
+        LocalTime hora = campos.containsKey("hora") ? validar(Aclaraciones.Campo.HORA, invalidos,
+                () -> hora("a las " + campos.get("hora"))) : null;
+        Integer pasajeros = campos.containsKey("pasajeros")
+                ? validar(Aclaraciones.Campo.PASAJEROS, invalidos, () -> numero(campos.get("pasajeros"))) : null;
+        if (campos.containsKey("fecha") && fecha == null) invalidos.add(Aclaraciones.Campo.FECHA);
+        if (campos.containsKey("hora") && hora == null) invalidos.add(Aclaraciones.Campo.HORA);
+        if (pasajeros != null && pasajeros < 1) {
+            pasajeros = null;
+            invalidos.add(Aclaraciones.Campo.PASAJEROS);
+        }
+        var actual = new ContribucionFiltros(campos.get("origen"), campos.get("destino"), null, fecha, hora,
+                pasajeros, campos.get("conductor"), false);
+        var combinado = combinar(borrador.filtros(), actual);
+        return invalidos.isEmpty() ? new Solicitud(combinado, null) : corregir(combinado, invalidos);
+    }
+
+    private static Solicitud corregir(ContribucionFiltros filtros, Set<Aclaraciones.Campo> invalidos) {
+        String mensaje = invalidos.size() != 1 ? "Revisa los datos indicados para calcular la sugerencia."
+                : switch (invalidos.iterator().next()) {
+                    case FECHA -> "Indica la fecha exacta de esa salida para calcular la sugerencia.";
+                    case HORA -> "Indica la hora exacta de la salida en formato de 24 horas.";
+                    case PASAJEROS -> "Indica una cantidad válida de pasajeros para calcular la sugerencia.";
+                    default -> throw new IllegalStateException("Campo de contribución no admitido");
+                };
+        return new Solicitud(filtros, mensaje, Aclaraciones.crear(NOMBRE,
+                invalidos.stream().map(Aclaraciones.Campo::obligatorio).toArray(CampoAclaracion[]::new)));
+    }
+
+    private static <T> T validar(Aclaraciones.Campo campo, Set<Aclaraciones.Campo> invalidos,
+                                  java.util.function.Supplier<T> parsear) {
         try {
-            String conductor = grupo(CONDUCTOR, original);
-            Integer pasajeros = pasajeros(text, borrador);
-            if (conductor == null && seguimiento && pasajeros == null) conductor = grupo(RESPUESTA_CONDUCTOR, original);
-            LocalTime hora = hora(sinRuta);
-            LocalDate fecha = fecha(calendario, LocalDate.now(clock.withZone(TiempoConfig.LIMA)));
-            String dia = unico(DIA, calendario);
-            boolean tieneFiltros = origen != null || destino != null || conductor != null
-                    || fecha != null || dia != null || hora != null;
-            if (consulta && tieneFiltros && !referencia) anterior = null;
-            if (DISYUNCION.matcher(text).find()) {
-                return new Solicitud(anterior, "Indica una sola fecha, hora o cantidad de pasajeros para la sugerencia.");
-            }
-            boolean viajePropio = !tieneFiltros && PROPIO.matcher(text).find();
-            var filtros = new ContribucionFiltros(origen, destino, dia, fecha, hora, pasajeros, conductor, viajePropio);
-            filtros = anterior == null ? filtros : combinar(anterior, filtros);
-            String sinFecha = FECHA.matcher(calendario).replaceAll(" ").strip();
-            if (FECHA_INCOMPLETA.matcher(sinFecha).find() || (pasajeros == null && SOLO_DIA.matcher(sinFecha).matches())) {
-                return new Solicitud(filtros, "Indica el día y el mes de la salida para calcular la sugerencia.");
-            }
-            if (fecha == null && DIA_RELATIVO.matcher(calendario).find()) {
-                return new Solicitud(filtros, "Indica la fecha exacta de esa salida para calcular la sugerencia.");
-            }
-            if (HORA_INCOMPLETA.matcher(calendario).find() || FRACCION_HORA_NO_RECONOCIDA.matcher(sinRuta).find()) {
-                return new Solicitud(filtros, "Indica la hora exacta de la salida en formato de 24 horas.");
-            }
-            if (!consulta && !tieneFiltros && pasajeros == null) return null;
-            return new Solicitud(filtros, null);
+            return parsear.get();
         } catch (DateTimeException | NumberFormatException invalido) {
-            return new Solicitud(anterior, "Indica una fecha, una hora o una cantidad de pasajeros válida para la sugerencia.");
+            invalidos.add(campo);
+            return null;
         }
     }
 
@@ -188,7 +259,9 @@ final class ContribucionIntent {
         return resultado;
     }
 
-    private static LocalDate fecha(String text, LocalDate hoy) {
+    static String sinHoras(String texto) { return HORA.matcher(texto).replaceAll(" "); }
+
+    static LocalDate fecha(String text, LocalDate hoy) {
         Matcher fecha = FECHA.matcher(text);
         String relativa = unico(FECHA_RELATIVA, text);
         if (!fecha.find()) {
@@ -210,7 +283,7 @@ final class ContribucionIntent {
         return resultado;
     }
 
-    private static LocalTime hora(String text) {
+    static LocalTime hora(String text) {
         Matcher hora = HORA.matcher(text);
         if (!hora.find()) return null;
         int horas = numero(valor(hora.group(1), hora.group(4)));

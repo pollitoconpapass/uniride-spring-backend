@@ -7,6 +7,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -14,6 +15,15 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class HistorialPdfIntentTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-11-16T03:00:00Z"), ZoneOffset.UTC);
+
+    @Test
+    void pideSoloElLimiteInvalidoYConservaLaFechaValida() {
+        var solicitud = HistorialPdfIntent.classify("Exporta mis viajes entre 2026-02-30 y 2026-04-19", CLOCK);
+        assertThat(solicitud.aclaracionEstructurada().campos()).extracting(com.uniride.agent.dto.CampoAclaracion::id)
+                .containsExactly("desde");
+        var corregida = HistorialPdfIntent.continuarCampos(Map.of("desde", "2026-03-01"), solicitud, CLOCK);
+        assertThat(corregida.filtros()).isEqualTo(new Filtros(LocalDate.of(2026, 3, 1), LocalDate.of(2026, 4, 19), "todos"));
+    }
 
     @ParameterizedTest
     @CsvSource(delimiter = '|', nullValues = "N/A", textBlock = """

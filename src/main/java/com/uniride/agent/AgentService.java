@@ -1,9 +1,11 @@
 package com.uniride.agent;
 
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.AclaracionAgente;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.AdvertenciaAgente;
 import com.uniride.agent.dto.ContribucionResultado;
+import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResolucionConfirmacion.Estado;
 import com.uniride.entities.Usuario;
@@ -14,6 +16,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.ai.chat.client.ChatClient;
@@ -74,46 +77,147 @@ public class AgentService {
         AgentConversationStore.validateMessage(message);
         Usuario usuario = usuarioService.usuarioActual();
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
+            var activa = lease.aclaracion();
+            var campos = EnvioAclaracion.leer(message, activa);
+            String anterior = campos == null ? message : EnvioAclaracion.paraHistorial(activa, campos);
             ChatResponse response;
-            var decision = ConfirmationIntent.classify(message);
+            var decision = campos == null ? ConfirmationIntent.classify(message) : ConfirmationIntent.OTRA;
             var borradorContribucion = lease.contribucion();
-            var contribucion = ContribucionIntent.classify(message, borradorContribucion, clock);
+            var borradorRuta = lease.rutaOViaje();
+            var borradorMetodo = lease.borrador();
+            var ultimoContexto = lease.ultimoContexto();
+            boolean coincideContribucion = esFormulario(activa, "sugerirContribucionViaje");
+            boolean coincideHistorial = esFormulario(activa, "prepararDescargaHistorialPdf");
+            var contribucion = campos == null ? ContribucionIntent.classify(message,
+                    activa == null || coincideContribucion ? borradorContribucion : null, clock)
+                    : coincideContribucion
+                    ? ContribucionIntent.continuarCampos(campos, borradorContribucion, clock) : null;
+            var anteriorPdf = lease.historial();
+            var historialActual = campos == null ? HistorialPdfIntent.classify(message, clock) : null;
+            var historial = campos == null ? historialActual != null ? historialActual
+                    : HistorialPdfIntent.continuar(message, activa == null || coincideHistorial ? anteriorPdf : null, clock)
+                    : coincideHistorial ? HistorialPdfIntent.continuarCampos(campos, anteriorPdf, clock) : null;
+            boolean coincideRuta = borradorRuta != null && esFormulario(activa, borradorRuta.accion().herramienta);
+            var rutaOViaje = campos == null ? IntencionAclarable.inicioLocal(message, ultimoContexto, clock)
+                    : coincideRuta ? borradorRuta.continuar(campos) : null;
+            boolean reanudacionRuta = false;
+            if (rutaOViaje == null && campos == null && decision == ConfirmationIntent.OTRA && coincideRuta
+                    && contribucion == null && historial == null) {
+                rutaOViaje = IntencionAclarable.continuar(message, borradorRuta, activa, ultimoContexto, clock);
+                reanudacionRuta = rutaOViaje != null;
+            }
+            boolean coincideMetodo = activa != null && CompensationIntent.corresponde(activa.operacion(), borradorMetodo);
+            var compensation = campos == null ? CompensationIntent.classify(message,
+                    activa == null || coincideMetodo ? borradorMetodo : null)
+                    : coincideMetodo ? CompensationIntent.continuarCampos(campos, borradorMetodo) : null;
+            if (campos != null && contribucion == null && historial == null && rutaOViaje == null && compensation == null)
+                throw new CamposInvalidosException("Revisa los campos de la aclaración e intenta de nuevo.");
+            boolean reanudacion = campos != null || reanudacionRuta
+                    || coincideHistorial && anteriorPdf != null && historial != null && historialActual == null
+                    || coincideContribucion && contribucion != null && ContribucionIntent.classify(message, null, clock) == null
+                    || coincideMetodo && (compensation.allowedTool() != null || compensation.draft() != null)
+                    && CompensationIntent.classify(message, null).equals(CompensationIntent.classify("", null));
+
+            if (activa != null && campos == null && rutaOViaje == null && contribucion == null && historial == null
+                    && decision != ConfirmationIntent.CANCELAR && lease.confirmacionPendiente() == null
+                    && compensation.allowedTool() == null && compensation.message() == null
+                    && !IntencionAclarable.cambiaDeTema(message) && AgentReportIntent.classify(message).isEmpty()
+                    && !CompensationIntent.isOwnMethodList(message) && !CompensationIntent.isTripRequest(message)) {
+                response = soloMensaje("La aclaración sigue activa. Indica el valor solicitado o usa el formulario.")
+                        .conAclaracion(activa).withConversationId(lease.id());
+                lease.complete(anterior, response);
+                return response;
+            }
+
+            lease.guardarAclaracion(null);
+            lease.guardarRutaOViaje(null);
+            lease.guardarHistorial(null);
             lease.guardarContribucion(null);
-            if (contribucion != null) {
-                if (usuario.getRolPrincipal() != Rol.PASAJERO)
-                    throw new NoPermitidoException("Esta consulta requiere el rol PASAJERO.");
-                lease.descartarReferenciaConfirmacion();
-                lease.guardarBorrador(null);
-                if (contribucion.aclaracion() != null) {
-                    if (contribucion.filtros() != null) {
-                        lease.guardarContribucion(new ContribucionIntent.Borrador(contribucion.filtros(),
-                                ContribucionResultado.Estado.FALTAN_FILTROS));
-                    }
-                    response = soloMensaje(contribucion.aclaracion());
-                } else {
-                    response = execute(usuario, message, lease, CompensationIntent.classify("", null), contribucion, voz);
+            try {
+                response = resolverTurno(usuario, message, anterior, lease, campos, decision, contribucion, historial,
+                        rutaOViaje, compensation, anteriorPdf, voz);
+            } catch (AgentProviderException | CamposInvalidosException | BusinessException | ResourceNotFoundException failure) {
+                // Only a continuation before the persistence boundary can reuse the same form.
+                if (reanudacion) {
+                    lease.guardarAclaracion(activa);
+                    lease.guardarRutaOViaje(borradorRuta);
+                    lease.guardarHistorial(anteriorPdf);
+                    lease.guardarContribucion(borradorContribucion);
+                    lease.guardarBorrador(borradorMetodo);
+                    lease.guardarContexto(ultimoContexto);
                 }
-            } else if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
-                response = resolverConfirmacion(lease, decision == ConfirmationIntent.CONFIRMAR);
-            } else if (decision == ConfirmationIntent.AMBIGUA && lease.confirmacionPendiente() != null) {
-                lease.guardarBorrador(null);
-                lease.descartarReferenciaConfirmacion();
-                response = respuestaConfirmacion(new ResolucionConfirmacion(Estado.ACLARACION_REQUERIDA, null), null);
-            } else {
-                var compensation = CompensationIntent.classify(message, lease.borrador());
-                // A new request may yield a new receipt, but cannot resume an older confirmation reference.
-                lease.descartarReferenciaConfirmacion();
-                lease.guardarBorrador(compensation.draft());
-                boolean aclaracionLocal = compensation.message() != null && (compensation.informational()
-                        || compensation.draft() != null || !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find());
-                response = aclaracionLocal ? soloMensaje(compensation.message())
-                        : execute(usuario, message, lease, compensation, null, voz);
-                lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
+                throw failure;
+            }
+            if (reanudacion && coincideRuta && rutaOViaje != null && response.operacion() != null
+                    && response.operacion().estado() == EstadoOperacion.NO_ENCONTRADO) {
+                lease.guardarRutaOViaje(borradorRuta);
+                response = response.conAclaracion(activa);
+            }
+            AclaracionAgente esquema = response.aclaracion();
+            if (esquema != null) {
+                if (esquema.id() == null) esquema = esquema.conId(UUID.randomUUID());
+                lease.guardarAclaracion(esquema);
+                response = response.conAclaracion(esquema);
             }
             response = response.withConversationId(lease.id());
-            lease.complete(message, response);
+            lease.complete(anterior, response);
             return response;
         }
+    }
+
+    private static boolean esFormulario(AclaracionAgente aclaracion, String operacion) {
+        return aclaracion != null && operacion.equals(aclaracion.operacion());
+    }
+
+    private ChatResponse resolverTurno(Usuario usuario, String message, String anterior, AgentConversationStore.Lease lease,
+                                       Map<String, String> campos, ConfirmationIntent decision,
+                                       ContribucionIntent.Solicitud contribucion, HistorialPdfIntent.Solicitud historial,
+                                       IntencionAclarable.Borrador rutaOViaje, CompensationIntent.Decision compensation,
+                                       HistorialPdfIntent.Solicitud anteriorPdf, boolean voz) {
+        if (contribucion != null) {
+            if (usuario.getRolPrincipal() != Rol.PASAJERO)
+                throw new NoPermitidoException("Esta consulta requiere el rol PASAJERO.");
+            lease.descartarReferenciaConfirmacion();
+            lease.guardarBorrador(null);
+            lease.guardarContexto(null);
+            if (contribucion.aclaracion() == null) {
+                return execute(usuario, anterior, lease, CompensationIntent.classify("", null), contribucion,
+                        null, null, false, voz);
+            }
+            if (contribucion.filtros() != null) {
+                lease.guardarContribucion(new ContribucionIntent.Borrador(contribucion.filtros(),
+                        ContribucionResultado.Estado.FALTAN_FILTROS));
+            }
+            return soloMensaje(contribucion.aclaracion()).conAclaracion(contribucion.aclaracionEstructurada());
+        }
+        if (decision == ConfirmationIntent.CONFIRMAR || decision == ConfirmationIntent.CANCELAR) {
+            return resolverConfirmacion(lease, decision == ConfirmationIntent.CONFIRMAR);
+        }
+        if (decision == ConfirmationIntent.AMBIGUA && lease.confirmacionPendiente() != null) {
+            lease.guardarBorrador(null);
+            lease.descartarReferenciaConfirmacion();
+            return respuestaConfirmacion(new ResolucionConfirmacion(Estado.ACLARACION_REQUERIDA, null), null);
+        }
+
+        // The new request may produce its own receipt.
+        lease.descartarReferenciaConfirmacion();
+        if (rutaOViaje != null && usuario.getRolPrincipal() != rutaOViaje.accion().rol)
+            throw new NoPermitidoException("Esta acción requiere el rol " + rutaOViaje.accion().rol + ".");
+        if (compensation == null || rutaOViaje != null || historial != null && campos != null)
+            compensation = CompensationIntent.classify("", null);
+        if (rutaOViaje == null) lease.guardarContexto(null);
+        lease.guardarBorrador(compensation.draft());
+        boolean aclaracionLocal = compensation.message() != null && (compensation.informational()
+                || compensation.draft() != null || !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find());
+        ChatResponse response = aclaracionLocal ? soloMensaje(compensation.message()).conAclaracion(compensation.aclaracion())
+                : execute(usuario, anterior, lease, compensation, null, historial, rutaOViaje,
+                campos != null || historial != null && anteriorPdf != null
+                        && HistorialPdfIntent.classify(message, clock) == null, voz);
+        lease.guardarBorrador(CompensationIntent.afterResponse(compensation, response.operacion()));
+        if (historial != null && esFormulario(response.aclaracion(), "prepararDescargaHistorialPdf")) {
+            lease.guardarHistorial(historial);
+        }
+        return response;
     }
 
     private ChatResponse resolverConfirmacion(AgentConversationStore.Lease lease, boolean confirmar) {
@@ -180,13 +284,15 @@ public class AgentService {
 
     private ChatResponse execute(Usuario usuario, String message, AgentConversationStore.Lease lease,
                                  CompensationIntent.Decision compensation, ContribucionIntent.Solicitud contribucion,
-                                 boolean voz) {
+                                 HistorialPdfIntent.Solicitud historial, IntencionAclarable.Borrador rutaOViaje,
+                                 boolean continuacion, boolean voz) {
         var history = lease.providerHistory();
         boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
                 && CompensationIntent.isTripRequest(anterior.getText()));
-        var turn = tools.newTurn(contribucion == null ? HistorialPdfIntent.classify(message, clock) : null,
+        var turn = tools.newTurn(historial,
                 compensation, solicitudViaje, contribucion == null ? null : contribucion.filtros());
+        turn.contextoAclaracion(message, usuario.getRolPrincipal(), clock);
         try {
             if (contribucion != null) {
                 turn.recoverContribucion();
@@ -194,6 +300,15 @@ public class AgentService {
             }
             if (compensation.recoveryArgs() != null) {
                 turn.recoverCompensation();
+                return turn.preparacionIncierta() ? preparacionIncierta(turn) : turn.response("");
+            }
+            if (rutaOViaje != null && turn.tieneHerramienta(rutaOViaje.accion().herramienta)) {
+                turn.procesar(rutaOViaje);
+                return turn.preparacionIncierta() ? preparacionIncierta(turn) : turn.response("");
+            }
+            if (historial != null && (continuacion || historial.aclaracionEstructurada() != null
+                    && !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find())) {
+                turn.recoverReports(java.util.Set.of());
                 return turn.response("");
             }
             if (CompensationIntent.isOwnMethodList(message)) {
@@ -205,10 +320,17 @@ public class AgentService {
                 throw new NoPermitidoException("Esta consulta requiere el rol CONDUCTOR.");
             }
             String text = providerAnswer(usuario.getRolPrincipal(), message, history, turn, voz);
+            if (turn.preparacionIncierta()) return preparacionIncierta(turn);
+            if (!turn.hasResults() && reportes.isEmpty() && historial == null
+                    && !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find()) {
+                var borrador = IntencionAclarable.siFaltanDatos(message, usuario.getRolPrincipal(), clock);
+                if (borrador != null && turn.tieneHerramienta(borrador.accion().herramienta)) turn.procesar(borrador);
+            }
             turn.recoverReports(reportes);
             return turn.response(text);
         } catch (RuntimeException failure) {
             // No model retries: an earlier tool may already have completed.
+            if (turn.preparacionIncierta()) return preparacionIncierta(turn);
             for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
                 if (cause instanceof NoPermitidoException denied) throw denied;
                 if (cause instanceof NoAutorizadoException denied) throw denied;
@@ -229,7 +351,16 @@ public class AgentService {
             if (contribucion != null && turn.contribucion() != null) {
                 lease.guardarContribucion(contribucion.siguiente(turn.contribucion()));
             }
+            if (turn.rutaOViaje() != null) {
+                if (turn.propuestaPendiente()) lease.guardarContexto(turn.rutaOViaje().contexto());
+                else if (turn.tieneAclaracion()) lease.guardarRutaOViaje(turn.rutaOViaje());
+            }
         }
+    }
+
+    private ChatResponse preparacionIncierta(AgentToolRegistry.Turn turn) {
+        String mensaje = "No se pudo determinar si la propuesta quedó registrada. Revisa tus confirmaciones antes de solicitarla de nuevo.";
+        return turn.response(mensaje, new AdvertenciaAgente("PREPARATION_RESULT_UNCERTAIN", mensaje)).conAclaracion(null);
     }
 
     private String providerAnswer(Rol role, String message, List<Message> history, AgentToolRegistry.Turn turn, boolean voz) {

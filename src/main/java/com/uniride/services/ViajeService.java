@@ -528,7 +528,7 @@ public class ViajeService {
         }
     }
 
-    private void validarNuevaSalida(ViajeRequest request) {
+    public void validarNuevaSalida(ViajeRequest request) {
         if (request == null || request.fecha() == null || request.hora() == null) {
             throw new CamposInvalidosException("La fecha y la hora son obligatorias");
         }
@@ -537,7 +537,7 @@ public class ViajeService {
             throw new CamposInvalidosException("La fecha y hora del viaje deben ser futuras");
         }
         if (salida.isBefore(LocalDateTime.now(clock).plus(PLAZO_CONFIRMACION))) {
-            throw new BusinessException("La salida debe tener al menos 12 horas de anticipación");
+            throw new com.uniride.exceptions.SalidaConPocaAnticipacionException();
         }
     }
 

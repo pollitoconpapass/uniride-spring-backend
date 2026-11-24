@@ -98,9 +98,13 @@ class MetodoCompensacionAgentToolsTest {
         when(confirmaciones.prepararEliminacionMetodo(TipoCompensacion.GASOLINA, null)).thenReturn(ambiguo);
         when(confirmaciones.prepararEstadoMetodo(null, "Yape", true)).thenReturn(igual);
 
-        assertThat(tools.eliminarMetodoCompensacion(TipoCompensacion.GASOLINA, null)).isSameAs(ambiguo);
+        var aclarado = tools.eliminarMetodoCompensacion(TipoCompensacion.GASOLINA, null);
+        assertThat(aclarado.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(aclarado.detalle()).isEqualTo(ambiguo.detalle());
+        assertThat(aclarado.aclaracion().campos()).extracting(com.uniride.agent.dto.CampoAclaracion::id)
+                .containsExactly("descripcionActual");
         assertThat(tools.cambiarEstadoMetodoCompensacion(null, "Yape", true)).isSameAs(igual);
-        assertThat(ambiguo.confirmacion()).isNull();
+        assertThat(aclarado.confirmacion()).isNull();
         assertThat(igual.confirmacion()).isNull();
     }
 
@@ -129,16 +133,17 @@ class MetodoCompensacionAgentToolsTest {
     }
 
     @Test void faltanIdentificadorCambiosOEstadoExplicito() {
-        var faltante = new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, "Indica el dato que falta.");
-        when(confirmaciones.prepararEliminacionMetodo(null, " ")).thenReturn(faltante);
-        when(confirmaciones.prepararActualizacionMetodo(null, "Yape", null, null)).thenReturn(faltante);
-        when(confirmaciones.prepararEstadoMetodo(null, "Yape", null)).thenReturn(faltante);
-
-        assertThat(tools.eliminarMetodoCompensacion(null, " ")).isSameAs(faltante);
-        assertThat(tools.actualizarMetodoCompensacion(null, "Yape", null, null)).isSameAs(faltante);
-        assertThat(tools.cambiarEstadoMetodoCompensacion(null, "Yape", null)).isSameAs(faltante);
-        assertThat(faltante.confirmacion()).isNull();
-        verifyNoInteractions(consultas);
+        var eliminar = tools.eliminarMetodoCompensacion(null, " ");
+        var editar = tools.actualizarMetodoCompensacion(null, "Yape", null, null);
+        var activar = tools.cambiarEstadoMetodoCompensacion(null, "Yape", null);
+        assertThat(List.of(eliminar, editar, activar)).allSatisfy(faltante -> {
+            assertThat(faltante.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+            assertThat(faltante.confirmacion()).isNull();
+        });
+        assertThat(eliminar.aclaracion().alMenosUno()).containsExactly("tipoActual", "descripcionActual");
+        assertThat(editar.aclaracion().alMenosUno()).containsExactly("nuevoTipo", "nuevaDescripcion");
+        assertThat(activar.aclaracion().campos()).extracting(com.uniride.agent.dto.CampoAclaracion::id).containsExactly("activo");
+        verifyNoInteractions(consultas, confirmaciones);
     }
 
     private static OperacionResumen pendiente(String detalle) {

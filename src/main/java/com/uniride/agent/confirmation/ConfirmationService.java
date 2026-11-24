@@ -146,6 +146,7 @@ public class ConfirmationService {
             throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
         if (viaje.getFecha().equals(fecha) && viaje.getHora().equals(hora))
             return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "El horario no cambió.");
+        viajes.validarNuevaSalida(request);
         return guardar(usuario, TipoOperacion.REPROGRAMAR_VIAJE, viajeId, request, snapshot(viaje),
                 "Reprogramar tu viaje del " + viaje.getDia() + " " + viaje.getFecha() + " a las " + viaje.getHora()
                         + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino()
@@ -449,6 +450,7 @@ public class ConfirmationService {
         pending.setRecursoId(recursoId);
         pending.setCreada(clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
         pending.setExpira(pending.getCreada().plus(TTL));
+        IntentoPreparacion.marcarPersistencia();
         confirmations.save(pending);
         ConfirmacionResumen response = resumen(pending);
         return new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null,

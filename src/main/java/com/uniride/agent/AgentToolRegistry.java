@@ -1,6 +1,7 @@
 package com.uniride.agent;
 
 import com.uniride.agent.confirmation.EstadoConfirmacion;
+import com.uniride.agent.confirmation.IntentoPreparacion;
 import static com.uniride.agent.tools.ContribucionAgentTools.CONTEXTO_FILTROS;
 import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
 import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
@@ -9,6 +10,7 @@ import static com.uniride.agent.tools.ReportesAgentTools.DESCARGA_HISTORIAL_PDF;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import com.uniride.enums.Rol;
+import java.time.Clock;
 import java.util.*;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.support.ToolCallbacks;
@@ -19,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /** Each turn owns its receipts and budget; nothing is shared between users or threads. */
 @Component
@@ -77,9 +80,16 @@ public class AgentToolRegistry {
         private final List<RutaResumen> rutas = new ArrayList<>();
         private final List<MetodoCompensacionResumen> metodos = new ArrayList<>();
         private OperacionResumen operation;
+        private AclaracionAgente camposOperacion;
         private ContribucionResultado contribucion;
         private boolean contribucionInvocada;
         private boolean prepared;
+        private boolean persistenciaIntentada;
+        private String solicitudBloqueada;
+        private String mensajeUsuario;
+        private Rol rolUsuario;
+        private Clock reloj;
+        private IntencionAclarable.Borrador rutaOViaje;
 
         private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
                      boolean solicitudViaje, ContribucionFiltros filtrosContribucion) {
@@ -93,6 +103,33 @@ public class AgentToolRegistry {
             return callbacks(null, false);
         }
 
+        void contextoAclaracion(String mensaje, Rol rol, Clock clock) {
+            this.mensajeUsuario = mensaje;
+            this.rolUsuario = rol;
+            this.reloj = clock;
+        }
+
+        boolean tieneHerramienta(String nombre) {
+            return Arrays.stream(AgentToolRegistry.this.callbacks).anyMatch(c -> c.getToolDefinition().name().equals(nombre));
+        }
+
+        void procesar(IntencionAclarable.Borrador borrador) {
+            rutaOViaje = borrador;
+            String nombre = borrador.accion().herramienta;
+            execute(callback(nombre), mapper.writeValueAsString(borrador.argumentos()), new ToolContext(Map.of()));
+        }
+
+        IntencionAclarable.Borrador rutaOViaje() { return rutaOViaje; }
+
+        boolean propuestaPendiente() {
+            return operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
+                    && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE;
+        }
+
+        boolean tieneAclaracion() { return aclaracion() != null; }
+
+        boolean preparacionIncierta() { return persistenciaIntentada && !propuestaPendiente(); }
+
         ToolCallback[] callbacks(Rol role, boolean terminalResults) {
             return Arrays.stream(AgentToolRegistry.this.callbacks)
                     .filter(delegate -> available(delegate.getToolDefinition().name(), role))
@@ -105,7 +142,7 @@ public class AgentToolRegistry {
                 }
                 public String call(String input) { return call(input, new ToolContext(Map.of())); }
                 public String call(String input, ToolContext context) {
-                    return execute(delegate, input, context);
+                    return execute(delegate, input, context, role != null);
                 }
             }).toArray(ToolCallback[]::new);
         }
@@ -156,7 +193,11 @@ public class AgentToolRegistry {
                     .orElseThrow(() -> invalid("TOOL_UNAVAILABLE", "La herramienta solicitada no está disponible."));
         }
 
-        private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
+        private String execute(ToolCallback delegate, String input, ToolContext context) {
+            return execute(delegate, input, context, false);
+        }
+
+        private synchronized String execute(ToolCallback delegate, String input, ToolContext context, boolean proveedor) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
             boolean prepara = PREPARATIONS.contains(name);
@@ -171,6 +212,17 @@ public class AgentToolRegistry {
             boolean sugiereContribucion = NOMBRE.equals(name);
             boolean noArguments = pdf || sugiereContribucion || AgentReportIntent.isReportTool(name);
             Object arguments = sugiereContribucion ? null : mapper.readValue(input, Object.class);
+            IntencionAclarable.Borrador seleccion = null;
+            if (proveedor && prepara && !preparaCompensacion) {
+                seleccion = IntencionAclarable.desdeTool(name,
+                        arguments instanceof Map<?, ?> parametros ? parametros : Map.of(), mensajeUsuario, rolUsuario, reloj);
+                if (seleccion == null) {
+                    solicitudBloqueada = "Indica explícitamente qué operación deseas solicitar y los datos que correspondan.";
+                    return responderSinEjecutar(name + NO_ARGUMENTS, solicitudBloqueada);
+                }
+                arguments = seleccion.argumentos();
+                input = mapper.writeValueAsString(arguments);
+            }
             // Server-derived tool arguments have one receipt even if the model adds fields.
             String key = name + (noArguments ? NO_ARGUMENTS
                     : mapper.writeValueAsString(canonical(arguments)));
@@ -194,9 +246,21 @@ public class AgentToolRegistry {
                 contribucionInvocada = true;
                 context = new ToolContext(Map.of(CONTEXTO_FILTROS, filtrosContribucion));
             }
-            String output;
+            if (prepara) prepared = true;
+            String output = llamar(delegate, noArguments ? NO_ARGUMENTS : input, context, prepara);
+            if (AgentConversationStore.containsSecrets(output))
+                throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
+            JsonNode data = mapper.readTree(output);
+            capture(name, data);
+            if (seleccion != null) rutaOViaje = seleccion;
+            receipts.put(key, output);
+            return output;
+        }
+
+        private String llamar(ToolCallback delegate, String input, ToolContext context, boolean prepara) {
+            var intento = prepara ? IntentoPreparacion.observar() : null;
             try {
-                output = delegate.call(noArguments ? NO_ARGUMENTS : input, context);
+                return delegate.call(input, context);
             } catch (RuntimeException failure) {
                 // Spring AI's default processor returns ToolExecutionException.message to the model.
                 // Unwrap permitted public errors; never let database/SDK exception details reach it.
@@ -209,14 +273,12 @@ public class AgentToolRegistry {
                     if (cause instanceof AgentProviderException controlled) throw controlled;
                 }
                 throw invalid("TOOL_EXECUTION_FAILED", "No se pudo completar la herramienta. No se repitió ninguna acción.");
+            } finally {
+                if (intento != null) {
+                    persistenciaIntentada = intento.iniciada();
+                    intento.close();
+                }
             }
-            if (AgentConversationStore.containsSecrets(output))
-                throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
-            JsonNode data = mapper.readTree(output);
-            capture(name, data);
-            if (prepara) prepared = true;
-            receipts.put(key, output);
-            return output;
         }
 
         private String responderSinEjecutar(String key, String mensaje) {
@@ -226,10 +288,13 @@ public class AgentToolRegistry {
         }
 
         private void capture(String name, JsonNode data) {
-            results.add(new ResultadoAgente(name, data));
             JsonNode items = data.isArray() ? data : data.path("items");
             switch (name) {
-                case NOMBRE -> contribucion = mapper.treeToValue(data, ContribucionResultado.class);
+                case NOMBRE -> {
+                    var resultado = mapper.treeToValue(data, ContribucionResultado.class);
+                    validarAclaracion(name, resultado.aclaracion());
+                    contribucion = resultado;
+                }
                 case "buscarViajes", "consultarMisViajes", "consultarMisSolicitudes" ->
                     items.forEach(item -> viajes.add(mapper.treeToValue(item, ViajeResumen.class)));
                 case "consultarMisRutas" ->
@@ -237,16 +302,32 @@ public class AgentToolRegistry {
                 case OWN_METHODS ->
                     items.forEach(item -> metodos.add(mapper.treeToValue(item, MetodoCompensacionResumen.class)));
                 default -> {
-                    if (data.has("estado") && data.has("detalle"))
-                        operation = mapper.treeToValue(data, OperacionResumen.class);
+                    if (data.has("estado") && data.has("detalle")) {
+                        var resultado = mapper.treeToValue(data, OperacionResumen.class);
+                        validarAclaracion(name, resultado.aclaracion());
+                        camposOperacion = resultado.aclaracion();
+                        operation = resultado.conAclaracion(null);
+                    }
                 }
+            }
+            if (data instanceof ObjectNode objeto && objeto.has("aclaracion")) {
+                data = objeto.deepCopy();
+                ((ObjectNode) data).remove("aclaracion");
+            }
+            results.add(new ResultadoAgente(name, data));
+        }
+
+        private void validarAclaracion(String herramienta, AclaracionAgente datos) {
+            if (datos != null && (datos.id() != null || !herramienta.equals(datos.operacion()))) {
+                throw invalid("INVALID_TOOL_RESPONSE", "La herramienta devolvió una aclaración inválida.");
             }
         }
 
         public boolean hasResults() { return !results.isEmpty(); }
 
         boolean hasDirectResult() {
-            return operation != null || results.stream().anyMatch(result -> OWN_METHODS.equals(result.tipo()));
+            return operation != null || solicitudBloqueada != null
+                    || results.stream().anyMatch(result -> OWN_METHODS.equals(result.tipo()));
         }
 
         ContribucionResultado contribucion() { return contribucion; }
@@ -257,14 +338,36 @@ public class AgentToolRegistry {
 
         public ChatResponse response(String text, AdvertenciaAgente warning) {
             return new ChatResponse(message(text, warning), List.copyOf(viajes), List.copyOf(rutas),
-                    List.copyOf(metodos), operation, List.copyOf(results), warning);
+                    List.copyOf(metodos), operation, List.copyOf(results), warning).conAclaracion(aclaracion());
+        }
+
+        private AclaracionAgente aclaracion() {
+            if (operation != null && (operation.confirmacion() != null
+                    || operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA)) return null;
+            if (contribucion != null && contribucion.aclaracion() != null) return contribucion.aclaracion();
+            if (operation != null && camposOperacion != null
+                    && (operation.estado() == EstadoOperacion.DATOS_FALTANTES || operation.estado() == EstadoOperacion.AMBIGUO)) {
+                var dato = camposOperacion;
+                if (rutaOViaje != null && rutaOViaje.accion().herramienta.equals(dato.operacion())) {
+                    var esquema = operation.estado() == EstadoOperacion.DATOS_FALTANTES ? rutaOViaje.completar(dato) : dato;
+                    if (esquema.campos().size() == 1) {
+                        var tipo = esquema.campos().getFirst().tipo();
+                        if (tipo == TipoCampoAclaracion.TEXT || tipo == TipoCampoAclaracion.TEXTAREA)
+                            return esquema.conRespuestaBreve("valor");
+                    }
+                    return esquema;
+                }
+                if (dato.operacion().equals(compensation.allowedTool()) && compensation.recoveryArgs() != null) return dato;
+            }
+            return historialPdf == null ? null : historialPdf.aclaracionEstructurada();
         }
 
         private String message(String text, AdvertenciaAgente warning) {
             if (contribucion != null) return contribucion.mensaje();
             // The operation receipt or controlled warning takes precedence over model text.
             String primary = operation != null ? operation.detalle()
-                    : warning != null && !text.isBlank() ? text : compensation.message();
+                    : warning != null && !text.isBlank() ? text
+                    : compensation.message() != null ? compensation.message() : solicitudBloqueada;
             if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
                     && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
                 primary += " Puedes confirmar desde la aplicación o escribir «sí» o «confirmo» en este chat. "

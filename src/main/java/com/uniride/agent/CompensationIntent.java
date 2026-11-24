@@ -1,8 +1,20 @@
 package com.uniride.agent;
 
+import static com.uniride.agent.Aclaraciones.Campo.COMPENSACION;
+import static com.uniride.agent.Aclaraciones.Campo.DESCRIPCION;
+import static com.uniride.agent.Aclaraciones.Campo.DESCRIPCION_ACTUAL;
+import static com.uniride.agent.Aclaraciones.Campo.ESTADO;
+import static com.uniride.agent.Aclaraciones.Campo.NUEVA_DESCRIPCION;
+import static com.uniride.agent.Aclaraciones.Campo.NUEVO_TIPO;
+import static com.uniride.agent.Aclaraciones.Campo.TIPO_ACTUAL;
+
+import com.uniride.agent.dto.AclaracionAgente;
+import com.uniride.agent.dto.CampoAclaracion;
 import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.enums.TipoCompensacion;
+import java.text.Normalizer;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -36,6 +48,8 @@ final class CompensationIntent {
     private static final Pattern TYPE_AND_REST = pattern("^(?:(?:de tipo|tipo|de) )?(" + TYPE + ")(?:(?:, *| +)(.+))?$");
     private static final Pattern CHANGE_STATE = pattern("^" + REQUEST
             + "(activa(?:r)?|desactiva(?:r)?)(?: nuevamente| de nuevo| otra vez)?(?: (.+))?$");
+    private static final Pattern CHOOSE_STATE = pattern("^" + REQUEST
+            + "(?:cambia(?:r)?|modifica(?:r)?|actualiza(?:r)?) (?:el )?estado (?:de )?(.+)$");
     private static final Pattern REGISTER_REQUEST = pattern("^" + REQUEST
             + "(?:reg[ií]stra(?:r|me)?|agrega(?:r|me)?|a[nñ]ade(?:r)?)(?: (.+))?$");
     private static final Pattern ADD_PREFERENCE = pattern("^prefiero (?:compensar con )?(" + TYPE
@@ -73,6 +87,7 @@ final class CompensationIntent {
     private static final Pattern TERMINAL_PUNCTUATION = Pattern.compile("^[¿¡]+|[.!?]+$");
     private static final Pattern WHITESPACE = Pattern.compile("[^\\S\\r\\n]+");
     private static final Pattern METHOD_WORD = pattern("\\bm[eé]todos?\\b");
+    private static final Pattern REPLY_FIELD = pattern("^([\\p{L} ]{2,40}):\\s*(.+)$");
     private static final Pattern OWN_METHOD_LIST = pattern("^(?:por favor,? )?"
             + "(?:(?:mu[eé]strame|ens[eé][ñn]ame|lista(?:me)?|consulta(?:me)?|dame|"
             + "cu[aá]les son|(?:quiero|quisiera) (?:ver|consultar)|puedes (?:mostrarme|listar|consultar)) )?"
@@ -80,7 +95,7 @@ final class CompensationIntent {
 
     private CompensationIntent() { }
 
-    sealed interface Draft permits Registro, Edicion, Eliminacion {
+    sealed interface Draft permits Registro, Edicion, Eliminacion, CambioEstado {
         void validateNoSecrets();
     }
 
@@ -119,8 +134,50 @@ final class CompensationIntent {
         }
     }
 
+    private record CambioEstado(Selector selector, Boolean activo) implements Draft {
+        @Override public void validateNoSecrets() {
+            if (selector != null) AgentConversationStore.validateNoSecrets(selector.descripcion());
+        }
+    }
+
     record Decision(String allowedTool, Map<String, Object> recoveryArgs, String message,
-                    Draft draft, boolean blockPreparations, boolean informational) { }
+                    Draft draft, boolean blockPreparations, boolean informational) {
+        AclaracionAgente aclaracion() {
+            return switch (draft) {
+                case Registro(var tipo, var descripcion) -> individual(REGISTER,
+                        tipo == null ? COMPENSACION.obligatorio() : null,
+                        descripcion == null ? DESCRIPCION.obligatorio() : null);
+                case Edicion(var selector, var campo, var cambio) -> {
+                    if (selector == null || cambio != null) yield selectorForm(EDIT, selector);
+                    yield switch (campo) {
+                        case TIPO -> individual(EDIT, NUEVO_TIPO.obligatorio());
+                        case DESCRIPCION -> individual(EDIT, NUEVA_DESCRIPCION.obligatorio());
+                        case SIN_INDICAR -> Aclaraciones.alternativa(EDIT, NUEVO_TIPO, NUEVA_DESCRIPCION);
+                    };
+                }
+                case Eliminacion(var selector) -> selectorForm(DELETE, selector);
+                case CambioEstado(var selector, var activo) -> {
+                    if (activo == null && selector != null) yield individual(STATE, ESTADO.obligatorio());
+                    if (activo == null) yield Aclaraciones.crear(STATE, ESTADO.obligatorio(),
+                            TIPO_ACTUAL.opcional("Completa el tipo o la descripción del método actual."),
+                            DESCRIPCION_ACTUAL.opcional("Completa la descripción o el tipo del método actual."));
+                    yield selectorForm(STATE, selector);
+                }
+                case null -> null;
+            };
+        }
+    }
+
+    private static AclaracionAgente individual(String operacion, CampoAclaracion... campos) {
+        var presentes = java.util.Arrays.stream(campos).filter(java.util.Objects::nonNull).toArray(CampoAclaracion[]::new);
+        var esquema = Aclaraciones.crear(operacion, presentes);
+        return presentes.length == 1 ? esquema.conRespuestaBreve("valor") : esquema;
+    }
+
+    private static AclaracionAgente selectorForm(String operacion, Selector selector) {
+        if (selector != null && selector.tipo() != null) return individual(operacion, DESCRIPCION_ACTUAL.obligatorio());
+        return Aclaraciones.alternativa(operacion, TIPO_ACTUAL, DESCRIPCION_ACTUAL);
+    }
 
     static Decision classify(String message, Draft draft) {
         String text = clean(message);
@@ -142,7 +199,20 @@ final class CompensationIntent {
         }
         var state = CHANGE_STATE.matcher(text);
         if (state.matches()) {
+            if (state.group(2) == null && draft instanceof CambioEstado pendiente && pendiente.activo() == null) {
+                boolean activo = state.group(1).toLowerCase(Locale.ROOT).startsWith("activa");
+                return pendiente.selector() == null ? stateQuestion(new CambioEstado(null, activo))
+                        : stateOperation(pendiente.selector(), activo);
+            }
             return changeState(state.group(1), state.group(2));
+        }
+        var chooseState = CHOOSE_STATE.matcher(text);
+        if (chooseState.matches()) {
+            String method = ownedSelector(chooseState.group(1));
+            if (method != null) {
+                var target = selector(method);
+                return target != null || method.isBlank() ? stateQuestion(new CambioEstado(target, null)) : blocked(SELECTOR, null);
+            }
         }
         var register = REGISTER_REQUEST.matcher(text);
         if (register.matches()) {
@@ -167,6 +237,7 @@ final class CompensationIntent {
             case EDIT -> new Edicion(selector, Campo.SIN_INDICAR,
                     new Cambio((TipoCompensacion) args.get("nuevoTipo"), (String) args.get("nuevaDescripcion")));
             case DELETE -> new Eliminacion(selector);
+            case STATE -> new CambioEstado(selector, (Boolean) args.get("activo"));
             default -> decision.draft();
         };
     }
@@ -180,6 +251,7 @@ final class CompensationIntent {
     }
 
     private static Decision changeState(String verb, String subject) {
+        boolean active = verb.toLowerCase(Locale.ROOT).startsWith("activa");
         String method = ownedSelector(subject);
         if (method == null) {
             if (subject == null) return blocked(SELECTOR, null);
@@ -188,12 +260,22 @@ final class CompensationIntent {
             method = type;
         }
         var selector = selector(method);
-        if (selector == null) return blocked(SELECTOR, null);
-        boolean active = verb.toLowerCase(Locale.ROOT).startsWith("activa");
+        if (selector == null) return method.isBlank() ? stateQuestion(new CambioEstado(null, active)) : blocked(SELECTOR, null);
+        return stateOperation(selector, active);
+    }
+
+    private static Decision stateOperation(Selector selector, boolean active) {
         Map<String, Object> arguments = new HashMap<>();
         selector.addTo(arguments);
         arguments.put("activo", active);
         return ready(STATE, arguments);
+    }
+
+    private static Decision stateQuestion(CambioEstado draft) {
+        String mensaje = draft.activo() != null ? SELECTOR : draft.selector() == null
+                ? "Indica el tipo o la descripción del método y elige si quieres activarlo o desactivarlo."
+                : "¿Quieres activar o desactivar el método de compensación?";
+        return blocked(mensaje, draft);
     }
 
     private static Decision registerMethod(String subject) {
@@ -206,6 +288,23 @@ final class CompensationIntent {
     }
 
     private static Decision continueDraft(String original, String text, Draft draft) {
+        var field = REPLY_FIELD.matcher(text);
+        if (field.matches()) {
+            String id = switch (normalizar(field.group(1))) {
+                case "tipo de compensacion", "compensacion", "tipo" -> "compensacion";
+                case "descripcion" -> "descripcion";
+                case "tipo actual" -> "tipoActual";
+                case "descripcion actual" -> "descripcionActual";
+                case "nuevo tipo" -> "nuevoTipo";
+                case "nueva descripcion" -> "nuevaDescripcion";
+                case "estado", "accion", "estado deseado" -> "activo";
+                default -> null;
+            };
+            if (id != null) {
+                var decision = continuarCampos(Map.of(id, field.group(2)), draft);
+                if (decision != null) return decision;
+            }
+        }
         if (original.contains("?") || original.contains("¿") || NEW_TOPIC.matcher(text).find() || GREETING.matcher(text).matches()
                 || ACTION_WORD.matcher(text).find() || OTHER_RESOURCE.matcher(text).find()
                 || isTripRequest(text) || !AgentReportIntent.classify(text).isEmpty()) return OTHER;
@@ -216,7 +315,96 @@ final class CompensationIntent {
                 var selection = refineSelector(deletion.selector(), text);
                 yield selection == null ? OTHER : methodOperation(DELETE, selection, null);
             }
+            case CambioEstado state -> {
+                if (state.activo() == null) {
+                    var active = estadoFormulario(text);
+                    if (active != null) yield state.selector() == null
+                            ? stateQuestion(new CambioEstado(null, active)) : stateOperation(state.selector(), active);
+                }
+                var selection = refineSelector(state.selector(), text);
+                yield selection == null ? OTHER : state.activo() == null
+                        ? stateQuestion(new CambioEstado(selection, null)) : stateOperation(selection, state.activo());
+            }
         };
+    }
+
+    static Decision continuarCampos(Map<String, String> campos, Draft draft) {
+        if (draft == null || campos.isEmpty()) return null;
+        var descriptor = blocked(null, draft).aclaracion();
+        if (descriptor == null || campos.keySet().stream().anyMatch(id -> descriptor.campos().stream()
+                .noneMatch(campo -> campo.id().equals(id)))) return null;
+
+        var tipoActual = tipoFormulario(campos.get("tipoActual"));
+        var descripcionActual = descripcionFormulario(campos.get("descripcionActual"));
+        if (descripcionActual != null && descripcionActual.matches("\\d+")) descripcionActual = null;
+        var selector = tipoActual == null && descripcionActual == null ? null : new Selector(tipoActual, descripcionActual);
+        return switch (draft) {
+            case Registro(var tipo, var descripcion) -> registration(
+                    valor(tipo, tipoFormulario(campos.get("compensacion"))),
+                    valor(descripcion, descripcionFormulario(campos.get("descripcion"))));
+            case Edicion(var anterior, var campo, var cambio) -> {
+                Selector target = combinarSelector(anterior, selector);
+                if (cambio == null) {
+                    TipoCompensacion nuevoTipo = tipoFormulario(campos.get("nuevoTipo"));
+                    String nuevaDescripcion = descripcionFormulario(campos.get("nuevaDescripcion"));
+                    if (nuevoTipo != null || nuevaDescripcion != null) cambio = new Cambio(nuevoTipo, nuevaDescripcion);
+                }
+                yield target == null || cambio == null ? editQuestion(new Edicion(target, campo, cambio))
+                        : methodOperation(EDIT, target, cambio);
+            }
+            case Eliminacion(var anterior) -> {
+                Selector target = combinarSelector(anterior, selector);
+                yield target == null || selector == null ? blocked(SELECTOR, draft) : methodOperation(DELETE, target, null);
+            }
+            case CambioEstado(var anterior, var activo) -> {
+                Selector target = combinarSelector(anterior, selector);
+                var nuevoEstado = valor(activo, estadoFormulario(campos.get("activo")));
+                yield target == null || nuevoEstado == null || (selector == null && activo != null)
+                        ? stateQuestion(new CambioEstado(target, nuevoEstado)) : stateOperation(target, nuevoEstado);
+            }
+        };
+    }
+
+    static boolean corresponde(String operacion, Draft draft) {
+        var esquema = draft == null ? null : blocked(null, draft).aclaracion();
+        return esquema != null && esquema.operacion().equals(operacion);
+    }
+
+    private static Selector combinarSelector(Selector anterior, Selector nuevo) {
+        if (anterior == null) return nuevo;
+        if (nuevo == null) return anterior;
+        if (nuevo.tipo() != null && anterior.tipo() != null && nuevo.tipo() != anterior.tipo()) return null;
+        if (nuevo.descripcion() != null && anterior.descripcion() != null
+                && !normalizar(nuevo.descripcion()).contains(normalizar(anterior.descripcion()))) return null;
+        return new Selector(valor(nuevo.tipo(), anterior.tipo()), valor(nuevo.descripcion(), anterior.descripcion()));
+    }
+
+    private static <T> T valor(T primero, T segundo) { return primero == null ? segundo : primero; }
+
+    private static TipoCompensacion tipoFormulario(String valor) {
+        if (valor == null) return null;
+        var tipo = TYPE_AND_REST.matcher(valor.strip());
+        return tipo.matches() && tipo.group(2) == null ? readType(tipo.group(1)) : null;
+    }
+
+    private static Boolean estadoFormulario(String valor) {
+        if (valor == null) return null;
+        return switch (normalizar(valor)) {
+            case "activar" -> true;
+            case "desactivar" -> false;
+            default -> null;
+        };
+    }
+
+    private static String descripcionFormulario(String valor) {
+        if (valor == null || valor.isBlank() || valor.length() > 255 || valor.chars().anyMatch(Character::isISOControl)
+                || AgentConversationStore.containsSecrets(valor)) return null;
+        return valor.strip();
+    }
+
+    private static String normalizar(String valor) {
+        return Normalizer.normalize(valor, Normalizer.Form.NFD).replaceAll("\\p{M}+", "")
+                .toLowerCase(Locale.ROOT).strip();
     }
 
     private static Decision continueRegistration(String text, Registro draft) {
@@ -231,7 +419,9 @@ final class CompensationIntent {
     }
 
     private static Decision registration(TipoCompensacion type, String description) {
-        if (type == null) return blocked(TYPE_QUESTION, new Registro(null, description));
+        if (type == null) return blocked(description == null
+                ? "Indica el tipo de compensación y una descripción para el nuevo método."
+                : TYPE_QUESTION, new Registro(null, description));
         if (description == null) {
             return blocked("¿Qué descripción quieres asignar a tu nuevo método " + type + "?", new Registro(type, null));
         }

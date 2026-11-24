@@ -61,7 +61,31 @@ class RutaAgentToolsTest {
     @Test
     void datosFaltantesNuncaPreparanConfirmacion() {
         when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
-        assertThat(tools.crearRuta("Surco", null, null, null, null).estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var todos = tools.crearRuta(null, null, null, null, null);
+        var conOrigen = tools.crearRuta("Surco", null, null, null, null);
+        var conOrigenYReferencias = tools.crearRuta("Surco", null, "Parque", null, null);
+
+        assertThat(todos.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(todos.aclaracion().campos()).extracting(CampoAclaracion::id)
+                .containsExactly("origen", "referencias", "capacidad");
+        assertThat(conOrigen.aclaracion().campos()).extracting(CampoAclaracion::id)
+                .containsExactly("referencias", "capacidad");
+        assertThat(conOrigen.detalle()).doesNotContain("origen");
+        assertThat(conOrigenYReferencias.aclaracion().campos()).extracting(CampoAclaracion::id)
+                .containsExactly("capacidad");
+        verifyNoInteractions(confirmaciones, consultas);
+    }
+
+    @Test
+    void capacidadInvalidaEsElUnicoCampoSolicitado() {
+        when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
+
+        var campo = tools.crearRuta("Surco", 0, "Parque", null, null).aclaracion().campos().getFirst();
+
+        assertThat(campo.id()).isEqualTo("capacidad");
+        assertThat(campo.minimo()).isEqualTo(1);
+        assertThat(campo.obligatorio()).isTrue();
+        assertThat(campo.inicial()).isNull();
         verifyNoInteractions(confirmaciones, consultas);
     }
 
@@ -85,8 +109,12 @@ class RutaAgentToolsTest {
     @Test
     void editarRutaExigeIndicarElCambio() {
         when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
-        assertThat(tools.editarRuta("Surco", null, null, null, null, null, null).estado())
-                .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var resultado = tools.editarRuta("Surco", null, null, null, null, null, null);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(resultado.aclaracion().alMenosUno()).containsExactly("nuevoOrigen", "capacidad", "referencias",
+                "zonasSinParada", "notaContribucion");
+        assertThat(resultado.aclaracion().campos()).noneMatch(CampoAclaracion::obligatorio);
         verifyNoInteractions(consultas, confirmaciones);
     }
 
@@ -95,8 +123,46 @@ class RutaAgentToolsTest {
         when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
         when(consultas.identificarRutas("Surco", null)).thenReturn(
                 new PageImpl<>(List.of(rutaRespuesta(1L), rutaRespuesta(2L)), PageRequest.of(0, 2), 2));
-        assertThat(tools.editarRuta("Surco", null, 3, null, null, null, null).estado())
-                .isEqualTo(EstadoOperacion.AMBIGUO);
+        var resultado = tools.editarRuta("Surco", null, 3, null, null, null, null);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(resultado.aclaracion()).isNull();
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
+    void eliminarRutaAceptaOrigenODestinoYExponeOpcionesAutorizadas() {
+        when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
+        when(consultas.identificarRutas(null, "UPC")).thenReturn(new PageImpl<>(List.of(
+                rutaRespuesta(9L, "Surco"), rutaRespuesta(11L, "Miraflores"))));
+
+        var selector = tools.eliminarRuta(null, null).aclaracion();
+        assertThat(selector.alMenosUno()).containsExactly("origenActual", "destinoActual");
+        assertThat(selector.campos()).noneMatch(CampoAclaracion::obligatorio);
+
+        var ambiguo = tools.eliminarRuta(null, "UPC");
+        assertThat(ambiguo.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(ambiguo.aclaracion().campos()).singleElement().satisfies(campo -> {
+            assertThat(campo.id()).isEqualTo("origenActual");
+            assertThat(campo.tipo()).isEqualTo(TipoCampoAclaracion.SELECT);
+            assertThat(campo.opciones()).extracting(OpcionAclaracion::valor).containsExactly("Surco", "Miraflores");
+        });
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
+    void coincidenciasParcialesNoSePresentanComoOpcionesUnivocas() {
+        when(usuarioService.usuarioActual()).thenReturn(Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build());
+        when(consultas.identificarRutas("Surco", null)).thenReturn(new PageImpl<>(List.of(
+                rutaRespuesta(9L, "Surco"), rutaRespuesta(11L, "Surco Norte"))));
+
+        var resultado = tools.eliminarRuta("Surco", null);
+
+        assertThat(resultado.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
+            assertThat(campo.tipo()).isEqualTo(TipoCampoAclaracion.TEXT);
+            assertThat(campo.opciones()).isNull();
+        });
         verifyNoInteractions(confirmaciones);
     }
 
@@ -125,7 +191,11 @@ class RutaAgentToolsTest {
     }
 
     private RutaRespuesta rutaRespuesta(Long id) {
-        return new RutaRespuesta(id, "Surco", "UPC", "Parque", null, null, 4,
+        return rutaRespuesta(id, "Surco");
+    }
+
+    private RutaRespuesta rutaRespuesta(Long id, String origen) {
+        return new RutaRespuesta(id, origen, "UPC", "Parque", null, null, 4,
                 EstadoRuta.ACTIVA, java.time.LocalDateTime.now(), 2L, "Ana");
     }
 }

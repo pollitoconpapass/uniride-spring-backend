@@ -2,6 +2,7 @@ package com.uniride.agent;
 
 import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.dto.ChatResponse;
+import com.uniride.agent.dto.AclaracionAgente;
 import com.uniride.agent.dto.ConfirmacionResumen;
 import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.enums.Rol;
@@ -106,6 +107,10 @@ public class AgentConversationStore {
         private int turns;
         private CompensationIntent.Draft borrador;
         private ContribucionIntent.Borrador contribucion;
+        private AclaracionAgente aclaracion;
+        private IntencionAclarable.Borrador rutaOViaje;
+        private IntencionAclarable.Contexto ultimoContexto;
+        private HistorialPdfIntent.Solicitud historial;
         private UUID confirmacionPendiente;
         private ConfirmacionResumen confirmacionResuelta;
         private Session(Long userId, Rol role, Instant now) {
@@ -136,6 +141,15 @@ public class AgentConversationStore {
         ContribucionIntent.Borrador contribucion() { return session.contribucion; }
 
         void guardarContribucion(ContribucionIntent.Borrador borrador) { session.contribucion = borrador; }
+
+        AclaracionAgente aclaracion() { return session.aclaracion; }
+        void guardarAclaracion(AclaracionAgente aclaracion) { session.aclaracion = aclaracion; }
+        IntencionAclarable.Borrador rutaOViaje() { return session.rutaOViaje; }
+        void guardarRutaOViaje(IntencionAclarable.Borrador borrador) { session.rutaOViaje = borrador; }
+        IntencionAclarable.Contexto ultimoContexto() { return session.ultimoContexto; }
+        void guardarContexto(IntencionAclarable.Contexto contexto) { session.ultimoContexto = contexto; }
+        HistorialPdfIntent.Solicitud historial() { return session.historial; }
+        void guardarHistorial(HistorialPdfIntent.Solicitud historial) { session.historial = historial; }
 
         UUID confirmacionPendiente() { return session.confirmacionPendiente; }
         ConfirmacionResumen confirmacionResuelta() { return session.confirmacionResuelta; }

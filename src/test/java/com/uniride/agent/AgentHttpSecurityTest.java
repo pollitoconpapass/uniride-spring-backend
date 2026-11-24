@@ -1,6 +1,8 @@
 package com.uniride.agent;
 
 import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -20,7 +22,9 @@ import com.uniride.agent.confirmation.*;
 import com.uniride.agent.tools.ContribucionAgentTools;
 import com.uniride.agent.tools.MetodoCompensacionAgentTools;
 import com.uniride.agent.tools.ReportesAgentTools;
+import com.uniride.agent.tools.RutaAgentTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
+import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.entities.Ruta;
 import com.uniride.entities.Usuario;
@@ -37,6 +41,7 @@ import com.uniride.mappers.UsuarioMapper;
 import com.uniride.mappers.BusquedaMapper;
 import com.uniride.mappers.RutaMapper;
 import com.uniride.repositories.MetodoCompensacionRepository;
+import com.uniride.repositories.PerfilRepository;
 import com.uniride.repositories.RutaRepository;
 import com.uniride.repositories.SolicitudRepository;
 import com.uniride.repositories.UsuarioRepository;
@@ -46,13 +51,19 @@ import com.uniride.services.EstadisticasService;
 import com.uniride.services.ContribucionService;
 import com.uniride.services.MensajeService;
 import com.uniride.services.PerfilRolService;
+import com.uniride.services.MetodoCompensacionService;
+import com.uniride.services.RutaService;
 import com.uniride.services.SolicitudService;
 import com.uniride.services.UsuarioService;
+import com.uniride.services.ViajeService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
+import jakarta.persistence.EntityManager;
+import jakarta.validation.Validator;
 import java.time.*;
 import java.util.*;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -61,6 +72,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -69,10 +81,13 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.test.context.web.WebAppConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 /** Real security chain and JWT parser; all business and model interactions are simulated. */
 @SpringJUnitConfig(AgentHttpSecurityTest.Configuration.class)
@@ -140,8 +155,285 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.viajes").isArray())
                 .andExpect(jsonPath("$.rutas").isArray())
                 .andExpect(jsonPath("$.metodosCompensacion").isArray())
-                .andExpect(jsonPath("$.operacion").isEmpty());
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist());
         verify(agent).chat("Mis rutas", (UUID) null);
+    }
+
+    @Test
+    void routeFormSurvivesTextToVoiceAndTextSubmissionOnlyPrepares() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta con origen Surco", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.version").value(1))
+                .andExpect(jsonPath("$.aclaracion.contexto").isString())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("crearRuta"))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", org.hamcrest.Matchers.containsInAnyOrder("referencias", "capacidad")))
+                .andExpect(jsonPath("$.operacion.confirmacion").isEmpty()));
+        String conversationId = first.path("conversationId").asText();
+        String firstForm = first.path("aclaracion").path("id").asText();
+        UUID.fromString(firstForm);
+        verifyNoInteractions(confirmations);
+
+        when(transcripcion.transcribir(any())).thenReturn("Puntos de referencia: Parque central");
+        JsonNode voiced = json(mvc.perform(multipart("/agent/voz").file(audio())
+                        .param("conversationId", conversationId).header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("Puntos de referencia: Parque central"))
+                .andExpect(jsonPath("$.textoHablado").isNotEmpty())
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversationId))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].id").value("capacidad"))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].tipo").value("number"))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos[0].minimo").value(1))
+                .andExpect(jsonPath("$.respuesta.aclaracion.campos.length()").value(1)));
+        String form = voiced.path("respuesta").path("aclaracion").path("id").asText();
+        sendChat("Datos de aclaración " + firstForm + ": {\"capacidad\":3}", conversationId, bearer())
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        sendChat("Datos de aclaración " + form + ": {\"capacidad\":3,\"usuarioId\":99}", conversationId, bearer())
+                .andExpect(status().isBadRequest());
+        sendChat("Datos de aclaración " + form + ": {\"capacidad\":3,\"capacidad\":4}", conversationId, bearer())
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(confirmations);
+
+        UUID proposalId = UUID.randomUUID();
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        when(confirmations.prepararRuta(request)).thenReturn(new OperacionResumen(
+                EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Revisa la ruta", confirmation(proposalId, EstadoConfirmacion.PENDIENTE)));
+        String submission = "Datos de aclaración " + form + ": {\"capacidad\":3}";
+        sendChat(submission, conversationId, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.operacion.estado").value("CONFIRMACION_REQUERIDA"))
+                .andExpect(jsonPath("$.operacion.confirmacion.id").value(proposalId.toString()))
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist());
+        sendChat(submission, conversationId, bearer()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verify(confirmations).prepararRuta(request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void routeFormCanBeCompletedWithAnUnlabeledVoiceTranscript() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta desde Surco con capacidad 3", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("referencias"))));
+        String conversation = first.path("conversationId").asText();
+        verifyNoInteractions(confirmations);
+
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        UUID proposal = UUID.randomUUID();
+        when(confirmations.prepararRuta(request)).thenReturn(pending(proposal, TipoOperacion.CREAR_RUTA));
+        when(transcripcion.transcribir(any())).thenReturn("Parque central");
+
+        mvc.perform(multipart("/agent/voz").file(audio()).param("conversationId", conversation)
+                        .header("Authorization", bearer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transcripcion").value("Parque central"))
+                .andExpect(jsonPath("$.respuesta.conversationId").value(conversation))
+                .andExpect(jsonPath("$.respuesta.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.respuesta.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.respuesta.operacion.confirmacion.id").value(proposal.toString()))
+                .andExpect(jsonPath("$.respuesta.operacion.confirmacion.estado").value("PENDIENTE"));
+        submitForm(first, Map.of("referencias", "Parque central")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verify(confirmations).prepararRuta(request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "Crea una ruta con referencias Parque central y capacidad 3,origen,Surco",
+            "Crea una ruta desde Surco con capacidad 3,referencias,Parque central"
+    })
+    void routeFormAcceptsIsolatedTextForItsOnlyRemainingTextField(String requestText, String field, String reply)
+            throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat(requestText, null, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains(field))));
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        when(confirmations.prepararRuta(request)).thenReturn(pending(id, TipoOperacion.CREAR_RUTA));
+
+        expectPending(sendChat(reply, first.path("conversationId").asText(), bearer()), id, TipoOperacion.CREAR_RUTA);
+        verify(confirmations).prepararRuta(request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void multipleLabeledFieldsInTextKeepTheOnlyUnansweredFieldActive() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta", null, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos.length()").value(3)));
+        JsonNode partial = json(sendChat("Origen: Surco; Referencias: Parque central",
+                        first.path("conversationId").asText(), bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("capacidad"))));
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        when(confirmations.prepararRuta(request)).thenReturn(pending(id, TipoOperacion.CREAR_RUTA));
+
+        expectPending(submitForm(partial, Map.of("capacidad", 3)), id, TipoOperacion.CREAR_RUTA);
+        verify(confirmations).prepararRuta(request);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"sí", "no"})
+    void confirmationWordsDoNotFillAMissingTextFieldOrPrepareAProposal(String reply) throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta desde Surco con capacidad 3", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("referencias"))));
+
+        sendChat(reply, first.path("conversationId").asText(), bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.operacion.confirmacion").doesNotExist());
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    @Test
+    void anInformationalTopicExpiresTheRouteFormWithoutPreparingAnything() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta desde Surco con capacidad 3", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("referencias"))));
+
+        sendChat("¿Qué tipos de compensación existen?", first.path("conversationId").asText(), bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsString("GASOLINA")))
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.operacion").isEmpty());
+        submitForm(first, Map.of("referencias", "Parque central")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    @Test
+    void formSurvivesFailureBeforePersistenceButExpiresWhenThePreparationOutcomeIsUncertain() throws Exception {
+        var pendingStore = mock(ConfirmationRepository.class);
+        var routes = mock(RutaService.class);
+        var validator = mock(Validator.class);
+        var request = new RutaRequest("Surco", 3, "Parque central", null, null);
+        when(validator.validate(request)).thenReturn(Set.of());
+        when(routes.validarPublicacion(request))
+                .thenThrow(new DataAccessResourceFailureException("read unavailable"))
+                .thenReturn("UPC");
+        when(pendingStore.save(any(PendingConfirmation.class)))
+                .thenThrow(new TransactionSystemException("save outcome unknown"));
+        ChatClient chatClient = localAgent(users -> {
+            var confirmationService = new ConfirmationService(pendingStore, users, routes, mock(ViajeService.class),
+                    mock(SolicitudService.class), mock(MetodoCompensacionService.class), mock(RutaRepository.class),
+                    mock(ViajeRepository.class), mock(PerfilRepository.class), mock(EntityManager.class),
+                    new ObjectMapper(), validator, Clock.fixed(NOW, ZoneId.of("America/Lima")));
+            return new RutaAgentTools(mock(AgentQueryService.class), confirmationService, users);
+        });
+        JsonNode first = json(sendChat("Crea una ruta desde Surco con capacidad 3", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("referencias"))));
+        var fields = Map.of("referencias", "Parque central");
+
+        submitForm(first, fields).andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.campos.codigo").value("TOOL_EXECUTION_FAILED"));
+        verifyNoInteractions(pendingStore);
+
+        submitForm(first, fields).andExpect(status().isOk())
+                .andExpect(jsonPath("$.advertencia.codigo").value("PREPARATION_RESULT_UNCERTAIN"))
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist());
+        submitForm(first, fields).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verify(pendingStore).save(any(PendingConfirmation.class));
+        verify(routes, times(2)).validarPublicacion(request);
+        verifyNoMoreInteractions(routes);
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    @Test
+    void staleFormCannotCrossUsersConversationsOrRoles() throws Exception {
+        ChatClient chatClient = routeAgent();
+        JsonNode first = json(sendChat("Crea una ruta más", null, bearer()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos.length()").value(3)));
+        String conversationId = first.path("conversationId").asText();
+        String form = first.path("aclaracion").path("id").asText();
+        String submission = "Datos de aclaración " + form + ": {\"origen\":\"Surco\",\"referencias\":\"Parque\",\"capacidad\":3}";
+
+        when(usuarios.findByCorreoInstitucional("luis@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(8L).correoInstitucional("luis@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.CONDUCTOR).cuentaVerificada(true).build()));
+        sendChat(submission, conversationId, "Bearer " + jwt.generarToken("luis@upc.edu.pe"))
+                .andExpect(status().isNotFound());
+        sendChat(submission, null, bearer()).andExpect(status().is4xxClientError());
+
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        sendChat(submission, conversationId, bearer()).andExpect(status().isConflict());
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    private ChatClient routeAgent() {
+        return localAgent(users -> new RutaAgentTools(mock(AgentQueryService.class), confirmations, users));
+    }
+
+    private ChatClient compensationAgent() {
+        return localAgent(users -> new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations));
+    }
+
+    private ChatClient localAgent(Function<UsuarioService, Object> callbacks) {
+        var chatClient = mock(ChatClient.class);
+        var users = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
+        var registry = new AgentToolRegistry(new ObjectMapper(),
+                ToolCallbacks.from(callbacks.apply(users)));
+        var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
+        var service = new AgentService(chatClient, users, clock, registry, new AgentConversationStore(clock), confirmations);
+        when(agent.chat(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        when(agent.chatVoz(anyString(), nullable(UUID.class)))
+                .thenAnswer(call -> service.chatVoz(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
+        return chatClient;
+    }
+
+    private ResultActions sendChat(String message, String conversationId, String authorization) throws Exception {
+        var payload = new LinkedHashMap<String, String>();
+        payload.put("message", message);
+        if (conversationId != null) payload.put("conversationId", conversationId);
+        return mvc.perform(post("/agent/chat").header("Authorization", authorization)
+                .contentType(MediaType.APPLICATION_JSON).content(new ObjectMapper().writeValueAsString(payload)));
+    }
+
+    private static JsonNode json(ResultActions result) {
+        return new ObjectMapper().readTree(result.andReturn().getResponse().getContentAsByteArray());
+    }
+
+    private ResultActions submitForm(JsonNode reply, Map<String, ?> fields) throws Exception {
+        String form = reply.path("aclaracion").path("id").asText();
+        String conversation = reply.path("conversationId").asText();
+        return sendChat("Datos de aclaración " + form + ": " + new ObjectMapper().writeValueAsString(fields),
+                conversation, bearer());
+    }
+
+    private static OperacionResumen pending(UUID id, TipoOperacion type) {
+        String summary = "Revisa la operación";
+        return new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, summary,
+                new ConfirmacionResumen(id, type, EstadoConfirmacion.PENDIENTE, summary, null, NOW.plusSeconds(600), null));
+    }
+
+    private static void expectPending(ResultActions result, UUID id, TipoOperacion type) throws Exception {
+        result.andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.operacion.estado").value("CONFIRMACION_REQUERIDA"))
+                .andExpect(jsonPath("$.operacion.confirmacion.id").value(id.toString()))
+                .andExpect(jsonPath("$.operacion.confirmacion.tipo").value(type.name()))
+                .andExpect(jsonPath("$.operacion.confirmacion.estado").value("PENDIENTE"));
     }
 
     @Test
@@ -216,6 +508,8 @@ class AgentHttpSecurityTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.resultados[0].tipo").value(NOMBRE))
                 .andExpect(jsonPath("$.resultados[0].datos.estado").value("FALTAN_PASAJEROS"))
+                .andExpect(jsonPath("$.aclaracion.operacion").value(NOMBRE))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", org.hamcrest.Matchers.contains("pasajeros")))
                 .andExpect(jsonPath("$.operacion").isEmpty())
                 .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
                 .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
@@ -234,10 +528,66 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.respuesta.conversationId").value(conversation))
                 .andExpect(jsonPath("$.respuesta.operacion").isEmpty())
                 .andExpect(jsonPath("$.respuesta.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.respuesta.aclaracion").doesNotExist())
                 .andExpect(jsonPath("$.respuesta.resultados[0].tipo").value(NOMBRE))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.costoTotalEstimado").value(12.0))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.aporteEstimado").value(4.0))
                 .andExpect(jsonPath("$.respuesta.resultados[0].datos.sugerencia.pasajeros").value(3));
+        verifyNoInteractions(confirmations, chatClient);
+    }
+
+    @Test
+    void contributionFormUsesVerifiedDatesThenRequestsPassengersAndReturnsTheServiceCalculation() throws Exception {
+        when(usuarios.findByCorreoInstitucional("ana@upc.edu.pe")).thenReturn(Optional.of(
+                Usuario.builder().id(7L).correoInstitucional("ana@upc.edu.pe").contrasenaHash("fixture")
+                        .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
+        var trips = mock(ViajeRepository.class);
+        var queries = mock(AgentQueryService.class);
+        ChatClient chatClient = localAgent(users -> new ContribucionAgentTools(queries, new ContribucionService(trips)));
+        LocalDate firstDate = LocalDate.of(2026, 11, 25);
+        LocalDate selectedDate = firstDate.plusDays(1);
+        LocalTime time = LocalTime.of(8, 0);
+        var firstOption = new ContribucionResultado.Opcion("Surco", "UPC", "Miércoles", firstDate, time, "José Prueba");
+        var selectedOption = new ContribucionResultado.Opcion("Surco", "UPC", "Jueves", selectedDate, time, "Ana Prueba");
+        var selected = new AgentQueryService.ViajeContribucion(90L, selectedOption);
+        when(queries.identificarViajes(any(ContribucionFiltros.class))).thenAnswer(call -> {
+            var filters = call.getArgument(0, ContribucionFiltros.class);
+            if (filters.fecha() == null) {
+                return new PageImpl<>(List.of(new AgentQueryService.ViajeContribucion(89L, firstOption), selected));
+            }
+            return new PageImpl<>(filters.fecha().equals(selectedDate) ? List.of(selected) : List.of());
+        });
+        var trip = Viaje.builder().id(90L).fecha(selectedDate).hora(time).dia("Jueves")
+                .ruta(Ruta.builder().origen("Surco").destino("UPC").build()).estado(EstadoViaje.PROGRAMADO).build();
+        when(trips.findById(90L)).thenReturn(Optional.of(trip));
+
+        JsonNode first = json(sendChat(CONTRIBUCION, null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resultados[0].datos.estado").value("AMBIGUA"))
+                .andExpect(jsonPath("$.aclaracion.operacion").value(NOMBRE))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("fecha")))
+                .andExpect(jsonPath("$.aclaracion.campos[0].opciones[*].valor",
+                        contains(firstDate.toString(), selectedDate.toString()))));
+        submitForm(first, Map.of("fecha", "2026-11-27")).andExpect(status().isBadRequest());
+        verifyNoInteractions(trips, confirmations);
+
+        JsonNode partial = json(submitForm(first, Map.of("fecha", selectedDate.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resultados[0].datos.estado").value("FALTAN_PASAJEROS"))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("pasajeros")))
+                .andExpect(jsonPath("$.operacion").isEmpty()));
+        submitForm(first, Map.of("fecha", firstDate.toString())).andExpect(status().isConflict());
+        submitForm(partial, Map.of("pasajeros", 3)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.resultados[0].tipo").value(NOMBRE))
+                .andExpect(jsonPath("$.resultados[0].datos.sugerencia.fecha").value(selectedDate.toString()))
+                .andExpect(jsonPath("$.resultados[0].datos.sugerencia.aporteEstimado").value(4.0))
+                .andExpect(jsonPath("$.resultados[0].datos.sugerencia.pasajeros").value(3));
+        verify(queries).identificarViajes(argThat((ContribucionFiltros filters) -> "Surco".equalsIgnoreCase(filters.origen())
+                && "UPC".equalsIgnoreCase(filters.destino()) && selectedDate.equals(filters.fecha()) && filters.pasajeros() == null));
+        verify(trips, never()).findById(89L);
         verifyNoInteractions(confirmations, chatClient);
     }
 
@@ -341,6 +691,118 @@ class AgentHttpSecurityTest {
                 .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsStringIgnoringCase("conductor")))
                 .andExpect(jsonPath("$.resultados").doesNotExist());
         verifyNoInteractions(estadisticas, confirmations, chatClient);
+    }
+
+    @Test
+    void registrationFormAcceptsPartialSubmissionAndKeepsTheSelectedCompensationType() throws Exception {
+        ChatClient chatClient = compensationAgent();
+        JsonNode first = json(sendChat("Registra un método de compensación", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("registrarMetodoCompensacion"))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", containsInAnyOrder("compensacion", "descripcion")))
+                .andExpect(jsonPath("$.aclaracion.campos[?(@.id == 'compensacion')].opciones[*].valor",
+                        contains("DINERO", "GASOLINA", "FAVOR"))));
+        JsonNode partial = json(submitForm(first, Map.of("compensacion", "FAVOR"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("descripcion")))
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist()));
+        submitForm(first, Map.of("descripcion", "Apuntes de clase")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        var parameters = new MetodoCompensacionRequest(TipoCompensacion.FAVOR, "Apuntes de clase", true);
+        when(confirmations.prepararMetodo(parameters)).thenReturn(pending(id, TipoOperacion.REGISTRAR_METODO));
+
+        expectPending(submitForm(partial, Map.of("descripcion", "Apuntes de clase")), id, TipoOperacion.REGISTRAR_METODO);
+        submitForm(partial, Map.of("descripcion", "Apuntes de clase")).andExpect(status().isConflict());
+        verify(confirmations).prepararMetodo(parameters);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void editingFormAcceptsOnlyOneOfTheAlternativeChanges() throws Exception {
+        ChatClient chatClient = compensationAgent();
+        JsonNode first = json(sendChat("Edita mi método gasolina", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("actualizarMetodoCompensacion"))
+                .andExpect(jsonPath("$.aclaracion.alMenosUno[*]", containsInAnyOrder("nuevoTipo", "nuevaDescripcion")))
+                .andExpect(jsonPath("$.aclaracion.campos[*].obligatorio", contains(false, false))));
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        when(confirmations.prepararActualizacionMetodo(TipoCompensacion.GASOLINA, null, null, "Gasolina regular"))
+                .thenReturn(pending(id, TipoOperacion.ACTUALIZAR_METODO));
+
+        expectPending(submitForm(first, Map.of("nuevaDescripcion", "Gasolina regular")), id, TipoOperacion.ACTUALIZAR_METODO);
+        verify(confirmations).prepararActualizacionMetodo(TipoCompensacion.GASOLINA, null, null, "Gasolina regular");
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"activar,true", "desactivar,false"})
+    void stateFormUsesTheChosenActionWithoutRequiringTheKnownMethodAgain(String action, boolean active) throws Exception {
+        ChatClient chatClient = compensationAgent();
+        JsonNode first = json(sendChat("Cambia el estado de mi método gasolina", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("cambiarEstadoMetodoCompensacion"))
+                .andExpect(jsonPath("$.aclaracion.campos[*].id", contains("activo")))
+                .andExpect(jsonPath("$.aclaracion.campos[0].opciones[*].valor", contains("activar", "desactivar"))));
+        submitForm(first, Map.of("activo", "desconocido")).andExpect(status().isBadRequest());
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        when(confirmations.prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active))
+                .thenReturn(pending(id, TipoOperacion.CAMBIAR_ESTADO_METODO));
+
+        expectPending(submitForm(first, Map.of("activo", action)), id, TipoOperacion.CAMBIAR_ESTADO_METODO);
+        verify(confirmations).prepararEstadoMetodo(TipoCompensacion.GASOLINA, null, active);
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void deletionFormAcceptsAnExactDescriptionWithoutRequiringAType() throws Exception {
+        ChatClient chatClient = compensationAgent();
+        JsonNode first = json(sendChat("Elimina mi método de compensación", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("eliminarMetodoCompensacion"))
+                .andExpect(jsonPath("$.aclaracion.alMenosUno[*]", containsInAnyOrder("tipoActual", "descripcionActual")))
+                .andExpect(jsonPath("$.aclaracion.campos[*].obligatorio", contains(false, false))));
+        verifyNoInteractions(confirmations);
+
+        UUID id = UUID.randomUUID();
+        when(confirmations.prepararEliminacionMetodo(null, "Yape personal"))
+                .thenReturn(pending(id, TipoOperacion.ELIMINAR_METODO));
+
+        expectPending(submitForm(first, Map.of("descripcionActual", "Yape personal")), id, TipoOperacion.ELIMINAR_METODO);
+        verify(confirmations).prepararEliminacionMetodo(null, "Yape personal");
+        verifyNoMoreInteractions(confirmations);
+        verifyNoInteractions(chatClient);
+    }
+
+    @Test
+    void historyFormAcceptsOneDateToFixAnInvertedRangeWithoutRequiringTheOtherDate() throws Exception {
+        var statistics = mock(EstadisticasService.class);
+        ChatClient chatClient = localAgent(users -> new ReportesAgentTools(statistics, users));
+        JsonNode first = json(sendChat("Exporta mi historial del 2026-11-15 al 2026-11-02 como conductor", null, bearer())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion.operacion").value("prepararDescargaHistorialPdf"))
+                .andExpect(jsonPath("$.aclaracion.alMenosUno[*]", containsInAnyOrder("desde", "hasta")))
+                .andExpect(jsonPath("$.aclaracion.campos[*].obligatorio", contains(false, false))));
+
+        submitForm(first, Map.of("desde", "2026-11-01")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.aclaracion").doesNotExist())
+                .andExpect(jsonPath("$.operacion").isEmpty())
+                .andExpect(jsonPath("$.resolucionConfirmacion").doesNotExist())
+                .andExpect(jsonPath("$.resultados[0].tipo").value("prepararDescargaHistorialPdf"))
+                .andExpect(jsonPath("$.resultados[0].datos.urlDescarga")
+                        .value("/api/historial/pdf?desde=2026-11-01&hasta=2026-11-02&tipo=conductor"));
+        submitForm(first, Map.of("desde", "2026-11-01")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.campos.codigo").value("CLARIFICATION_EXPIRED"));
+        verifyNoInteractions(statistics, confirmations, chatClient);
     }
 
     @Test
