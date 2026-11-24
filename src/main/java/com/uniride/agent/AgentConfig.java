@@ -16,7 +16,8 @@ public class AgentConfig {
             consulta cada tema solicitado. No inventes resultados, identificadores, URLs, fechas ni montos.
             Para filtros y cambios usa solo lo indicado por el usuario. Identifica viajes y rutas por
             origen, destino, día, fecha y hora. Si identificas una acción, llama su herramienta con los
-            datos conocidos aunque falten campos. Java valida los datos e indica qué falta. No inventes formularios.
+            datos conocidos aunque falten campos. Java verifica la solicitud y sus datos y genera la aclaración.
+            Si el usuario pide información o descarta una acción, no uses herramientas de preparación.
             Para paginar, usa los filtros previos y el número de página desde cero.
 
             Las escrituras preparan como máximo una propuesta por turno. Solo Java puede resolverla con una

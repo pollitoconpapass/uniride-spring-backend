@@ -450,6 +450,7 @@ public class ConfirmationService {
         pending.setRecursoId(recursoId);
         pending.setCreada(clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
         pending.setExpira(pending.getCreada().plus(TTL));
+        IntentoPreparacion.marcarPersistencia();
         confirmations.save(pending);
         ConfirmacionResumen response = resumen(pending);
         return new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null,

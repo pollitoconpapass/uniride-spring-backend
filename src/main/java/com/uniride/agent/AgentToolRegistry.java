@@ -1,6 +1,7 @@
 package com.uniride.agent;
 
 import com.uniride.agent.confirmation.EstadoConfirmacion;
+import com.uniride.agent.confirmation.IntentoPreparacion;
 import static com.uniride.agent.tools.ContribucionAgentTools.CONTEXTO_FILTROS;
 import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
 import static com.uniride.agent.tools.ReportesAgentTools.CONTEXTO_FILTROS_PDF;
@@ -83,6 +84,8 @@ public class AgentToolRegistry {
         private ContribucionResultado contribucion;
         private boolean contribucionInvocada;
         private boolean prepared;
+        private boolean persistenciaIntentada;
+        private String solicitudBloqueada;
         private String mensajeUsuario;
         private Rol rolUsuario;
         private Clock reloj;
@@ -125,6 +128,8 @@ public class AgentToolRegistry {
 
         boolean tieneAclaracion() { return aclaracion() != null; }
 
+        boolean preparacionIncierta() { return persistenciaIntentada && !propuestaPendiente(); }
+
         ToolCallback[] callbacks(Rol role, boolean terminalResults) {
             return Arrays.stream(AgentToolRegistry.this.callbacks)
                     .filter(delegate -> available(delegate.getToolDefinition().name(), role))
@@ -137,7 +142,7 @@ public class AgentToolRegistry {
                 }
                 public String call(String input) { return call(input, new ToolContext(Map.of())); }
                 public String call(String input, ToolContext context) {
-                    return execute(delegate, input, context);
+                    return execute(delegate, input, context, role != null);
                 }
             }).toArray(ToolCallback[]::new);
         }
@@ -188,7 +193,11 @@ public class AgentToolRegistry {
                     .orElseThrow(() -> invalid("TOOL_UNAVAILABLE", "La herramienta solicitada no está disponible."));
         }
 
-        private synchronized String execute(ToolCallback delegate, String input, ToolContext context) {
+        private String execute(ToolCallback delegate, String input, ToolContext context) {
+            return execute(delegate, input, context, false);
+        }
+
+        private synchronized String execute(ToolCallback delegate, String input, ToolContext context, boolean proveedor) {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
             boolean prepara = PREPARATIONS.contains(name);
@@ -203,6 +212,17 @@ public class AgentToolRegistry {
             boolean sugiereContribucion = NOMBRE.equals(name);
             boolean noArguments = pdf || sugiereContribucion || AgentReportIntent.isReportTool(name);
             Object arguments = sugiereContribucion ? null : mapper.readValue(input, Object.class);
+            IntencionAclarable.Borrador seleccion = null;
+            if (proveedor && prepara && !preparaCompensacion) {
+                seleccion = IntencionAclarable.desdeTool(name,
+                        arguments instanceof Map<?, ?> parametros ? parametros : Map.of(), mensajeUsuario, rolUsuario, reloj);
+                if (seleccion == null) {
+                    solicitudBloqueada = "Indica explícitamente qué operación deseas solicitar y los datos que correspondan.";
+                    return responderSinEjecutar(name + NO_ARGUMENTS, solicitudBloqueada);
+                }
+                arguments = seleccion.argumentos();
+                input = mapper.writeValueAsString(arguments);
+            }
             // Server-derived tool arguments have one receipt even if the model adds fields.
             String key = name + (noArguments ? NO_ARGUMENTS
                     : mapper.writeValueAsString(canonical(arguments)));
@@ -226,9 +246,21 @@ public class AgentToolRegistry {
                 contribucionInvocada = true;
                 context = new ToolContext(Map.of(CONTEXTO_FILTROS, filtrosContribucion));
             }
-            String output;
+            if (prepara) prepared = true;
+            String output = llamar(delegate, noArguments ? NO_ARGUMENTS : input, context, prepara);
+            if (AgentConversationStore.containsSecrets(output))
+                throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
+            JsonNode data = mapper.readTree(output);
+            capture(name, data);
+            if (seleccion != null) rutaOViaje = seleccion;
+            receipts.put(key, output);
+            return output;
+        }
+
+        private String llamar(ToolCallback delegate, String input, ToolContext context, boolean prepara) {
+            var intento = prepara ? IntentoPreparacion.observar() : null;
             try {
-                output = delegate.call(noArguments ? NO_ARGUMENTS : input, context);
+                return delegate.call(input, context);
             } catch (RuntimeException failure) {
                 // Spring AI's default processor returns ToolExecutionException.message to the model.
                 // Unwrap permitted public errors; never let database/SDK exception details reach it.
@@ -241,17 +273,12 @@ public class AgentToolRegistry {
                     if (cause instanceof AgentProviderException controlled) throw controlled;
                 }
                 throw invalid("TOOL_EXECUTION_FAILED", "No se pudo completar la herramienta. No se repitió ninguna acción.");
+            } finally {
+                if (intento != null) {
+                    persistenciaIntentada = intento.iniciada();
+                    intento.close();
+                }
             }
-            if (AgentConversationStore.containsSecrets(output))
-                throw invalid("SENSITIVE_TOOL_RESULT", "No se enviaron al proveedor datos que parecen contener credenciales.");
-            JsonNode data = mapper.readTree(output);
-            capture(name, data);
-            if (rutaOViaje == null && mensajeUsuario != null && prepara && arguments instanceof Map<?, ?> parametros) {
-                rutaOViaje = IntencionAclarable.desdeTool(name, parametros, mensajeUsuario, rolUsuario, reloj);
-            }
-            if (prepara) prepared = true;
-            receipts.put(key, output);
-            return output;
         }
 
         private String responderSinEjecutar(String key, String mensaje) {
@@ -299,7 +326,8 @@ public class AgentToolRegistry {
         public boolean hasResults() { return !results.isEmpty(); }
 
         boolean hasDirectResult() {
-            return operation != null || results.stream().anyMatch(result -> OWN_METHODS.equals(result.tipo()));
+            return operation != null || solicitudBloqueada != null
+                    || results.stream().anyMatch(result -> OWN_METHODS.equals(result.tipo()));
         }
 
         ContribucionResultado contribucion() { return contribucion; }
@@ -317,10 +345,17 @@ public class AgentToolRegistry {
             if (operation != null && (operation.confirmacion() != null
                     || operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA)) return null;
             if (contribucion != null && contribucion.aclaracion() != null) return contribucion.aclaracion();
-            if (operation != null && camposOperacion != null) {
+            if (operation != null && camposOperacion != null
+                    && (operation.estado() == EstadoOperacion.DATOS_FALTANTES || operation.estado() == EstadoOperacion.AMBIGUO)) {
                 var dato = camposOperacion;
                 if (rutaOViaje != null && rutaOViaje.accion().herramienta.equals(dato.operacion())) {
-                    return operation.estado() == EstadoOperacion.DATOS_FALTANTES ? rutaOViaje.completar(dato) : dato;
+                    var esquema = operation.estado() == EstadoOperacion.DATOS_FALTANTES ? rutaOViaje.completar(dato) : dato;
+                    if (esquema.campos().size() == 1) {
+                        var tipo = esquema.campos().getFirst().tipo();
+                        if (tipo == TipoCampoAclaracion.TEXT || tipo == TipoCampoAclaracion.TEXTAREA)
+                            return esquema.conRespuestaBreve("valor");
+                    }
+                    return esquema;
                 }
                 if (dato.operacion().equals(compensation.allowedTool()) && compensation.recoveryArgs() != null) return dato;
             }
@@ -331,7 +366,8 @@ public class AgentToolRegistry {
             if (contribucion != null) return contribucion.mensaje();
             // The operation receipt or controlled warning takes precedence over model text.
             String primary = operation != null ? operation.detalle()
-                    : warning != null && !text.isBlank() ? text : compensation.message();
+                    : warning != null && !text.isBlank() ? text
+                    : compensation.message() != null ? compensation.message() : solicitudBloqueada;
             if (operation != null && operation.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
                     && operation.confirmacion() != null && operation.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
                 primary += " Puedes confirmar desde la aplicación o escribir «sí» o «confirmo» en este chat. "

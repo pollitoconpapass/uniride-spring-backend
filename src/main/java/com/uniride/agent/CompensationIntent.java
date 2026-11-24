@@ -365,6 +365,11 @@ final class CompensationIntent {
         };
     }
 
+    static boolean corresponde(String operacion, Draft draft) {
+        var esquema = draft == null ? null : blocked(null, draft).aclaracion();
+        return esquema != null && esquema.operacion().equals(operacion);
+    }
+
     private static Selector combinarSelector(Selector anterior, Selector nuevo) {
         if (anterior == null) return nuevo;
         if (nuevo == null) return anterior;

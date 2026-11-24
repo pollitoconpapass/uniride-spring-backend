@@ -4,7 +4,6 @@ import static com.uniride.agent.Aclaraciones.Campo.*;
 
 import com.uniride.agent.Aclaraciones.Campo;
 import com.uniride.agent.dto.AclaracionAgente;
-import com.uniride.agent.dto.CampoAclaracion;
 import com.uniride.enums.Rol;
 import java.text.Normalizer;
 import java.time.Clock;
@@ -24,49 +23,74 @@ final class IntencionAclarable {
     private static final Pattern OTRA_CREACION = Pattern.compile(INICIO + "cre(?:a|ar) (?:otr[oa]|un[oa] mas)$");
     private static final Pattern CAMBIAR_HORA = Pattern.compile(INICIO + "(?:cambia|cambiar|modifica|modificar) la hora$");
     private static final Pattern MISMO_ORIGEN = Pattern.compile(INICIO + "(?:usa|usar|conserva|conservar) el mismo origen$");
-    private static final Pattern VARIAS_ACCIONES = Pattern.compile("[.!?]\\s+\\S|\\b(?:y|e|luego|ademas|tambien) "
-            + "(?:crea|registra|muestra|busca|consulta|cancela|elimina|mira)\\w*\\b");
+    private static final Pattern VARIAS_ACCIONES = Pattern.compile("[.!?]\\s+\\S|\\b(?:y|e|o|luego|ademas|tambien) "
+            + "(?:crea|publica|programa|reprograma|registra|modifica|edita|activa|desactiva|solicita|"
+            + "muestra|busca|consulta|cancela|elimina|mira)\\w*\\b");
     private static final Pattern NUEVO_TEMA = Pattern.compile(INICIO + "(?:crea\\w*|publica\\w*|"
             + "elimina\\w*|registra\\w*|reprograma\\w*|edita\\w*|cambia\\w*|activa\\w*|desactiva\\w*|"
             + "cancela\\w*|muestra\\w*|busca\\w*|dime|consulta\\w*|descarga\\w*|exporta\\w*|"
-            + "quiero|olvida|hola|gracias|(?:mis|mi) (?:rutas?|viajes?|solicitudes?|metodos?|estadisticas|historial))\\b");
-    private static final Pattern ETIQUETA = Pattern.compile("(?iu)(?:^|(?:[;,]|\\b(?:con|y|e)\\b)\\s*)"
+            + "quiero|olvida|hola|gracias|ayudame con|ensena\\w*|(?:mis|mi) (?:rutas?|viajes?|solicitudes?|metodos?|"
+            + "estadisticas|historial))\\b");
+    private static final Pattern ETIQUETA = Pattern.compile("(?iu)(?:^|(?:[;,\\r\\n]|\\b(?:con|y|e)\\b)\\s*)"
             + "(origen actual|destino actual|nuevo origen|puntos? de referencia|referencias|capacidad(?: m[aá]xima)?|"
             + "zonas sin parada|nota de contribuci[oó]n|nueva fecha|nueva hora|tipo de compensaci[oó]n|preferencia|"
             + "d[ií]a(?: de la semana)?|origen|destino|fecha|hora)\\s*(?::\\s*|\\s+)(?:de\\s+(?=[+-]?\\d))?");
-    private static final Pattern ORIGEN_EXPLICITO = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida) de) "
+    private static final Pattern ORIGEN_EXPLICITO = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida|solicitud|cupo|reserva) de) "
             + "([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)(?=$|[.,;!?]| (?:a |hacia |con |del? \\d|el \\d))");
     private static final Pattern NUEVO_HORARIO = Pattern.compile("\\bpara (?:el )?([^.!?]+)");
     private static final Pattern ENTERO = Pattern.compile("(?iu)^([+-]?\\d+|un[oa]?|dos|tres|cuatro|cinco|seis)"
             + "(?: pasajeros?)?$");
+    private static final Pattern PETICION = Pattern.compile("^(?:por favor,? )?(?:ahora )?(?:"
+            + "me (?:puedes |podrias )?ayuda(?:s|r) a |me gustaria |(?:quiero|quisiera|necesito) (?:que me )?"
+            + "|(?:puedes|podrias) |ayudame a )?");
+    private static final Pattern PETICION_EN_PREGUNTA = Pattern.compile("^(?:por favor,? )?"
+            + "(?:me (?:ayudas|(?:puedes|podrias) ayudar)|puedes|podrias|ayudame)\\b");
+    private static final String ANTES_DEL_RECURSO = "(?:(?:a|al|los datos de|la informacion de|el horario de|la hora de) )?"
+            + "(?:(?:un|una|el|la|las|los|mi|mis|otro|otra|nuevo|nueva|todas|todos) ){0,3}";
+    private static final Pattern TEXTO_AISLADO = Pattern.compile("[\\p{L}\\p{N}][\\p{L}\\p{N} .'’()/,-]*");
+    private static final Pattern RESPUESTA_CONVERSACIONAL = Pattern.compile("^(?:no|si|pero|aunque|tal vez|quizas|"
+            + "no se|no recuerdo|buenos dias|buenas(?: tardes| noches)?|saludos|ok|vale|perfecto|entendido|listo|"
+            + "como|cual(?:es)?|cuando|donde|que (?:es|son|significa)|por que|puedes|podrias|explica\\w*|"
+            + "ayudame|necesito|quisiera|me gustaria|por favor|cuentame|muestrame|ensename|lista\\w*|"
+            + "cuanto|tengo|hay|tienes|quisiera saber|ignora\\w*|ejecuta\\w*|me (?:crea|registra|muestra|cambia|edita)\\w*)\\b");
+    private static final Pattern RECHAZO = Pattern.compile("\\b(?:no (?:(?:la|lo|las|los|me) )?(?:quiero|quisiera|necesito|cre\\w*|publi\\w*|"
+            + "elimin\\w*|cambi\\w*|edit\\w*|reprogram\\w*|cancel\\w*|solicit\\w*|program\\w*|lo hagas)|"
+            + "sin (?:crear|publicar|eliminar|preparar|editar|reprogramar|cancelar)|"
+            + "(?:solo|solamente) (?:consult\\w*|pregunt\\w*|quiero saber))\\b");
+    private static final Pattern CANCELAR_TODAS = Pattern.compile("^(?:cancel\\w*) (?:todas|todos) "
+            + "(?:(?:las|mis|los) )?(?:solicitudes|cupos|reservas)\\b");
 
     private IntencionAclarable() { }
 
     enum Accion {
         CREAR_RUTA("crearRuta", Rol.CONDUCTOR, "(?:crea|crear|publica|publicar) (?:una |otra |mi |nueva )?ruta(?: mas)?",
-                ORIGEN, REFERENCIAS, CAPACIDAD, ZONAS_SIN_PARADA, NOTA_CONTRIBUCION),
+                "cre(?:a|ar|es)|public(?:a|ar|es)", "ruta", ORIGEN, REFERENCIAS, CAPACIDAD, ZONAS_SIN_PARADA, NOTA_CONTRIBUCION),
         EDITAR_RUTA("editarRuta", Rol.CONDUCTOR, "(?:edita|editar|actualiza|actualizar|modifica|modificar) (?:una |la |mi )?ruta",
+                "edit(?:a|ar|es)|actualiz(?:a|ar|es)|modifi(?:ca|car|ques)", "ruta",
                 ORIGEN_ACTUAL, DESTINO_ACTUAL, NUEVO_ORIGEN, REFERENCIAS, CAPACIDAD, ZONAS_SIN_PARADA, NOTA_CONTRIBUCION),
         ELIMINAR_RUTA("eliminarRuta", Rol.CONDUCTOR, "(?:elimina|eliminar|borra|borrar) (?:una |la |mi )?ruta",
-                ORIGEN_ACTUAL, DESTINO_ACTUAL),
+                "elimin(?:a|ar|es)|borr(?:a|ar|es)", "ruta", ORIGEN_ACTUAL, DESTINO_ACTUAL),
         CREAR_VIAJE("crearViaje", Rol.CONDUCTOR, "(?:crea|crear|publica|publicar|programa|programar) (?:(?:un |otro |mi |nuevo )?viaje(?: mas)?|(?:una |otra |mi )?salida)",
-                ORIGEN, DESTINO, FECHA, HORA),
+                "cre(?:a|ar|es)|public(?:a|ar|es)|program(?:a|ar|es)", "viaje|salida", ORIGEN, DESTINO, FECHA, HORA),
         REPROGRAMAR("reprogramarViaje", Rol.CONDUCTOR, "(?:reprograma|reprogramar|cambia el horario de|cambiar el horario de) (?:(?:un |el |mi )?viaje|(?:una |la |mi )?salida)",
-                ORIGEN, DESTINO, DIA, FECHA, HORA, NUEVA_FECHA, NUEVA_HORA),
+                "reprogram(?:a|ar|es)|cambi(?:a|ar|es)", "viaje|salida", ORIGEN, DESTINO, DIA, FECHA, HORA, NUEVA_FECHA, NUEVA_HORA),
         UNIRSE("solicitarUnirse", Rol.PASAJERO, "(?:solicita|solicitar|reserva|reservar|pide|pedir) (?:un )?cupo|un cupo|(?:unirme|uneme|sumarme) (?:a |al )?(?:un |el )?viaje",
-                ORIGEN, DESTINO, DIA, FECHA, HORA, COMPENSACION),
+                "solicit(?:a|ar|es)|reserv(?:a|ar|es)|pide|pedir|pidas|unirme|uneme|sumarme",
+                "cupo|viaje", ORIGEN, DESTINO, DIA, FECHA, HORA, COMPENSACION),
         CANCELAR("cancelarSolicitud", Rol.PASAJERO, "(?:cancela|cancelar) (?:una |la |mi )?solicitud(?: pendiente)?",
-                ORIGEN, DESTINO, DIA, FECHA, HORA);
+                "cancel(?:a|ar|es)", "solicitud(?:es)?|cupos?|reservas?", ORIGEN, DESTINO, DIA, FECHA, HORA);
 
         final String herramienta;
         final Rol rol;
         final Pattern intencion;
+        final Pattern peticion;
         final List<Campo> campos;
 
-        Accion(String herramienta, Rol rol, String patron, Campo... campos) {
+        Accion(String herramienta, Rol rol, String patron, String verbos, String recursos, Campo... campos) {
             this.herramienta = herramienta;
             this.rol = rol;
             this.intencion = Pattern.compile(INICIO + "(?:" + patron + ")(?:$| )");
+            this.peticion = Pattern.compile("^(?:" + verbos + ") " + ANTES_DEL_RECURSO + "(?:" + recursos + ")\\b");
             this.campos = List.of(campos);
         }
 
@@ -86,13 +110,16 @@ final class IntencionAclarable {
 
     record Contexto(Accion accion, String origen, String destino, String fecha, String hora) { }
 
-    record Borrador(Accion accion, Map<Campo, String> datos) {
+    record Borrador(Accion accion, Map<Campo, String> datos, boolean todas) {
+        Borrador(Accion accion, Map<Campo, String> datos) { this(accion, datos, false); }
+
         Borrador { datos = Map.copyOf(datos); }
 
         Map<String, Object> argumentos() {
             var argumentos = new LinkedHashMap<String, Object>();
             datos.forEach((campo, valor) -> argumentos.put(accion.argumento(campo),
                     campo == CAPACIDAD ? Integer.valueOf(valor) : valor));
+            if (todas) argumentos.put("todas", true);
             return argumentos;
         }
 
@@ -102,7 +129,7 @@ final class IntencionAclarable {
             accion.campos.forEach(campo -> {
                 if (campos.containsKey(campo.id())) valores.put(campo, campos.get(campo.id()));
             });
-            return new Borrador(accion, valores);
+            return new Borrador(accion, valores, todas);
         }
 
         Contexto contexto() {
@@ -156,32 +183,75 @@ final class IntencionAclarable {
             return new Borrador(accion, datos);
         }
         var coincidencia = accion.intencion.matcher(texto);
+        if (RECHAZO.matcher(texto).find() || VARIAS_ACCIONES.matcher(texto).find()) return null;
         if (!coincidencia.find()) return new Borrador(accion, Map.of());
         // The explicit bare request or labeled data can be resolved without asking the model.
         if (coincidencia.end() == texto.length()) return new Borrador(accion, Map.of());
         if (!etiquetado(mensaje) && !(accion == Accion.CREAR_RUTA && ORIGEN_EXPLICITO.matcher(mensaje).find())) return null;
-        if (VARIAS_ACCIONES.matcher(texto).find()) return null;
         return new Borrador(accion, extraer(mensaje, accion.campos, clock));
     }
 
     static Borrador desdeTool(String herramienta, Map<?, ?> argumentos, String mensaje, Rol rol, Clock clock) {
-        Accion accion = detectar(mensaje, null);
-        if (accion == null || !accion.herramienta.equals(herramienta) || accion.rol != rol) return null;
-        var datos = extraer(mensaje, accion.campos, clock);
-        String texto = " " + normalizar(mensaje) + " ";
+        var clausula = clausulaAutorizada(herramienta, mensaje, rol);
+        if (clausula == null) return null;
+        var accion = clausula.accion();
+        var datos = extraer(clausula.texto(), accion.campos, clock);
+        String texto = normalizar(clausula.texto());
         for (var campo : accion.campos) {
             Object dato = argumentos.get(accion.argumento(campo));
             if (dato == null || datos.containsKey(campo)) continue;
             var valor = validar(campo, dato.toString(), clock);
-            if (valor != null && Pattern.compile("(?<![\\p{L}\\p{N}])" + Pattern.quote(normalizar(valor))
-                    + "(?![\\p{L}\\p{N}])").matcher(texto).find()) datos.put(campo, valor);
+            if (valor != null && figuraComoCampo(campo, valor, texto)) datos.put(campo, valor);
         }
-        return new Borrador(accion, datos);
+        return new Borrador(accion, datos, accion == Accion.CANCELAR
+                && CANCELAR_TODAS.matcher(PETICION.matcher(texto).replaceFirst("")).find());
+    }
+
+    private record Clausula(Accion accion, String texto) { }
+
+    private static Clausula clausulaAutorizada(String herramienta, String mensaje, Rol rol) {
+        Clausula seleccion = null;
+        for (String frase : mensaje.split("(?iu)[.!?]\\s+|[;\\r\\n]+|\\b(?:y|e|o|adem[aá]s|tamb[ií]en|luego) "
+                + "(?=(?:crea|programa|publica|edita|modifica|elimina|reprograma|solicita|cancela|muestra|consulta)\\w*\\b)")) {
+            String texto = normalizar(frase);
+            if (RECHAZO.matcher(texto).find()) return null;
+            var prefijo = PETICION.matcher(texto);
+            prefijo.find();
+            if ((frase.stripLeading().startsWith("¿") || frase.stripTrailing().endsWith("?"))
+                    && !PETICION_EN_PREGUNTA.matcher(texto).find()) continue;
+            String peticion = texto.substring(prefijo.end());
+            Accion accion = detectar(frase, null);
+            if (accion == null) {
+                for (var candidata : Accion.values()) {
+                    if (!candidata.peticion.matcher(peticion).find()) continue;
+                    if (accion != null) return null;
+                    accion = candidata;
+                }
+            }
+            if (accion == null) continue;
+            if (seleccion != null || accion.rol != rol || !accion.herramienta.equals(herramienta)) return null;
+            seleccion = new Clausula(accion, frase);
+        }
+        return seleccion;
+    }
+
+    private static boolean figuraComoCampo(Campo campo, String valor, String texto) {
+        String indicio = switch (campo) {
+            case ORIGEN, ORIGEN_ACTUAL -> "(?:desde|origen(?: actual)?|(?:ruta|viaje|salida|cupo) de)";
+            case DESTINO, DESTINO_ACTUAL -> "(?:a|hacia|destino(?: actual)?)";
+            case COMPENSACION -> "(?:con|en|preferencia|compensacion)";
+            case DIA -> "(?:el|dia)";
+            default -> null;
+        };
+        return indicio != null && Pattern.compile("\\b" + indicio + "[: ]+(?:la |el )?"
+                + Pattern.quote(normalizar(valor)) + "(?=$|[.,;!?]| (?:con\\b|del? \\d|el \\d|"
+                + "a las?\\b|a\\b|hacia\\b|para\\b|por favor\\b))").matcher(texto).find();
     }
 
     static Borrador siFaltanDatos(String mensaje, Rol rol, Clock clock) {
         var accion = detectar(mensaje, null);
-        if (accion == null || accion.rol != rol) return null;
+        if (accion == null || accion.rol != rol || RECHAZO.matcher(normalizar(mensaje)).find()
+                || VARIAS_ACCIONES.matcher(normalizar(mensaje)).find()) return null;
         var borrador = new Borrador(accion, extraer(mensaje, accion.campos, clock));
         return borrador.faltanDatos() ? borrador : null;
     }
@@ -196,15 +266,16 @@ final class IntencionAclarable {
             return solicitados.stream().filter(c -> c == ORIGEN || c == ORIGEN_ACTUAL).findFirst()
                     .map(c -> borrador.continuar(Map.of(c.id(), contexto.origen))).orElse(null);
         }
-        if (NUEVO_TEMA.matcher(texto).find() || mensaje.contains("?") || mensaje.contains("¿")) return null;
+        if (cambiaDeTema(mensaje) || ConfirmationIntent.classify(mensaje) != ConfirmationIntent.OTRA
+                || mensaje.contains("?") || mensaje.contains("¿")) return null;
         var valores = extraer(mensaje, solicitados, clock);
-        boolean explicito = etiquetado(mensaje);
-        if (valores.isEmpty() && solicitados.size() == 1) {
+        if (valores.isEmpty() && !etiquetado(mensaje) && solicitados.size() == 1) {
             var campo = solicitados.getFirst();
             var tipo = esquema.campos().getFirst().tipo();
             var valor = switch (tipo) {
                 case NUMBER, DATE, TIME, SELECT -> validar(campo, mensaje, clock);
-                case TEXT, TEXTAREA -> null;
+                case TEXT, TEXTAREA -> TEXTO_AISLADO.matcher(mensaje.strip()).matches()
+                        && !RESPUESTA_CONVERSACIONAL.matcher(texto).find() ? validar(campo, mensaje, clock) : null;
             };
             if (valor != null) valores.put(campo, valor);
         }
@@ -217,7 +288,15 @@ final class IntencionAclarable {
                 seleccion.put(campo.id(), valor);
             }
         }
-        return seleccion.isEmpty() && !explicito ? null : borrador.continuar(seleccion);
+        return seleccion.isEmpty() ? null : borrador.continuar(seleccion);
+    }
+
+    static boolean cambiaDeTema(String mensaje) {
+        String texto = normalizar(mensaje);
+        if (NUEVO_TEMA.matcher(texto).find()) return true;
+        String peticion = PETICION.matcher(texto).replaceFirst("");
+        for (var accion : Accion.values()) if (accion.peticion.matcher(peticion).find()) return true;
+        return false;
     }
 
     private static Accion detectar(String mensaje, Contexto anterior) {
@@ -249,8 +328,9 @@ final class IntencionAclarable {
         }
         if (campo != null) agregar(encontrados, campo, texto.substring(inicio), clock);
         var origen = ORIGEN_EXPLICITO.matcher(texto);
-        if (campos.contains(ORIGEN) && !encontrados.containsKey(ORIGEN) && origen.find())
-            agregar(encontrados, ORIGEN, origen.group(1), clock);
+        var campoOrigen = campos.contains(ORIGEN) ? ORIGEN : ORIGEN_ACTUAL;
+        if (campos.contains(campoOrigen) && !encontrados.containsKey(campoOrigen) && origen.find())
+            agregar(encontrados, campoOrigen, origen.group(1), clock);
         String normalizado = normalizar(texto);
         if (campos.contains(NUEVA_FECHA) || campos.contains(NUEVA_HORA)) {
             var horario = NUEVO_HORARIO.matcher(normalizado);
@@ -261,7 +341,8 @@ final class IntencionAclarable {
                 if (campos.contains(NUEVA_HORA) && !encontrados.containsKey(NUEVA_HORA))
                     agregarHora(encontrados, NUEVA_HORA, nuevo);
                 normalizado = normalizado.substring(0, horario.start());
-            } else if (campos.contains(NUEVA_FECHA) && campos.contains(FECHA)) {
+            } else if (campos.contains(NUEVA_FECHA) && campos.contains(FECHA)
+                    && !normalizado.matches(".*\\b(?:del? \\d+|actualmente|programad[oa] para)\\b.*")) {
                 // Without a distinction between old and new, only labeled dates are safe.
                 return encontrados;
             }
