@@ -212,6 +212,11 @@ public class ViajeService {
 
     @Transactional
     public ViajeRespuesta confirmar(Long id) {
+        return confirmar(id, false);
+    }
+
+    @Transactional
+    public ViajeRespuesta confirmar(Long id, boolean exigirPlazoVigente) {
         Usuario conductor = usuarioService.usuarioActual();
         Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
@@ -223,20 +228,17 @@ public class ViajeService {
                             + " a las " + viaje.getHora() + " ya estaba confirmado previamente.");
             return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba confirmado");
         }
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException(
-                    "El viaje no puede confirmarse; estado actual: " + viaje.getEstado());
-        }
-
-        Duration hastaSalida = Duration.between(LocalDateTime.now(clock), horaSalida(viaje));
-        if (hastaSalida.compareTo(PLAZO_CONFIRMACION) < 0) {
+        validarEstadoConfirmacion(viaje);
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        if (!plazoConfirmacionVigente(viaje, ahora)) {
+            if (exigirPlazoVigente) throw plazoConfirmacionVencido();
             vencer(viaje);
             return viajeMapper.toViajeRespuesta(viaje,
                     "El plazo de confirmación de 12 horas venció; el viaje quedó VENCIDO");
         }
 
         viaje.setConfirmado(true);
-        viaje.setFechaConfirmacion(LocalDateTime.now(clock));
+        viaje.setFechaConfirmacion(ahora);
         Viaje guardado = viajeRepository.save(viaje);
 
         List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
@@ -255,6 +257,28 @@ public class ViajeService {
 
         return viajeMapper.toViajeRespuesta(guardado,
                 "Viaje confirmado; se notificó a los pasajeros aceptados");
+    }
+
+    public void validarConfirmacion(Viaje viaje) {
+        validarEstadoConfirmacion(viaje);
+        if (viaje.isConfirmado()) throw new BusinessException("El viaje ya estaba confirmado");
+        if (!plazoConfirmacionVigente(viaje, LocalDateTime.now(clock))) throw plazoConfirmacionVencido();
+    }
+
+    private void validarEstadoConfirmacion(Viaje viaje) {
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje no puede confirmarse; estado actual: " + viaje.getEstado());
+        }
+    }
+
+    private boolean plazoConfirmacionVigente(Viaje viaje, LocalDateTime ahora) {
+        return Duration.between(ahora, horaSalida(viaje)).compareTo(PLAZO_CONFIRMACION) >= 0;
+    }
+
+    private BusinessException plazoConfirmacionVencido() {
+        return new BusinessException("El viaje debe confirmarse con al menos "
+                + PLAZO_CONFIRMACION.toHours() + " horas de anticipación.");
     }
 
     @Transactional
@@ -277,17 +301,7 @@ public class ViajeService {
                             + " a las " + viaje.getHora() + " ya había sido completado.");
             return viajeMapper.toViajeRespuesta(viaje, "El viaje ya había sido completado");
         }
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException(
-                    "El viaje no puede iniciarse; estado actual: " + viaje.getEstado());
-        }
-        if (!viaje.isConfirmado()) {
-            throw new BusinessException("El viaje debe estar confirmado para poder iniciarlo");
-        }
-
-        if (LocalDateTime.now(clock).isBefore(horaSalida(viaje))) {
-            throw new BusinessException("El viaje no puede iniciarse antes de su hora programada");
-        }
+        validarInicio(viaje);
         viaje.setEstado(EstadoViaje.EN_PROGRESO);
         Viaje iniciado = viajeRepository.save(viaje);
 
@@ -306,6 +320,19 @@ public class ViajeService {
         return viajeMapper.toViajeRespuesta(iniciado, "Viaje iniciado");
     }
 
+    public void validarInicio(Viaje viaje) {
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje no puede iniciarse; estado actual: " + viaje.getEstado());
+        }
+        if (!viaje.isConfirmado()) {
+            throw new BusinessException("El viaje debe estar confirmado para poder iniciarlo");
+        }
+        if (LocalDateTime.now(clock).isBefore(horaSalida(viaje))) {
+            throw new BusinessException("El viaje no puede iniciarse antes de su hora programada");
+        }
+    }
+
     @Transactional
     public ViajeRespuesta completar(Long id) {
         Usuario conductor = usuarioService.usuarioActual();
@@ -319,12 +346,7 @@ public class ViajeService {
                             + " a las " + viaje.getHora() + " ya estaba completado.");
             return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba completado");
         }
-        if (viaje.getEstado() != EstadoViaje.EN_PROGRESO) {
-            throw new BusinessException(
-                    "El viaje solo puede completarse desde EN_PROGRESO; estado actual: "
-                            + viaje.getEstado());
-        }
-
+        validarFinalizacion(viaje);
         viaje.setEstado(EstadoViaje.COMPLETADO);
         Viaje completado = viajeRepository.save(viaje);
 
@@ -344,8 +366,29 @@ public class ViajeService {
         return viajeMapper.toViajeRespuesta(completado, "Viaje completado");
     }
 
+    public void validarFinalizacion(Viaje viaje) {
+        if (viaje.getEstado() != EstadoViaje.EN_PROGRESO) {
+            throw new BusinessException(
+                    "El viaje solo puede completarse desde EN_PROGRESO; estado actual: " + viaje.getEstado());
+        }
+    }
+
+    public record ImpactoCancelacion(TipoPenalidad penalidad, List<Long> solicitudes, long pasajerosAvisados) { }
+
+    @Transactional(readOnly = true)
+    public ImpactoCancelacion evaluarCancelacion(Viaje viaje) {
+        Duration hastaSalida = validarCancelacion(viaje, LocalDateTime.now(clock));
+        return impactoCancelacion(hastaSalida, solicitudesAfectadas(viaje.getId()),
+                usuarioService.usuarioActual().getId());
+    }
+
     @Transactional
     public ViajeRespuesta cancelar(Long id) {
+        return cancelar(id, null);
+    }
+
+    @Transactional
+    public ViajeRespuesta cancelar(Long id, ImpactoCancelacion impactoEsperado) {
         Usuario usuario = usuarioService.usuarioActual();
         // Bloquear la misma fila que usa la aceptacion: evita carreras entre
         // aceptar una solicitud, cancelar un viaje e iniciar un viaje.
@@ -367,19 +410,17 @@ public class ViajeService {
         if (viaje.getEstado() == EstadoViaje.CANCELADO) {
             return viajeMapper.toViajeRespuesta(viaje, "El viaje ya estaba cancelado");
         }
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException(
-                    "El viaje no puede cancelarse; estado actual: " + viaje.getEstado());
-        }
-
-        Duration hastaSalida = Duration.between(LocalDateTime.now(clock), horaSalida(viaje));
-        if (hastaSalida.isNegative()) {
-            throw new BusinessException("El viaje ya ocurrió");
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        Duration hastaSalida = validarCancelacion(viaje, ahora);
+        List<Solicitud> involucradas = solicitudesAfectadas(id);
+        if (impactoEsperado != null
+                && !impactoEsperado.equals(impactoCancelacion(hastaSalida, involucradas, usuario.getId()))) {
+            throw new BusinessException("Cambió la penalidad o las solicitudes afectadas. Solicita una nueva propuesta de cancelación.");
         }
         TipoPenalidad penalidad = clasificarPenalidad(hastaSalida);
 
         viaje.setCanceladoPor(usuario);
-        viaje.setFechaCancelacion(LocalDateTime.now(clock));
+        viaje.setFechaCancelacion(ahora);
         viaje.setEstado(EstadoViaje.CANCELADO);
         Viaje cancelado = viajeRepository.save(viaje);
 
@@ -393,8 +434,6 @@ public class ViajeService {
                     .build());
         }
 
-        List<Solicitud> involucradas = solicitudRepository.findByViajeIdAndEstadoIn(
-                id, List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA));
         for (Solicitud solicitud : involucradas) {
             solicitud.setAfectadaPorCancelacionViaje(true);
             solicitud.setEstado(EstadoSolicitud.CANCELADA);
@@ -421,17 +460,17 @@ public class ViajeService {
                 + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino()
                 + ") fue cancelado por " + usuario.getNombre() + urgencia + ".";
         for (Usuario destinatario : aNotificar) {
-            notificacionService.notificar(destinatario, tipoNotificacion,
+            notificacionService.notificarCancelacion(viaje, destinatario, tipoNotificacion,
                     "Viaje cancelado", mensaje);
         }
 
         String mensajeActor;
         if (penalidad == null) {
-            notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Viaje cancelado",
+            notificacionService.notificarCancelacion(viaje, usuario, TipoNotificacion.EXITO, "Viaje cancelado",
                     "Cancelaste el viaje con más de 24 horas de anticipación; no se aplica penalidad.");
             mensajeActor = "Viaje cancelado sin penalidad (más de 24 horas de anticipación)";
         } else {
-            notificacionService.notificar(usuario, TipoNotificacion.ADVERTENCIA,
+            notificacionService.notificarCancelacion(viaje, usuario, TipoNotificacion.ADVERTENCIA,
                     "Penalidad registrada",
                     "Cancelaste el viaje con " + hastaSalida.toHours()
                             + " horas de anticipación; se registró una penalidad "
@@ -441,6 +480,28 @@ public class ViajeService {
         }
 
         return viajeMapper.toViajeRespuesta(cancelado, mensajeActor);
+    }
+
+    private Duration validarCancelacion(Viaje viaje, LocalDateTime ahora) {
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje no puede cancelarse; estado actual: " + viaje.getEstado());
+        }
+        Duration hastaSalida = Duration.between(ahora, horaSalida(viaje));
+        if (hastaSalida.isNegative()) throw new BusinessException("El viaje ya ocurrió");
+        return hastaSalida;
+    }
+
+    private List<Solicitud> solicitudesAfectadas(Long viajeId) {
+        return solicitudRepository.findByViajeIdAndEstadoIn(
+                viajeId, List.of(EstadoSolicitud.PENDIENTE, EstadoSolicitud.ACEPTADA));
+    }
+
+    private ImpactoCancelacion impactoCancelacion(Duration hastaSalida, List<Solicitud> afectadas, Long actorId) {
+        long avisados = afectadas.stream().map(s -> s.getPasajero().getId())
+                .filter(id -> !id.equals(actorId)).distinct().count();
+        return new ImpactoCancelacion(clasificarPenalidad(hastaSalida),
+                afectadas.stream().map(Solicitud::getId).sorted().toList(), avisados);
     }
 
     @Scheduled(fixedRate = 300000)

@@ -1,9 +1,12 @@
 package com.uniride.services;
 
+import com.uniride.dto.responses.AvisoCancelacionRespuesta;
 import com.uniride.entities.Notificacion;
 import com.uniride.entities.Usuario;
+import com.uniride.entities.Viaje;
 import com.uniride.enums.TipoNotificacion;
 import com.uniride.repositories.NotificacionRepository;
+import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
@@ -37,19 +40,31 @@ public class NotificacionService {
 
     @Transactional
     public Notificacion notificar(Usuario usuario, TipoNotificacion tipo, String asunto, String mensaje) {
-        return registrar(usuario, tipo, asunto, mensaje, mensaje, false);
+        return registrar(usuario, tipo, asunto, mensaje, mensaje, false, null);
+    }
+
+    @Transactional
+    public Notificacion notificarCancelacion(Viaje viaje, Usuario usuario, TipoNotificacion tipo,
+            String asunto, String mensaje) {
+        return registrar(usuario, tipo, asunto, mensaje, mensaje, false, viaje);
+    }
+
+    @Transactional(readOnly = true)
+    public List<AvisoCancelacionRespuesta> estadoAvisosCancelacion(Long viajeId, Long conductorId) {
+        return notificacionRepository.estadoAvisosCancelacion(viajeId, conductorId);
     }
 
     @Transactional
     public Notificacion notificarCodigo(Usuario usuario, String asunto, String mensajeCorreo) {
         return registrar(usuario, TipoNotificacion.EXITO, asunto,
-                "Se solicitó un código de verificación. Revisa tu correo institucional.", mensajeCorreo, true);
+                "Se solicitó un código de verificación. Revisa tu correo institucional.", mensajeCorreo, true, null);
     }
 
     private Notificacion registrar(Usuario usuario, TipoNotificacion tipo, String asunto,
-            String mensaje, String mensajeCorreo, boolean codigo) {
+            String mensaje, String mensajeCorreo, boolean codigo, Viaje viajeCancelado) {
         Notificacion notificacion = Notificacion.builder()
                 .usuario(usuario)
+                .viajeCancelado(viajeCancelado)
                 .tipo(tipo)
                 .mensaje(mensaje)
                 .leida(false)

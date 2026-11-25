@@ -161,6 +161,33 @@ public class AgentQueryService {
                 PageRequest.of(0, 2)).map(this::viajeResumen);
     }
 
+    public Page<ViajeResumen> viajesCoordinacion(CoordinacionConductorIntent.Filtros filtros, List<EstadoViaje> estados) {
+        Usuario owner = requireRole(Rol.CONDUCTOR);
+        return viajes.buscarCoordinacionConductor(owner.getId(), filtros.viajeId(), estados,
+                literal(filtros.origen()), literal(filtros.destino()), filtros.fecha(), filtros.hora(),
+                pageable(0, PAGE_SIZE)).map(this::viajeResumen);
+    }
+
+    public Page<SolicitudConductorResumen> solicitudesRecibidas(CoordinacionConductorIntent.Filtros filtros,
+            EstadoSolicitud estado, int pagina) {
+        Usuario owner = requireRole(Rol.CONDUCTOR);
+        return solicitudesRepo.buscarRecibidasAgente(owner.getId(), filtros.viajeId(), filtros.solicitudId(), estado,
+                literal(filtros.origen()), literal(filtros.destino()), filtros.fecha(), filtros.hora(),
+                literal(filtros.pasajero()), pageable(pagina, PAGE_SIZE)).map(s -> {
+                    Viaje viaje = s.getViaje();
+                    Usuario pasajero = s.getPasajero();
+                    return new SolicitudConductorResumen(s.getId(), viaje.getId(),
+                            (pasajero.getNombre() + " " + java.util.Objects.toString(pasajero.getApellidos(), "")).strip(),
+                            s.getEstado(), s.getPreferenciaCompensacion(), viaje.getRuta().getOrigen(),
+                            viaje.getRuta().getDestino(), viaje.getFecha(), viaje.getHora());
+                });
+    }
+
+    private String literal(String valor) {
+        String normalizado = normalizar(valor);
+        return normalizado == null ? null : normalizado.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+    }
+
     /** Own pending requests that are still cancellable, oldest trip first to keep lock order stable. */
     public List<SolicitudResumen> candidatasCancelacion(String origen, String destino, String dia,
             LocalDate fecha, LocalTime hora) {

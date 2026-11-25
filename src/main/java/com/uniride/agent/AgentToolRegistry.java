@@ -29,7 +29,9 @@ public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
             "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "eliminarMetodoCompensacion", "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud",
-            "editarPerfil", "editarInfoAdicional", "cambiarRol", "registrarCurso", "eliminarCurso");
+            "editarPerfil", "editarInfoAdicional", "cambiarRol", "registrarCurso", "eliminarCurso",
+            "aceptarSolicitud", "rechazarSolicitud", "rechazarSolicitudesPendientes",
+            "confirmarViaje", "iniciarViaje", "completarViaje", "cancelarViaje");
     private static final Set<String> RUTAS_Y_VIAJES_ACLARABLES = Set.of("crearRuta", "editarRuta", "eliminarRuta",
             "crearViaje", "reprogramarViaje", "solicitarUnirse", "cancelarSolicitud");
     private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
@@ -54,9 +56,10 @@ public class AgentToolRegistry {
     public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
                              MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes,
                              ContribucionAgentTools contribucion, PerfilAgentTools perfiles,
-                             UsuarioAgentTools usuarios, HorarioAcademicoAgentTools horarios) {
+                             UsuarioAgentTools usuarios, HorarioAcademicoAgentTools horarios,
+                             SolicitudesConductorAgentTools solicitudes, GestionViajeAgentTools gestion) {
         this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes, contribucion,
-                perfiles, usuarios, horarios));
+                perfiles, usuarios, horarios, solicitudes, gestion));
     }
 
     AgentToolRegistry(ObjectMapper mapper, ToolCallback... callbacks) {
@@ -101,6 +104,7 @@ public class AgentToolRegistry {
         private Rol rolUsuario;
         private Clock reloj;
         private IntencionAclarable.Borrador rutaOViaje;
+        private CoordinacionConductorIntent.Turno coordinacion;
 
         private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
                      boolean solicitudViaje, ContribucionFiltros filtrosContribucion) {
@@ -129,6 +133,14 @@ public class AgentToolRegistry {
             String nombre = borrador.accion().herramienta;
             execute(callback(nombre), mapper.writeValueAsString(borrador.argumentos()), new ToolContext(Map.of()));
         }
+
+        void procesar(CoordinacionConductorIntent.Pedido pedido) {
+            coordinacion = new CoordinacionConductorIntent.Turno(pedido);
+            execute(callback(pedido.accion().herramienta()), NO_ARGUMENTS,
+                    new ToolContext(Map.of(CoordinacionConductorIntent.CONTEXTO, coordinacion)));
+        }
+
+        CoordinacionConductorIntent.Sesion coordinacion() { return coordinacion.sesion(); }
 
         IntencionAclarable.Borrador rutaOViaje() { return rutaOViaje; }
 
@@ -159,6 +171,7 @@ public class AgentToolRegistry {
         }
 
         private boolean available(String name, Rol role) {
+            if (CoordinacionConductorIntent.esHerramienta(name)) return false;
             if (NOMBRE.equals(name) || filtrosContribucion != null)
                 return NOMBRE.equals(name) && filtrosContribucion != null;
             if (role == null) return true;
@@ -373,6 +386,9 @@ public class AgentToolRegistry {
             if (operation != null && camposOperacion != null
                     && (operation.estado() == EstadoOperacion.DATOS_FALTANTES || operation.estado() == EstadoOperacion.AMBIGUO)) {
                 var dato = camposOperacion;
+                if (coordinacion != null && dato.operacion().equals(coordinacion.pedido().accion().herramienta())) {
+                    return dato;
+                }
                 if (rutaOViaje != null && rutaOViaje.accion().herramienta.equals(dato.operacion())) {
                     var esquema = operation.estado() == EstadoOperacion.DATOS_FALTANTES ? rutaOViaje.completar(dato) : dato;
                     if (esquema.campos().size() == 1) {
@@ -389,6 +405,7 @@ public class AgentToolRegistry {
 
         private String message(String text, AdvertenciaAgente warning) {
             if (contribucion != null) return contribucion.mensaje();
+            if (coordinacion != null && coordinacion.mensaje() != null) return coordinacion.mensaje();
             // The operation receipt or controlled warning takes precedence over model text.
             String primary = operation != null ? operation.detalle()
                     : warning != null && !text.isBlank() ? text

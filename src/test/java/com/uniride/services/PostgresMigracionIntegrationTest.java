@@ -40,11 +40,13 @@ class PostgresMigracionIntegrationTest {
                     .replaceAll("(?m)^alter table if exists viajes.*foreign key \\(cancelado_por_id\\).*\\R?","");
             statement.execute(sql);
             statement.execute("INSERT INTO usuarios (correo_institucional,telefono,nombre,apellidos,contrasena_hash,acepta_terminos,cuenta_verificada,fecha_registro,rol_principal) VALUES ('ANA@UPC.EDU.PE','0051987654321','Ana','Perez','hash',true,false,CURRENT_TIMESTAMP,'PASAJERO')");
+            statement.execute("INSERT INTO notificaciones (usuario_id,tipo,mensaje,leida,fecha_envio) "
+                    + "SELECT id,'EXITO','Aviso previo',false,CURRENT_TIMESTAMP FROM usuarios");
         }
         Flyway flyway=Flyway.configure().dataSource(url,user,password).schemas(schema).defaultSchema(schema)
                 .baselineVersion("1").cleanDisabled(true).load();
         flyway.baseline();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(10);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         try(var connection=DriverManager.getConnection(url,user,password);var statement=connection.createStatement();
             var result=statement.executeQuery("SELECT correo_institucional,telefono,intentos_otp FROM "+schema+".usuarios")) {
@@ -52,6 +54,13 @@ class PostgresMigracionIntegrationTest {
             assertThat(result.getString(1)).isEqualTo("ana@upc.edu.pe");
             assertThat(result.getString(2)).isEqualTo("+51987654321");
             assertThat(result.getInt(3)).isZero();
+            assertThat(result.next()).isFalse();
+        }
+        try (var connection = DriverManager.getConnection(url, user, password); var statement = connection.createStatement();
+             var result = statement.executeQuery("SELECT mensaje, viaje_cancelado_id FROM " + schema + ".notificaciones")) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getString(1)).isEqualTo("Aviso previo");
+            assertThat(result.getObject(2)).isNull();
             assertThat(result.next()).isFalse();
         }
         try(var connection=DriverManager.getConnection(url,user,password);var statement=connection.createStatement();
@@ -135,6 +144,16 @@ class PostgresMigracionIntegrationTest {
             assertThat(filasConfirmacion(connection, table)).hasSize(20);
             assertThatThrownBy(() -> insertarPendiente(connection, table, owner, "ELIMINAR_USUARIO"))
                     .isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23514"));
+            var anterioresAV11 = filasConfirmacion(connection, table);
+            Flyway v11 = configuration.target(MigrationVersion.fromVersion("11")).load();
+            assertThat(v11.migrate().migrationsExecuted).isEqualTo(1);
+            v11.validate();
+            assertThat(filasConfirmacion(connection, table)).containsExactlyElementsOf(anterioresAV11);
+            for (String tipo : new String[]{"ACEPTAR_SOLICITUD", "RECHAZAR_SOLICITUD", "RECHAZAR_SOLICITUDES_PENDIENTES",
+                    "CONFIRMAR_VIAJE", "INICIAR_VIAJE", "COMPLETAR_VIAJE", "CANCELAR_VIAJE"}) {
+                insertarPendiente(connection, table, owner, tipo);
+            }
+            assertThat(filasConfirmacion(connection, table)).hasSize(27);
         }
     }
 
