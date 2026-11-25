@@ -28,7 +28,10 @@ import tools.jackson.databind.node.ObjectNode;
 public class AgentToolRegistry {
     private static final Set<String> PREPARATIONS = Set.of("crearRuta", "crearViaje", "solicitarUnirse",
             "registrarMetodoCompensacion", "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
-            "eliminarMetodoCompensacion", "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
+            "eliminarMetodoCompensacion", "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud",
+            "editarPerfil", "editarInfoAdicional", "cambiarRol", "registrarCurso", "eliminarCurso");
+    private static final Set<String> RUTAS_Y_VIAJES_ACLARABLES = Set.of("crearRuta", "editarRuta", "eliminarRuta",
+            "crearViaje", "reprogramarViaje", "solicitarUnirse", "cancelarSolicitud");
     private static final Set<String> RECOVERABLE_COMPENSATION = Set.of("registrarMetodoCompensacion", "cambiarEstadoMetodoCompensacion",
             "actualizarMetodoCompensacion", "eliminarMetodoCompensacion");
     private static final Set<String> CONDUCTOR_TOOLS = Set.of("consultarMisRutas", "consultarMisViajes", "crearRuta",
@@ -41,11 +44,19 @@ public class AgentToolRegistry {
     private final ObjectMapper mapper;
     private final ToolCallback[] callbacks;
 
-    @Autowired
     public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
                              MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes,
                              ContribucionAgentTools contribucion) {
         this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes, contribucion));
+    }
+
+    @Autowired
+    public AgentToolRegistry(ObjectMapper mapper, ViajeAgentTools viajes, RutaAgentTools rutas,
+                             MetodoCompensacionAgentTools metodos, ReportesAgentTools reportes,
+                             ContribucionAgentTools contribucion, PerfilAgentTools perfiles,
+                             UsuarioAgentTools usuarios, HorarioAcademicoAgentTools horarios) {
+        this(mapper, ToolCallbacks.from(viajes, rutas, metodos, reportes, contribucion,
+                perfiles, usuarios, horarios));
     }
 
     AgentToolRegistry(ObjectMapper mapper, ToolCallback... callbacks) {
@@ -213,7 +224,7 @@ public class AgentToolRegistry {
             boolean noArguments = pdf || sugiereContribucion || AgentReportIntent.isReportTool(name);
             Object arguments = sugiereContribucion ? null : mapper.readValue(input, Object.class);
             IntencionAclarable.Borrador seleccion = null;
-            if (proveedor && prepara && !preparaCompensacion) {
+            if (proveedor && RUTAS_Y_VIAJES_ACLARABLES.contains(name)) {
                 seleccion = IntencionAclarable.desdeTool(name,
                         arguments instanceof Map<?, ?> parametros ? parametros : Map.of(), mensajeUsuario, rolUsuario, reloj);
                 if (seleccion == null) {
@@ -391,16 +402,24 @@ public class AgentToolRegistry {
                     .map(result -> AgentReportSummary.describe(result, mapper))
                     .filter(Objects::nonNull)
                     .toList();
+            List<String> personal = results.stream()
+                    .map(result -> AgentPersonalSummary.describe(result, mapper))
+                    .filter(Objects::nonNull)
+                    .toList();
             String download = results.stream().filter(result -> DESCARGA_HISTORIAL_PDF.equals(result.tipo()))
                     .map(result -> mapper.treeToValue(result.datos(), DescargaHistorialPdfRespuesta.class).mensaje())
                     .findFirst().orElse(historialPdf == null ? null : historialPdf.aclaracion());
-            if (reports.isEmpty() && download == null) {
+            if (reports.isEmpty() && personal.isEmpty() && download == null) {
                 return primary != null ? primary : hasResults() ? querySummary() : clarification(text);
             }
             List<String> sections = new ArrayList<>();
             if (primary != null) sections.add(primary);
-            if (results.stream().anyMatch(result -> result.datos().has("hayMas") || result.datos().isArray())) {
+            if (results.stream().anyMatch(result -> !"consultarMisHorarios".equals(result.tipo())
+                    && (result.datos().has("hayMas") || result.datos().isArray()))) {
                 sections.add(querySummary());
+            }
+            if (!personal.isEmpty()) {
+                sections.add(String.join(" ", personal));
             }
             if (!reports.isEmpty()) {
                 sections.add(String.join(" ", reports) + (download == null

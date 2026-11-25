@@ -58,7 +58,9 @@ public class ViajeAgentTools {
     }
 
     @Tool(description = """
-            Busca viajes disponibles para el pasajero por origen, destino, día, fecha y hora.
+            Busca viajes disponibles para el pasajero por origen, destino, día, fecha, hora o franja horaria.
+            Permite búsquedas en lenguaje natural resolviendo fechas relativas (hoy, mañana, próximo lunes)
+            y franjas (MADRUGADA, TEMPRANO, MANANA, MEDIODIA, TARDE, NOCHE) o rangos (horaDesde, horaHasta).
             Devuelve diez por página; pagina comienza en cero y hayMas permite ofrecer la siguiente.
             Usa únicamente filtros que indicó el usuario.
             """)
@@ -67,13 +69,25 @@ public class ViajeAgentTools {
             @ToolParam(description = "Destino", required = false) String destino,
             @ToolParam(description = "Día de la semana", required = false) String dia,
             @ToolParam(description = "Fecha yyyy-MM-dd", required = false) LocalDate fecha,
-            @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora,
+            @ToolParam(description = "Hora exacta HH:mm en 24 horas", required = false) LocalTime hora,
+            @ToolParam(description = "Hora mínima HH:mm en 24 horas para rango", required = false) LocalTime horaDesde,
+            @ToolParam(description = "Hora máxima HH:mm en 24 horas para rango", required = false) LocalTime horaHasta,
+            @ToolParam(description = "Franja horaria: MADRUGADA, TEMPRANO, MANANA, MEDIODIA, TARDE o NOCHE", required = false)
+            String franja,
             @ToolParam(description = "Página desde cero", required = false) Integer pagina) {
-        return consultas.buscar(origen, destino, dia, fecha, hora, pagina);
+        if (horaDesde == null && horaHasta == null && blanco(franja)) {
+            return consultas.buscar(origen, destino, dia, fecha, hora, pagina);
+        }
+        return consultas.buscar(origen, destino, dia, fecha, hora, horaDesde, horaHasta, franja, pagina);
+    }
+
+    public PaginaAgente<ViajeResumen> buscarViajes(String origen, String destino, String dia,
+            LocalDate fecha, LocalTime hora, Integer pagina) {
+        return buscarViajes(origen, destino, dia, fecha, hora, null, null, null, pagina);
     }
 
     public List<ViajeResumen> buscarViajes(String origen, String destino, String dia, LocalTime hora) {
-        return buscarViajes(origen, destino, dia, null, hora, null).items();
+        return buscarViajes(origen, destino, dia, null, hora, null, null, null, null).items();
     }
 
     @Tool(description = "Consulta viajes propios del conductor, diez por página. pagina inicia en cero; hayMas indica otra página.")

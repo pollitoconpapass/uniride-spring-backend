@@ -16,6 +16,7 @@ import com.uniride.services.*;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.validation.Validator;
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -23,9 +24,11 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
@@ -33,7 +36,6 @@ import tools.jackson.databind.ObjectMapper;
 
 /** The model prepares operations. The authenticated user resolves the same persisted proposal from either channel. */
 @Service
-@RequiredArgsConstructor
 public class ConfirmationService {
     private static final Duration TTL = Duration.ofMinutes(10);
     private static final String SNAPSHOT_OBSOLETO =
@@ -51,6 +53,42 @@ public class ConfirmationService {
     private final ObjectMapper mapper;
     private final Validator validator;
     private final Clock clock;
+    private final PerfilService perfilService;
+    private final HorarioAcademicoService horarioAcademicoService;
+    private final CursoRepository cursoRepository;
+
+    public ConfirmationService(ConfirmationRepository confirmations, UsuarioService usuarios, RutaService rutas,
+            ViajeService viajes, SolicitudService solicitudes, MetodoCompensacionService metodos,
+            RutaRepository rutaRepository, ViajeRepository viajeRepository, PerfilRepository perfiles,
+            EntityManager entityManager, ObjectMapper mapper, Validator validator, Clock clock) {
+        this(confirmations, usuarios, rutas, viajes, solicitudes, metodos, rutaRepository, viajeRepository,
+                perfiles, entityManager, mapper, validator, clock, null, null, null);
+    }
+
+    @Autowired
+    public ConfirmationService(ConfirmationRepository confirmations, UsuarioService usuarios, RutaService rutas,
+            ViajeService viajes, SolicitudService solicitudes, MetodoCompensacionService metodos,
+            RutaRepository rutaRepository, ViajeRepository viajeRepository, PerfilRepository perfiles,
+            EntityManager entityManager, ObjectMapper mapper, Validator validator, Clock clock,
+            PerfilService perfilService, HorarioAcademicoService horarioAcademicoService,
+            CursoRepository cursoRepository) {
+        this.confirmations = confirmations;
+        this.usuarios = usuarios;
+        this.rutas = rutas;
+        this.viajes = viajes;
+        this.solicitudes = solicitudes;
+        this.metodos = metodos;
+        this.rutaRepository = rutaRepository;
+        this.viajeRepository = viajeRepository;
+        this.perfiles = perfiles;
+        this.entityManager = entityManager;
+        this.mapper = mapper;
+        this.validator = validator;
+        this.clock = clock;
+        this.perfilService = perfilService;
+        this.horarioAcademicoService = horarioAcademicoService;
+        this.cursoRepository = cursoRepository;
+    }
 
     @Transactional(timeout = 10)
     public OperacionResumen prepararRuta(RutaRequest request) {
@@ -188,6 +226,92 @@ public class ConfirmationService {
         return guardar(usuario, TipoOperacion.CANCELAR_SOLICITUD, null, ids, mapper.createObjectNode(),
                 "Cancelar " + (ids.size() == 1 ? "tu solicitud pendiente: " : ids.size() + " solicitudes pendientes: ")
                         + detalle + ".");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEditarPerfil(PerfilRequest request, String resumen) {
+        Usuario usuario = autorizado(TipoOperacion.EDITAR_PERFIL);
+        validar(request);
+        if (request.fechaFinClases().isBefore(request.fechaInicioClases())) {
+            throw new CamposInvalidosException("La fecha de fin de clases no puede ser anterior al inicio");
+        }
+        if (request.metodoCompensacionFavorito() == null && usuario.getRolPrincipal() == Rol.CONDUCTOR) {
+            throw new CamposInvalidosException("El método de compensación favorito es obligatorio para conductores");
+        }
+        Perfil perfil = perfiles.findByUsuarioId(usuario.getId()).orElse(null);
+        String descripcion = resumen == null || resumen.isBlank() ? "Actualizar tu perfil personal." : resumen;
+        return guardar(usuario, TipoOperacion.EDITAR_PERFIL, perfil == null ? null : perfil.getId(),
+                request, snapshotPerfil(usuario, perfil), descripcion);
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEditarInfoAdicional(InfoAdicionalRequest request, String resumen) {
+        Usuario usuario = autorizado(TipoOperacion.EDITAR_INFO_ADICIONAL);
+        validar(request);
+        Perfil perfil = perfiles.findByUsuarioId(usuario.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Primero completa tu perfil personal"));
+        if (request.gustos() == null && request.hobbies() == null && request.datosCuriosos() == null) {
+            throw new CamposInvalidosException("Debes indicar al menos un campo para actualizar");
+        }
+        String gustos = valorResultante(request.gustos(), perfil.getGustos());
+        String hobbies = valorResultante(request.hobbies(), perfil.getHobbies());
+        String datosCuriosos = valorResultante(request.datosCuriosos(), perfil.getDatosCuriosos());
+        List<String> faltantes = new ArrayList<>();
+        if (gustos == null || gustos.isBlank()) faltantes.add("gustos");
+        if (hobbies == null || hobbies.isBlank()) faltantes.add("hobbies");
+        if (datosCuriosos == null || datosCuriosos.isBlank()) faltantes.add("datosCuriosos");
+        if (!faltantes.isEmpty()) {
+            throw new CamposInvalidosException("Completa los campos obligatorios: " + String.join(", ", faltantes));
+        }
+        String descripcion = resumen == null || resumen.isBlank()
+                ? "Actualizar tu información adicional." : resumen;
+        return guardar(usuario, TipoOperacion.EDITAR_INFO_ADICIONAL, perfil.getId(),
+                request, snapshotInfoAdicional(perfil), descripcion);
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararCambiarRol(CambiarRolRequest request) {
+        Usuario usuario = autorizado(TipoOperacion.CAMBIAR_ROL);
+        validar(request);
+        if (usuario.getRolPrincipal() == request.rol()) {
+            throw new BusinessException("Tu rol activo ya es " + request.rol() + ".");
+        }
+        return guardar(usuario, TipoOperacion.CAMBIAR_ROL, usuario.getId(), request, snapshotRol(usuario),
+                "Cambiar tu rol activo de " + usuario.getRolPrincipal() + " a " + request.rol() + ".");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararRegistrarCurso(CursoRequest request) {
+        Usuario usuario = autorizado(TipoOperacion.REGISTRAR_CURSO);
+        validar(request);
+        if (!request.horaFin().isAfter(request.horaInicio())) {
+            throw new CamposInvalidosException("La hora de fin debe ser posterior a la hora de inicio");
+        }
+        String diaNormalizado = normalizarDia(request.dia());
+        for (Curso existente : cursoRepository.buscarPorUsuario(usuario.getId(), Pageable.unpaged())) {
+            if (normalizarDia(existente.getDia()).equals(diaNormalizado)
+                    && existente.getHoraInicio().isBefore(request.horaFin())
+                    && existente.getHoraFin().isAfter(request.horaInicio())) {
+                throw new BusinessException("Conflicto de horario con el curso «" + existente.getNombre() + "» ("
+                        + existente.getDia() + " de " + existente.getHoraInicio() + " a "
+                        + existente.getHoraFin() + ").");
+            }
+        }
+        return guardar(usuario, TipoOperacion.REGISTRAR_CURSO, null, request,
+                mapper.createObjectNode().put("usuarioId", usuario.getId()),
+                "Registrar el curso «" + request.nombre().trim() + "» el " + request.dia()
+                        + " de " + request.horaInicio() + " a " + request.horaFin() + ".");
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararEliminarCurso(Long cursoId) {
+        Usuario usuario = autorizado(TipoOperacion.ELIMINAR_CURSO);
+        Curso curso = cursoRepository.findById(cursoId)
+                .filter(c -> c.getHorarioAcademico().getUsuario().getId().equals(usuario.getId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Curso no encontrado"));
+        return guardar(usuario, TipoOperacion.ELIMINAR_CURSO, curso.getId(), curso.getId(), snapshotCurso(curso),
+                "Eliminar el curso «" + curso.getNombre() + "» (" + curso.getDia() + " "
+                        + curso.getHoraInicio() + " - " + curso.getHoraFin() + ") de tu horario académico.");
     }
 
     @Transactional(timeout = 10)
@@ -331,6 +455,8 @@ public class ConfirmationService {
         // Acquire it directly to avoid lock upgrades and serialize checks across different methods.
         entityManager.refresh(usuario, pending.getTipo() == TipoOperacion.REGISTRAR_METODO
                 || pending.getTipo().modificaMetodoExistente()
+                || pending.getTipo() == TipoOperacion.CAMBIAR_ROL
+                || pending.getTipo() == TipoOperacion.EDITAR_PERFIL
                 ? LockModeType.PESSIMISTIC_WRITE : LockModeType.PESSIMISTIC_READ);
         exigirRol(usuario, pending.getTipo());
         OperacionResumen result = ejecutar(pending, usuario);
@@ -427,6 +553,55 @@ public class ConfirmationService {
             case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO -> {
                 return ejecutarGestionMetodo(pending);
             }
+            case EDITAR_PERFIL -> {
+                PerfilRequest request = mapper.readValue(pending.getParametros(), PerfilRequest.class);
+                validar(request);
+                Perfil perfil = perfiles.findByUsuarioId(usuario.getId()).orElse(null);
+                if (perfil != null) entityManager.refresh(perfil, LockModeType.PESSIMISTIC_WRITE);
+                comprobarSnapshot(pending, snapshotPerfil(usuario, perfil));
+                var guardado = perfilService.guardarDatosPersonales(request);
+                return new OperacionResumen(EstadoOperacion.EXITO, guardado.id(),
+                        "Tu perfil personal fue actualizado correctamente.");
+            }
+            case EDITAR_INFO_ADICIONAL -> {
+                InfoAdicionalRequest request = mapper.readValue(pending.getParametros(), InfoAdicionalRequest.class);
+                validar(request);
+                Perfil perfil = perfiles.findByUsuarioId(usuario.getId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Primero completa tu perfil personal"));
+                entityManager.refresh(perfil, LockModeType.PESSIMISTIC_WRITE);
+                comprobarSnapshot(pending, snapshotInfoAdicional(perfil));
+                var guardado = perfilService.guardarInfoAdicional(request);
+                return new OperacionResumen(EstadoOperacion.EXITO, guardado.id(),
+                        "Tu información adicional fue actualizada correctamente.");
+            }
+            case CAMBIAR_ROL -> {
+                CambiarRolRequest request = mapper.readValue(pending.getParametros(), CambiarRolRequest.class);
+                validar(request);
+                comprobarSnapshot(pending, snapshotRol(usuario));
+                usuarios.cambiarRol(request);
+                return new OperacionResumen(EstadoOperacion.EXITO, usuario.getId(),
+                        "Tu rol activo cambió a " + request.rol()
+                                + ". Inicia una nueva conversación para usar las herramientas de este rol.");
+            }
+            case REGISTRAR_CURSO -> {
+                CursoRequest request = mapper.readValue(pending.getParametros(), CursoRequest.class);
+                validar(request);
+                var creados = horarioAcademicoService.guardarCursos(List.of(request));
+                var creado = creados.getFirst();
+                return new OperacionResumen(EstadoOperacion.EXITO, creado.id(),
+                        "Curso «" + creado.nombre() + "» registrado el " + creado.dia()
+                                + " de " + creado.horaInicio() + " a " + creado.horaFin() + ".");
+            }
+            case ELIMINAR_CURSO -> {
+                Curso curso = cursoRepository.findById(pending.getRecursoId())
+                        .filter(c -> c.getHorarioAcademico().getUsuario().getId().equals(usuario.getId()))
+                        .orElseThrow(() -> new ResourceNotFoundException("Curso no encontrado"));
+                entityManager.refresh(curso, LockModeType.PESSIMISTIC_WRITE);
+                comprobarSnapshot(pending, snapshotCurso(curso));
+                String detalle = "Curso «" + curso.getNombre() + "» eliminado de tu horario académico.";
+                horarioAcademicoService.eliminarCurso(curso.getId());
+                return new OperacionResumen(EstadoOperacion.EXITO, curso.getId(), detalle);
+            }
         }
         throw new IllegalStateException("Tipo de operación no soportado");
     }
@@ -514,7 +689,8 @@ public class ConfirmationService {
         Rol requerido = switch (tipo) {
             case CREAR_RUTA, CREAR_VIAJE, EDITAR_RUTA, ELIMINAR_RUTA, REPROGRAMAR_VIAJE -> Rol.CONDUCTOR;
             case SOLICITAR_UNIRSE, CANCELAR_SOLICITUD -> Rol.PASAJERO;
-            case REGISTRAR_METODO -> null;
+            case REGISTRAR_METODO, EDITAR_PERFIL, EDITAR_INFO_ADICIONAL,
+                 CAMBIAR_ROL, REGISTRAR_CURSO, ELIMINAR_CURSO -> null;
             case ACTUALIZAR_METODO, CAMBIAR_ESTADO_METODO, ELIMINAR_METODO -> {
                 if (usuario.getRolPrincipal() == null) throw new NoPermitidoException("La operación requiere un rol activo.");
                 yield null;
@@ -561,6 +737,60 @@ public class ConfirmationService {
     private JsonNode snapshotMetodo(Long id, Long usuarioId, TipoCompensacion tipo, String descripcion, boolean activo) {
         return mapper.createObjectNode().put("metodoId", id).put("usuarioId", usuarioId).put("tipo", tipo.name())
                 .put("descripcion", descripcion).put("activo", activo);
+    }
+
+    private JsonNode snapshotPerfil(Usuario usuario, Perfil perfil) {
+        var data = mapper.createObjectNode().put("usuarioId", usuario.getId());
+        if (perfil == null) {
+            return data.put("existe", false);
+        }
+        data.put("existe", true);
+        data.put("perfilId", perfil.getId());
+        data.put("nombre", perfil.getNombre());
+        data.put("apellidos", perfil.getApellidos());
+        data.put("carrera", perfil.getCarrera());
+        data.put("distrito", perfil.getDistrito());
+        data.put("universidad", perfil.getUniversidad());
+        data.put("diasDisponibles", perfil.getDiasDisponibles());
+        data.put("horariosDisponibles", perfil.getHorariosDisponibles());
+        data.put("fechaInicioClases", Objects.toString(perfil.getFechaInicioClases(), null));
+        data.put("fechaFinClases", Objects.toString(perfil.getFechaFinClases(), null));
+        data.put("metodoCompensacionFavorito",
+                perfil.getMetodoCompensacionFavorito() == null ? null : perfil.getMetodoCompensacionFavorito().name());
+        return data;
+    }
+
+    private JsonNode snapshotInfoAdicional(Perfil perfil) {
+        return mapper.createObjectNode()
+                .put("perfilId", perfil.getId())
+                .put("gustos", perfil.getGustos())
+                .put("hobbies", perfil.getHobbies())
+                .put("datosCuriosos", perfil.getDatosCuriosos());
+    }
+
+    private JsonNode snapshotRol(Usuario usuario) {
+        return mapper.createObjectNode()
+                .put("usuarioId", usuario.getId())
+                .put("rol", usuario.getRolPrincipal() == null ? null : usuario.getRolPrincipal().name());
+    }
+
+    private JsonNode snapshotCurso(Curso curso) {
+        return mapper.createObjectNode()
+                .put("cursoId", curso.getId())
+                .put("nombre", curso.getNombre())
+                .put("dia", curso.getDia())
+                .put("horaInicio", Objects.toString(curso.getHoraInicio(), null))
+                .put("horaFin", Objects.toString(curso.getHoraFin(), null));
+    }
+
+    private String valorResultante(String valorNuevo, String valorActual) {
+        String valor = valorNuevo != null ? valorNuevo : valorActual;
+        return valor == null ? null : valor.trim();
+    }
+
+    private String normalizarDia(String dia) {
+        String n = Normalizer.normalize(dia.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD);
+        return n.replaceAll("\\p{M}", "");
     }
 
     private String describirMetodo(TipoCompensacion tipo, String descripcion, boolean activo) {

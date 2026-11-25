@@ -123,4 +123,27 @@ class AgentQueryServiceTest {
         verify(rutas).findByIdAndConductorIdAndEstadoNot(8L, 7L, EstadoRuta.ELIMINADA);
         verifyNoMoreInteractions(rutas);
     }
+
+    @Test void buscarPorFranjaHorariaYRangoUs30() {
+        when(usuarios.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        LocalDate manana = LocalDate.of(2026, 11, 22);
+        var pagina = PageRequest.of(0, 10);
+        when(viajes.buscarViajesRelevantesPorFechaYRango(isNull(), eq("upc"), isNull(), isNull(),
+                eq(LocalTime.of(5, 0)), eq(LocalTime.of(9, 0)), isNull(),
+                eq(EstadoViaje.PROGRAMADO), eq(EstadoRuta.ELIMINADA),
+                eq(LocalDate.of(2026, 11, 21)), eq(LocalTime.of(10, 0)), eq(manana), eq(pagina)))
+                .thenReturn(new PageImpl<>(List.of(), pagina, 0));
+
+        assertThat(service.buscar(null, "UPC", null, manana, null, null, null, "temprano", 0).items()).isEmpty();
+        verify(viajes).buscarViajesRelevantesPorFechaYRango(isNull(), eq("upc"), isNull(), isNull(),
+                eq(LocalTime.of(5, 0)), eq(LocalTime.of(9, 0)), isNull(),
+                eq(EstadoViaje.PROGRAMADO), eq(EstadoRuta.ELIMINADA),
+                eq(LocalDate.of(2026, 11, 21)), eq(LocalTime.of(10, 0)), eq(manana), eq(pagina));
+
+        assertThatThrownBy(() -> service.buscar(null, "UPC", null, manana, null, null, null, "desconocida", 0))
+                .isInstanceOf(CamposInvalidosException.class);
+        assertThatThrownBy(() -> service.buscar(null, "UPC", null, manana, null,
+                LocalTime.of(12, 0), LocalTime.of(8, 0), null, 0))
+                .isInstanceOf(CamposInvalidosException.class);
+    }
 }

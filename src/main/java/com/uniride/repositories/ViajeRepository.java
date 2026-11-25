@@ -137,6 +137,31 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("fecha") LocalDate fecha,
             Pageable pageable);
 
+    /** US30: natural-language trip search supporting time windows alongside exact filters. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
+    @Query(VIAJES_FUTUROS_PROGRAMADOS
+            + "AND v.pasajeros < r.capacidadMaxima "
+            + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') "
+            + "AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') "
+            + FILTROS_HORARIO
+            + "AND v.hora >= COALESCE(:horaDesde, v.hora) "
+            + "AND v.hora <= COALESCE(:horaHasta, v.hora) "
+            + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:distrito, ''), '%') "
+            + "ORDER BY "
+            + "(CASE WHEN COALESCE(:origen, '') = '' OR LOWER(r.origen) = :origen THEN 0 ELSE 4 END "
+            + "+ CASE WHEN COALESCE(:destino, '') = '' OR LOWER(r.destino) = :destino THEN 0 ELSE 3 END "
+            + "+ CASE WHEN COALESCE(:distrito, '') = '' OR LOWER(r.origen) = :distrito THEN 0 ELSE 1 END) ASC, "
+            + "v.fecha ASC, v.hora ASC, v.id ASC")
+    Page<Viaje> buscarViajesRelevantesPorFechaYRango(
+            @Param("origen") String origen, @Param("destino") String destino,
+            @Param("dia") String dia, @Param("hora") LocalTime hora,
+            @Param("horaDesde") LocalTime horaDesde, @Param("horaHasta") LocalTime horaHasta,
+            @Param("distrito") String distrito, @Param("estado") EstadoViaje estado,
+            @Param("rutaEliminada") com.uniride.enums.EstadoRuta rutaEliminada,
+            @Param("hoy") LocalDate hoy, @Param("horaActual") LocalTime horaActual,
+            @Param("fecha") LocalDate fecha,
+            Pageable pageable);
+
     /** US29: public departures with seats or accepted trips of the authenticated passenger. */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
     @Query(VIAJES_FUTUROS_PROGRAMADOS + FILTROS_HORARIO

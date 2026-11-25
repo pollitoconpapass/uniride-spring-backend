@@ -1,0 +1,274 @@
+package com.uniride.agent.tools;
+
+import com.uniride.agent.confirmation.ConfirmationService;
+import com.uniride.agent.dto.EstadoOperacion;
+import com.uniride.agent.dto.OperacionResumen;
+import com.uniride.agent.dto.PerfilAgenteRespuesta;
+import com.uniride.dto.requests.InfoAdicionalRequest;
+import com.uniride.dto.requests.PerfilRequest;
+import com.uniride.dto.responses.PerfilRespuesta;
+import com.uniride.enums.Rol;
+import com.uniride.enums.TipoCompensacion;
+import com.uniride.exceptions.BusinessException;
+import com.uniride.exceptions.CamposInvalidosException;
+import com.uniride.exceptions.NoPermitidoException;
+import com.uniride.exceptions.ResourceNotFoundException;
+import com.uniride.services.PerfilService;
+import com.uniride.services.UsuarioService;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import lombok.RequiredArgsConstructor;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+@Component
+@RequiredArgsConstructor
+public class PerfilAgentTools {
+
+    private final PerfilService perfilService;
+    private final UsuarioService usuarioService;
+    private final ConfirmationService confirmaciones;
+
+    @Tool(description = """
+            Consulta los datos personales, académicos y de información adicional del perfil del usuario autenticado
+            (nombre, apellidos, carrera, distrito, universidad, días y horarios disponibles, fechas de clases,
+            método de compensación favorito, gustos, hobbies y datos curiosos).
+            """)
+    public PerfilAgenteRespuesta consultarMiPerfil() {
+        try {
+            return new PerfilAgenteRespuesta(true, null, perfilService.obtenerPerfil());
+        } catch (ResourceNotFoundException e) {
+            return new PerfilAgenteRespuesta(false,
+                    "Aún no has completado tu perfil personal. Puedes completarlo desde la aplicación "
+                            + "o indicarme tus datos personales.",
+                    null);
+        }
+    }
+
+    @Tool(description = """
+            Prepara la edición o creación del perfil personal del usuario autenticado. NO aplica cambios todavía;
+            devuelve una propuesta que el usuario debe confirmar. Incluye solo los campos indicados por el usuario.
+            """)
+    public OperacionResumen editarPerfil(
+            @ToolParam(description = "Nuevo nombre", required = false) String nombre,
+            @ToolParam(description = "Nuevos apellidos", required = false) String apellidos,
+            @ToolParam(description = "Nueva carrera", required = false) String carrera,
+            @ToolParam(description = "Nuevo distrito", required = false) String distrito,
+            @ToolParam(description = "Nueva universidad", required = false) String universidad,
+            @ToolParam(description = "Nuevos días disponibles", required = false) String diasDisponibles,
+            @ToolParam(description = "Nuevos horarios disponibles", required = false) String horariosDisponibles,
+            @ToolParam(description = "Fecha inicio de clases yyyy-MM-dd", required = false) LocalDate fechaInicioClases,
+            @ToolParam(description = "Fecha fin de clases yyyy-MM-dd", required = false) LocalDate fechaFinClases,
+            @ToolParam(description = "Método de compensación favorito: DINERO, GASOLINA o FAVOR", required = false)
+            TipoCompensacion metodoCompensacionFavorito) {
+        String nNombre = limpiar(nombre);
+        String nApellidos = limpiar(apellidos);
+        String nCarrera = limpiar(carrera);
+        String nDistrito = limpiar(distrito);
+        String nUniversidad = limpiar(universidad);
+        String nDias = limpiar(diasDisponibles);
+        String nHorarios = limpiar(horariosDisponibles);
+
+        if (nNombre == null && nApellidos == null && nCarrera == null && nDistrito == null
+                && nUniversidad == null && nDias == null && nHorarios == null
+                && fechaInicioClases == null && fechaFinClases == null && metodoCompensacionFavorito == null) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "Indica qué dato de tu perfil deseas modificar (nombre, apellidos, carrera, distrito, "
+                            + "universidad, días u horarios disponibles, fechas de clases o método de compensación favorito).");
+        }
+
+        PerfilRespuesta actual = obtenerPerfilOpcional();
+        if (actual == null) {
+            List<String> faltantes = faltantesNuevoPerfil(nNombre, nApellidos, nCarrera, nDistrito, nUniversidad,
+                    nDias, nHorarios, fechaInicioClases, fechaFinClases, metodoCompensacionFavorito);
+            if (!faltantes.isEmpty()) {
+                return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                        "Aún no tienes un perfil registrado. Para completarlo faltan estos datos obligatorios: "
+                                + String.join(", ", faltantes) + ".");
+            }
+        }
+
+        PerfilRequest request = new PerfilRequest(
+                nNombre != null ? nNombre : actual.nombre(),
+                nApellidos != null ? nApellidos : actual.apellidos(),
+                nCarrera != null ? nCarrera : actual.carrera(),
+                nDistrito != null ? nDistrito : actual.distrito(),
+                nUniversidad != null ? nUniversidad : actual.universidad(),
+                nDias != null ? nDias : actual.diasDisponibles(),
+                nHorarios != null ? nHorarios : actual.horariosDisponibles(),
+                fechaInicioClases != null ? fechaInicioClases : actual.fechaInicioClases(),
+                fechaFinClases != null ? fechaFinClases : actual.fechaFinClases(),
+                metodoCompensacionFavorito != null
+                        ? metodoCompensacionFavorito
+                        : (actual == null ? null : actual.metodoCompensacionFavorito()));
+
+        List<String> cambios = describirCambiosPerfil(actual, request);
+        if (actual != null && cambios.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, actual.id(),
+                    "Tu perfil personal ya tiene los valores solicitados.");
+        }
+
+        String resumen = actual == null
+                ? "Completar tu perfil personal como " + request.nombre() + " " + request.apellidos()
+                + " (" + request.carrera() + ", " + request.distrito() + ", " + request.universidad() + ")."
+                : "Actualizar tu perfil personal: " + String.join(", ", cambios) + ".";
+
+        try {
+            return confirmaciones.prepararEditarPerfil(request, resumen);
+        } catch (CamposInvalidosException e) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, e.getMessage());
+        } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
+            return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
+        }
+    }
+
+    @Tool(description = """
+            Prepara la actualización de gustos, hobbies o datos curiosos del perfil del usuario.
+            Si el usuario pide agregar un elemento a lo que ya tiene, pasa agregar=true; si pide reemplazarlo, agregar=false.
+            NO aplica cambios todavía; devuelve una propuesta pendiente de confirmación.
+            """)
+    public OperacionResumen editarInfoAdicional(
+            @ToolParam(description = "Gustos del usuario o elemento a agregar", required = false) String gustos,
+            @ToolParam(description = "Hobbies del usuario o elemento a agregar", required = false) String hobbies,
+            @ToolParam(description = "Datos curiosos o elemento a agregar", required = false) String datosCuriosos,
+            @ToolParam(description = "true para agregar a lo existente; false para reemplazar", required = false)
+            Boolean agregar) {
+        String nGustos = limpiar(gustos);
+        String nHobbies = limpiar(hobbies);
+        String nDatos = limpiar(datosCuriosos);
+
+        if (nGustos == null && nHobbies == null && nDatos == null) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "Indica qué deseas actualizar en tus gustos, hobbies o datos curiosos.");
+        }
+
+        PerfilRespuesta actual = obtenerPerfilOpcional();
+        if (actual == null) {
+            return new OperacionResumen(EstadoOperacion.ERROR, null,
+                    "Primero completa tu perfil personal antes de editar tu información adicional.");
+        }
+
+        boolean modoAgregar = Boolean.TRUE.equals(agregar);
+        String gustosFinal = combinar(nGustos, actual.gustos(), modoAgregar);
+        String hobbiesFinal = combinar(nHobbies, actual.hobbies(), modoAgregar);
+        String datosFinal = combinar(nDatos, actual.datosCuriosos(), modoAgregar);
+
+        List<String> cambios = new ArrayList<>();
+        if (nGustos != null && !Objects.equals(gustosFinal, limpiar(actual.gustos()))) {
+            cambios.add("gustos → «" + gustosFinal + "»");
+        }
+        if (nHobbies != null && !Objects.equals(hobbiesFinal, limpiar(actual.hobbies()))) {
+            cambios.add("hobbies → «" + hobbiesFinal + "»");
+        }
+        if (nDatos != null && !Objects.equals(datosFinal, limpiar(actual.datosCuriosos()))) {
+            cambios.add("datos curiosos → «" + datosFinal + "»");
+        }
+        if (cambios.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, actual.id(),
+                    "Tu información adicional ya incluye esos datos.");
+        }
+
+        List<String> faltantes = new ArrayList<>();
+        if (esBlanco(gustosFinal) && esBlanco(actual.gustos())) faltantes.add("gustos");
+        if (esBlanco(hobbiesFinal) && esBlanco(actual.hobbies())) faltantes.add("hobbies");
+        if (esBlanco(datosFinal) && esBlanco(actual.datosCuriosos())) faltantes.add("datos curiosos");
+        if (!faltantes.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "Para guardar tu información adicional faltan estos campos obligatorios: "
+                            + String.join(", ", faltantes) + ".");
+        }
+
+        InfoAdicionalRequest request = new InfoAdicionalRequest(
+                nGustos != null ? gustosFinal : null,
+                nHobbies != null ? hobbiesFinal : null,
+                nDatos != null ? datosFinal : null);
+        String resumen = "Actualizar tu información adicional: " + String.join(", ", cambios) + ".";
+
+        try {
+            return confirmaciones.prepararEditarInfoAdicional(request, resumen);
+        } catch (CamposInvalidosException e) {
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, e.getMessage());
+        } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
+            return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
+        }
+    }
+
+    private PerfilRespuesta obtenerPerfilOpcional() {
+        try {
+            return perfilService.obtenerPerfil();
+        } catch (ResourceNotFoundException e) {
+            return null;
+        }
+    }
+
+    private List<String> faltantesNuevoPerfil(String nombre, String apellidos, String carrera, String distrito,
+            String universidad, String dias, String horarios, LocalDate inicio, LocalDate fin,
+            TipoCompensacion metodo) {
+        List<String> faltantes = new ArrayList<>();
+        if (nombre == null) faltantes.add("nombre");
+        if (apellidos == null) faltantes.add("apellidos");
+        if (carrera == null) faltantes.add("carrera");
+        if (distrito == null) faltantes.add("distrito");
+        if (universidad == null) faltantes.add("universidad");
+        if (dias == null) faltantes.add("días disponibles");
+        if (horarios == null) faltantes.add("horarios disponibles");
+        if (inicio == null) faltantes.add("fecha de inicio de clases");
+        if (fin == null) faltantes.add("fecha de fin de clases");
+        if (metodo == null && usuarioService.usuarioActual().getRolPrincipal() == Rol.CONDUCTOR) {
+            faltantes.add("método de compensación favorito");
+        }
+        return faltantes;
+    }
+
+    private List<String> describirCambiosPerfil(PerfilRespuesta actual, PerfilRequest request) {
+        if (actual == null) return List.of();
+        List<String> cambios = new ArrayList<>();
+        if (!Objects.equals(actual.nombre(), request.nombre())) cambios.add("nombre → " + request.nombre());
+        if (!Objects.equals(actual.apellidos(), request.apellidos())) cambios.add("apellidos → " + request.apellidos());
+        if (!Objects.equals(actual.carrera(), request.carrera())) cambios.add("carrera → " + request.carrera());
+        if (!Objects.equals(actual.distrito(), request.distrito())) cambios.add("distrito → " + request.distrito());
+        if (!Objects.equals(actual.universidad(), request.universidad())) {
+            cambios.add("universidad → " + request.universidad());
+        }
+        if (!Objects.equals(actual.diasDisponibles(), request.diasDisponibles())) {
+            cambios.add("días disponibles → " + request.diasDisponibles());
+        }
+        if (!Objects.equals(actual.horariosDisponibles(), request.horariosDisponibles())) {
+            cambios.add("horarios disponibles → " + request.horariosDisponibles());
+        }
+        if (!Objects.equals(actual.fechaInicioClases(), request.fechaInicioClases())) {
+            cambios.add("inicio de clases → " + request.fechaInicioClases());
+        }
+        if (!Objects.equals(actual.fechaFinClases(), request.fechaFinClases())) {
+            cambios.add("fin de clases → " + request.fechaFinClases());
+        }
+        if (!Objects.equals(actual.metodoCompensacionFavorito(), request.metodoCompensacionFavorito())) {
+            cambios.add("método favorito → " + request.metodoCompensacionFavorito());
+        }
+        return cambios;
+    }
+
+    private String combinar(String nuevo, String actual, boolean agregar) {
+        if (nuevo == null) return null;
+        String base = limpiar(actual);
+        if (!agregar || base == null) return nuevo;
+        if (base.toLowerCase(Locale.ROOT).contains(nuevo.toLowerCase(Locale.ROOT))) {
+            return base;
+        }
+        return base + ", " + nuevo;
+    }
+
+    private static String limpiar(String valor) {
+        if (valor == null) return null;
+        String trimmed = valor.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static boolean esBlanco(String valor) {
+        return valor == null || valor.isBlank();
+    }
+}
