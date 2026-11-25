@@ -216,6 +216,85 @@ public class ConfirmationService {
     }
 
     @Transactional(timeout = 10)
+    public OperacionResumen prepararGestionSolicitud(TipoOperacion tipo, Long id, String motivo) {
+        if (tipo != TipoOperacion.ACEPTAR_SOLICITUD && tipo != TipoOperacion.RECHAZAR_SOLICITUD) {
+            throw new IllegalArgumentException("Se requiere una gestión individual de solicitud");
+        }
+        Usuario usuario = autorizado(tipo);
+        Solicitud solicitud = solicitudes.solicitudRecibida(id);
+        if (tipo == TipoOperacion.ACEPTAR_SOLICITUD) solicitudes.validarAceptacion(solicitud);
+        else solicitudes.validarSolicitudProcesable(solicitud);
+        String accion = tipo == TipoOperacion.ACEPTAR_SOLICITUD ? "Aceptar" : "Rechazar";
+        var request = new RechazarRequest(tipo == TipoOperacion.RECHAZAR_SOLICITUD ? motivoRechazo(motivo) : null);
+        String detalle = accion + " la solicitud de " + solicitud.getPasajero().getNombre() + " "
+                + solicitud.getPasajero().getApellidos() + " para " + describirViaje(solicitud.getViaje()) + "."
+                + (tipo == TipoOperacion.ACEPTAR_SOLICITUD
+                        ? " Se ocupará un cupo y se creará un borrador de acuerdo de compensación."
+                        : opcional(" Motivo: ", request.motivo()))
+                + " Se avisará al pasajero.";
+        return guardar(usuario, tipo, id, request, snapshotSolicitudRecibida(solicitud), detalle);
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararRechazoPendientes(Long viajeId, String motivo, List<Long> elegidas) {
+        var tipo = TipoOperacion.RECHAZAR_SOLICITUDES_PENDIENTES;
+        Usuario usuario = autorizado(tipo);
+        Viaje viaje = viajePropio(viajeId, usuario);
+        var pendientes = solicitudes.pendientesRecibidas(viaje);
+        boolean todas = elegidas.isEmpty();
+        if (!todas) {
+            var idsElegidos = java.util.Set.copyOf(elegidas);
+            pendientes = pendientes.stream().filter(s -> idsElegidos.contains(s.getId())).toList();
+            if (pendientes.size() != idsElegidos.size()) {
+                throw new BusinessException("Las solicitudes elegidas deben estar pendientes en el mismo viaje.");
+            }
+        }
+        if (pendientes.isEmpty()) {
+            return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null,
+                    "Ese viaje no tiene solicitudes pendientes.");
+        }
+        pendientes.forEach(solicitudes::validarSolicitudProcesable);
+        var request = new RechazoPendientes(idsSolicitudes(pendientes), motivoRechazo(motivo), todas);
+        return guardar(usuario, tipo, viajeId, request, snapshotGestionViaje(viaje),
+                "Rechazar " + request.ids().size() + " solicitudes pendientes de " + describirViaje(viaje)
+                        + (todas ? " (todas las pendientes)" : " (solicitudes " + request.ids() + ")")
+                        + ". Se avisará a los pasajeros afectados." + opcional(" Motivo: ", request.motivo()));
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararGestionViaje(TipoOperacion tipo, Long id) {
+        Usuario usuario = autorizado(tipo);
+        Viaje viaje = viajePropio(id, usuario);
+        Object parametros = mapper.createObjectNode();
+        String viajeDescrito = describirViaje(viaje);
+        String descripcion = switch (tipo) {
+            case CONFIRMAR_VIAJE -> {
+                viajes.validarConfirmacion(viaje);
+                yield "Confirmar " + viajeDescrito + ". Se avisará a los pasajeros aceptados.";
+            }
+            case INICIAR_VIAJE -> {
+                viajes.validarInicio(viaje);
+                yield "Iniciar " + viajeDescrito + ". El viaje pasará a EN_PROGRESO y se avisará a los pasajeros aceptados.";
+            }
+            case COMPLETAR_VIAJE -> {
+                viajes.validarFinalizacion(viaje);
+                yield "Completar " + viajeDescrito + ". El viaje se registrará como COMPLETADO y se avisará a los pasajeros aceptados.";
+            }
+            case CANCELAR_VIAJE -> {
+                var impacto = viajes.evaluarCancelacion(viaje);
+                parametros = impacto;
+                String penalidad = impacto.penalidad() == null ? "No se aplicará una penalidad."
+                        : "Se registrará una penalidad " + impacto.penalidad() + " en tu perfil.";
+                yield "Cancelar " + viajeDescrito + ". " + penalidad
+                        + " Solicitudes pendientes o aceptadas que pasarán a CANCELADA: " + impacto.solicitudes().size()
+                        + ". Pasajeros que recibirán un aviso: " + impacto.pasajerosAvisados() + ".";
+            }
+            default -> throw new IllegalArgumentException("Se requiere una gestión de viaje");
+        };
+        return guardar(usuario, tipo, id, parametros, snapshotGestionViaje(viaje), descripcion);
+    }
+
+    @Transactional(timeout = 10)
     public OperacionResumen prepararCancelacionSolicitudes(List<SolicitudResumen> solicitudes) {
         Usuario usuario = autorizado(TipoOperacion.CANCELAR_SOLICITUD);
         if (solicitudes == null || solicitudes.isEmpty())
@@ -542,6 +621,24 @@ public class ConfirmationService {
                 return new OperacionResumen(EstadoOperacion.EXITO, null,
                         ids.length == 1 ? "Cancelé tu solicitud pendiente." : "Cancelé " + ids.length + " solicitudes pendientes.");
             }
+            case ACEPTAR_SOLICITUD, RECHAZAR_SOLICITUD -> {
+                return ejecutarGestionSolicitud(pending, usuario);
+            }
+            case RECHAZAR_SOLICITUDES_PENDIENTES -> {
+                Viaje viaje = bloquearViajePropio(pending.getRecursoId(), usuario);
+                comprobarSnapshot(pending, snapshotGestionViaje(viaje));
+                var request = mapper.readValue(pending.getParametros(), RechazoPendientes.class);
+                var actuales = java.util.Set.copyOf(idsSolicitudes(solicitudes.pendientesRecibidas(viaje)));
+                if (!actuales.containsAll(request.ids()) || request.todas() && actuales.size() != request.ids().size()) {
+                    throw new BusinessException(SNAPSHOT_OBSOLETO);
+                }
+                var resultados = solicitudes.rechazarMultiple(new RechazarMultipleRequest(request.ids(), request.motivo()));
+                return new OperacionResumen(EstadoOperacion.EXITO, viaje.getId(),
+                        "Solicitudes rechazadas: " + resultados.size() + ". Se registraron los avisos correspondientes.");
+            }
+            case CONFIRMAR_VIAJE, INICIAR_VIAJE, COMPLETAR_VIAJE, CANCELAR_VIAJE -> {
+                return ejecutarGestionViaje(pending, usuario);
+            }
             case REGISTRAR_METODO -> {
                 MetodoCompensacionRequest request = mapper.readValue(pending.getParametros(), MetodoCompensacionRequest.class);
                 validar(request);
@@ -604,6 +701,89 @@ public class ConfirmationService {
             }
         }
         throw new IllegalStateException("Tipo de operación no soportado");
+    }
+
+    private OperacionResumen ejecutarGestionSolicitud(PendingConfirmation pending, Usuario usuario) {
+        Long id = pending.getRecursoId();
+        bloquearViajePropio(solicitudes.viajeDeSolicitudRecibida(id), usuario);
+        Solicitud actual = solicitudes.solicitudRecibida(id);
+        comprobarSnapshot(pending, snapshotSolicitudRecibida(actual));
+        boolean aceptar = pending.getTipo() == TipoOperacion.ACEPTAR_SOLICITUD;
+        if (aceptar) {
+            solicitudes.validarAceptacion(actual);
+            solicitudes.aceptar(id);
+        } else {
+            solicitudes.validarSolicitudProcesable(actual);
+            solicitudes.rechazar(id, mapper.readValue(pending.getParametros(), RechazarRequest.class));
+        }
+        return new OperacionResumen(EstadoOperacion.EXITO, id, aceptar
+                ? "Solicitud aceptada. Se reservó un cupo, se generó el borrador de acuerdo y se registró el aviso."
+                : "Solicitud rechazada. Se registró el aviso al pasajero.");
+    }
+
+    private OperacionResumen ejecutarGestionViaje(PendingConfirmation pending, Usuario usuario) {
+        Viaje viaje = bloquearViajePropio(pending.getRecursoId(), usuario);
+        comprobarSnapshot(pending, snapshotGestionViaje(viaje));
+        Long id = viaje.getId();
+        var resultado = switch (pending.getTipo()) {
+            case CONFIRMAR_VIAJE -> viajes.confirmar(id, true);
+            case INICIAR_VIAJE -> viajes.iniciar(id);
+            case COMPLETAR_VIAJE -> viajes.completar(id);
+            case CANCELAR_VIAJE -> viajes.cancelar(id,
+                    mapper.readValue(pending.getParametros(), ViajeService.ImpactoCancelacion.class));
+            default -> throw new IllegalStateException("Operación de viaje no soportada");
+        };
+        String detalle = pending.getTipo() == TipoOperacion.CONFIRMAR_VIAJE
+                ? "Viaje confirmado. Se registraron los avisos para los pasajeros aceptados."
+                : resultado.mensaje();
+        return new OperacionResumen(EstadoOperacion.EXITO, id, detalle);
+    }
+
+    private Viaje viajePropio(Long id, Usuario usuario) {
+        return viajeRepository.findByIdAndRutaConductorId(id, usuario.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+    }
+
+    private Viaje bloquearViajePropio(Long id, Usuario usuario) {
+        return viajeRepository.bloquearParaConductor(id, usuario.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
+    }
+
+    private String describirViaje(Viaje viaje) {
+        return "el viaje de " + viaje.getRuta().getOrigen() + " a " + viaje.getRuta().getDestino()
+                + " del " + viaje.getFecha() + " a las " + viaje.getHora();
+    }
+
+    private String motivoRechazo(String motivo) {
+        if (motivo == null || motivo.isBlank()) return null;
+        if (motivo.strip().length() > 255) {
+            throw new CamposInvalidosException("El motivo de rechazo admite hasta 255 caracteres.");
+        }
+        AgentConversationStore.validateNoSecrets(motivo);
+        return motivo.strip();
+    }
+
+    private List<Long> idsSolicitudes(List<Solicitud> pendientes) {
+        return pendientes.stream().map(Solicitud::getId).sorted().toList();
+    }
+
+    private record RechazoPendientes(List<Long> ids, String motivo, boolean todas) { }
+
+    private JsonNode snapshotGestionViaje(Viaje viaje) {
+        return mapper.createObjectNode()
+                .put("id", viaje.getId()).put("origen", viaje.getRuta().getOrigen())
+                .put("destino", viaje.getRuta().getDestino()).put("fecha", viaje.getFecha().toString())
+                .put("hora", viaje.getHora().toString()).put("estado", viaje.getEstado().name())
+                .put("confirmado", viaje.isConfirmado());
+    }
+
+    private JsonNode snapshotSolicitudRecibida(Solicitud solicitud) {
+        var data = mapper.createObjectNode()
+                .put("id", solicitud.getId()).put("pasajero", solicitud.getPasajero().getId())
+                .put("nombre", solicitud.getPasajero().getNombre()).put("apellidos", solicitud.getPasajero().getApellidos())
+                .put("estado", solicitud.getEstado().name()).put("preferencia", solicitud.getPreferenciaCompensacion().name());
+        data.set("viaje", snapshotGestionViaje(solicitud.getViaje()));
+        return data;
     }
 
     private OperacionResumen ejecutarGestionMetodo(PendingConfirmation pending) {
@@ -687,7 +867,9 @@ public class ConfirmationService {
 
     private void exigirRol(Usuario usuario, TipoOperacion tipo) {
         Rol requerido = switch (tipo) {
-            case CREAR_RUTA, CREAR_VIAJE, EDITAR_RUTA, ELIMINAR_RUTA, REPROGRAMAR_VIAJE -> Rol.CONDUCTOR;
+            case CREAR_RUTA, CREAR_VIAJE, EDITAR_RUTA, ELIMINAR_RUTA, REPROGRAMAR_VIAJE,
+                 ACEPTAR_SOLICITUD, RECHAZAR_SOLICITUD, RECHAZAR_SOLICITUDES_PENDIENTES,
+                 CONFIRMAR_VIAJE, INICIAR_VIAJE, COMPLETAR_VIAJE, CANCELAR_VIAJE -> Rol.CONDUCTOR;
             case SOLICITAR_UNIRSE, CANCELAR_SOLICITUD -> Rol.PASAJERO;
             case REGISTRAR_METODO, EDITAR_PERFIL, EDITAR_INFO_ADICIONAL,
                  CAMBIAR_ROL, REGISTRAR_CURSO, ELIMINAR_CURSO -> null;

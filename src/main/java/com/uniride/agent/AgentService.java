@@ -82,6 +82,11 @@ public class AgentService {
             String anterior = campos == null ? message : EnvioAclaracion.paraHistorial(activa, campos);
             ChatResponse response;
             var decision = campos == null ? ConfirmationIntent.classify(message) : ConfirmationIntent.OTRA;
+            var coordinacion = CoordinacionConductorIntent.resolver(message, campos, activa, lease.coordinacion(),
+                    usuario.getRolPrincipal(), clock);
+            if (coordinacion != null) {
+                return gestionarCoordinacion(usuario, lease, anterior, coordinacion);
+            }
             var borradorContribucion = lease.contribucion();
             var borradorRuta = lease.rutaOViaje();
             var borradorMetodo = lease.borrador();
@@ -133,6 +138,7 @@ public class AgentService {
             lease.guardarRutaOViaje(null);
             lease.guardarHistorial(null);
             lease.guardarContribucion(null);
+            if (decision == ConfirmationIntent.OTRA) lease.guardarCoordinacion(null);
             try {
                 response = resolverTurno(usuario, message, anterior, lease, campos, decision, contribucion, historial,
                         rutaOViaje, compensation, anteriorPdf, voz);
@@ -164,6 +170,44 @@ public class AgentService {
             lease.complete(anterior, response);
             return response;
         }
+    }
+
+    private ChatResponse gestionarCoordinacion(Usuario usuario, AgentConversationStore.Lease lease, String anterior,
+                                                CoordinacionConductorIntent.Pedido pedido) {
+        if (usuario.getRolPrincipal() != Rol.CONDUCTOR) {
+            throw new NoPermitidoException("Esta acción requiere el rol CONDUCTOR.");
+        }
+        lease.descartarReferenciaConfirmacion();
+        lease.guardarAclaracion(null);
+        lease.guardarRutaOViaje(null);
+        lease.guardarBorrador(null);
+        lease.guardarContribucion(null);
+        lease.guardarHistorial(null);
+        lease.guardarContexto(null);
+        lease.guardarCoordinacion(null);
+
+        ChatResponse response;
+        if (pedido.problema() != null) {
+            response = soloMensaje(pedido.problema());
+        } else {
+            var turno = tools.newTurn();
+            try {
+                turno.procesar(pedido);
+            } catch (RuntimeException fallo) {
+                if (!turno.preparacionIncierta()) throw fallo;
+            }
+            response = turno.preparacionIncierta() ? preparacionIncierta(turno) : turno.response("");
+            lease.guardarCoordinacion(turno.coordinacion());
+        }
+        var aclaracion = response.aclaracion();
+        if (aclaracion != null) {
+            aclaracion = aclaracion.conId(UUID.randomUUID());
+            lease.guardarAclaracion(aclaracion);
+            response = response.conAclaracion(aclaracion);
+        }
+        response = response.withConversationId(lease.id());
+        lease.complete(anterior, response, "Se atendió una consulta de coordinación del conductor.");
+        return response;
     }
 
     private static boolean esFormulario(AclaracionAgente aclaracion, String operacion) {

@@ -305,9 +305,7 @@ public class SolicitudService {
 
         // Al estar dentro del mismo @Transactional, el bloqueo y el incremento
         // se liberan juntos al commit. La siguiente solicitud lee el cupo nuevo.
-        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
-            throw new BusinessException("La ruta ya no tiene cupos disponibles");
-        }
+        validarCupo(viaje);
 
         solicitud.setEstado(EstadoSolicitud.ACEPTADA);
         Solicitud aceptada = solicitudRepository.save(solicitud);
@@ -331,6 +329,26 @@ public class SolicitudService {
                         + solicitud.getPreferenciaCompensacion() + ").");
 
         return solicitudMapper.toSolicitudRespuesta(aceptada);
+    }
+
+    @Transactional(readOnly = true)
+    public Long viajeDeSolicitudRecibida(Long id) {
+        return solicitudRepository.buscarViajeIdParaAceptar(id, usuarioService.usuarioActual().getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+    }
+
+    @Transactional(readOnly = true)
+    public Solicitud solicitudRecibida(Long id) {
+        return solicitudRepository.findByIdAndViajeRutaConductorId(id, usuarioService.usuarioActual().getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada"));
+    }
+
+    @Transactional(readOnly = true)
+    public List<Solicitud> pendientesRecibidas(Viaje viaje) {
+        if (!viaje.getRuta().getConductor().getId().equals(usuarioService.usuarioActual().getId())) {
+            throw new ResourceNotFoundException("Viaje no encontrado");
+        }
+        return solicitudRepository.findByViajeIdAndEstadoIn(viaje.getId(), List.of(EstadoSolicitud.PENDIENTE));
     }
 
     @Transactional
@@ -394,7 +412,18 @@ public class SolicitudService {
         return solicitudMapper.toSolicitudRespuesta(rechazada);
     }
 
-    private void validarSolicitudProcesable(Solicitud solicitud) {
+    public void validarAceptacion(Solicitud solicitud) {
+        validarSolicitudProcesable(solicitud);
+        validarCupo(solicitud.getViaje());
+    }
+
+    private void validarCupo(Viaje viaje) {
+        if (viaje.getPasajeros() >= viaje.getRuta().getCapacidadMaxima()) {
+            throw new BusinessException("La ruta ya no tiene cupos disponibles");
+        }
+    }
+
+    public void validarSolicitudProcesable(Solicitud solicitud) {
         Viaje viaje = solicitud.getViaje();
 
         if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {

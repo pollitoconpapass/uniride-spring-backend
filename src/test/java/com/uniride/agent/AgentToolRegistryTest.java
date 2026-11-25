@@ -23,7 +23,9 @@ import com.uniride.repositories.CursoRepository;
 import com.uniride.services.ContribucionService;
 import com.uniride.services.EstadisticasService;
 import com.uniride.services.HorarioAcademicoService;
+import com.uniride.services.NotificacionService;
 import com.uniride.services.PerfilService;
+import com.uniride.services.SolicitudesRecibidasUs14Service;
 import com.uniride.services.UsuarioService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -44,6 +46,8 @@ class AgentToolRegistryTest {
     private final PerfilService profiles = mock(PerfilService.class);
     private final HorarioAcademicoService schedules = mock(HorarioAcademicoService.class);
     private final CursoRepository courses = mock(CursoRepository.class);
+    private final GestionViajeAgentTools gestion = new GestionViajeAgentTools(queries, confirmations,
+            mock(NotificacionService.class), users);
     private final AgentToolRegistry registry = new AgentToolRegistry(new ObjectMapper(),
             new ViajeAgentTools(queries, confirmations, users),
             new RutaAgentTools(queries, confirmations, users),
@@ -52,7 +56,9 @@ class AgentToolRegistryTest {
             new ContribucionAgentTools(queries, mock(ContribucionService.class)),
             new PerfilAgentTools(profiles, users, confirmations),
             new UsuarioAgentTools(users, confirmations),
-            new HorarioAcademicoAgentTools(schedules, courses, users, confirmations));
+            new HorarioAcademicoAgentTools(schedules, courses, users, confirmations),
+            new SolicitudesConductorAgentTools(queries, mock(SolicitudesRecibidasUs14Service.class), confirmations, gestion),
+            gestion);
 
     @Test void registersEveryExistingToolWithoutAnyConfirmationOrJsonTool() {
         assertThat(Arrays.stream(registry.newTurn().callbacks()).map(c -> c.getToolDefinition().name()))

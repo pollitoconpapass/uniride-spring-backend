@@ -220,6 +220,7 @@ class ConfirmationServiceIntegrationTest {
             case REGISTRAR_CURSO -> service.prepararRegistrarCurso(
                     new CursoRequest("Algoritmos", "Lunes", LocalTime.of(8, 0), LocalTime.of(10, 0)));
             case ELIMINAR_CURSO -> service.prepararEliminarCurso(existingCourse.getId());
+            default -> throw new IllegalArgumentException("Tipo no incluido en estos casos: " + type);
         };
         UUID id = prepared.confirmacion().id();
         UUID conversation = bindProposal(owner, prepared);

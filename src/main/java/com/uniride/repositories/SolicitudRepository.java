@@ -58,6 +58,21 @@ public interface SolicitudRepository extends JpaRepository<Solicitud, Long> {
 
     Optional<Solicitud> findByIdAndViajeRutaConductorId(Long id, Long conductorId);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"viaje.ruta", "pasajero"})
+    @Query("""
+            SELECT s FROM Solicitud s JOIN s.viaje v JOIN v.ruta r JOIN s.pasajero p
+            WHERE r.conductor.id = :conductorId AND s.id = COALESCE(:solicitudId, s.id)
+                AND v.id = COALESCE(:viajeId, v.id) AND s.estado = COALESCE(:estado, s.estado)
+                AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') ESCAPE '!'
+                AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') ESCAPE '!'
+                AND LOWER(CONCAT(p.nombre, ' ', COALESCE(p.apellidos, '')))
+                    LIKE CONCAT('%', COALESCE(:pasajero, ''), '%') ESCAPE '!'
+                AND v.fecha = COALESCE(:fecha, v.fecha) AND v.hora = COALESCE(:hora, v.hora)
+            ORDER BY s.fechaCreacion DESC, s.id DESC
+            """)
+    Page<Solicitud> buscarRecibidasAgente(Long conductorId, Long viajeId, Long solicitudId, EstadoSolicitud estado,
+            String origen, String destino, LocalDate fecha, LocalTime hora, String pasajero, Pageable pageable);
+
     // 11.2: obtener solo el ID evita cargar una entidad Viaje obsoleta antes del bloqueo.
     // El filtro de conductor evita exponer solicitudes ajenas.
     @Query("SELECT s.viaje.id FROM Solicitud s "

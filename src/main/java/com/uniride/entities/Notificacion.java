@@ -39,6 +39,10 @@ public class Notificacion {
     @JoinColumn(name = "usuario_id", nullable = false)
     private Usuario usuario;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "viaje_cancelado_id")
+    private Viaje viajeCancelado;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "tipo", nullable = false)
     private TipoNotificacion tipo;

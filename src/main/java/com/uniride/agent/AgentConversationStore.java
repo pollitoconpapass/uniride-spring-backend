@@ -110,6 +110,7 @@ public class AgentConversationStore {
         private AclaracionAgente aclaracion;
         private IntencionAclarable.Borrador rutaOViaje;
         private IntencionAclarable.Contexto ultimoContexto;
+        private CoordinacionConductorIntent.Sesion coordinacion;
         private HistorialPdfIntent.Solicitud historial;
         private UUID confirmacionPendiente;
         private ConfirmacionResumen confirmacionResuelta;
@@ -148,6 +149,8 @@ public class AgentConversationStore {
         void guardarRutaOViaje(IntencionAclarable.Borrador borrador) { session.rutaOViaje = borrador; }
         IntencionAclarable.Contexto ultimoContexto() { return session.ultimoContexto; }
         void guardarContexto(IntencionAclarable.Contexto contexto) { session.ultimoContexto = contexto; }
+        CoordinacionConductorIntent.Sesion coordinacion() { return session.coordinacion; }
+        void guardarCoordinacion(CoordinacionConductorIntent.Sesion coordinacion) { session.coordinacion = coordinacion; }
         HistorialPdfIntent.Solicitud historial() { return session.historial; }
         void guardarHistorial(HistorialPdfIntent.Solicitud historial) { session.historial = historial; }
 
@@ -165,13 +168,17 @@ public class AgentConversationStore {
         }
 
         void complete(String user, ChatResponse response) {
+            complete(user, response, response.message());
+        }
+
+        void complete(String user, ChatResponse response, String textoParaHistorial) {
             var operacion = response.operacion();
             if (operacion != null && operacion.estado() == EstadoOperacion.CONFIRMACION_REQUERIDA
                     && operacion.confirmacion() != null && operacion.confirmacion().estado() == EstadoConfirmacion.PENDIENTE) {
                 session.confirmacionPendiente = operacion.confirmacion().id();
                 session.confirmacionResuelta = null;
             }
-            complete(user, response.message());
+            complete(user, textoParaHistorial);
         }
 
         public void complete(String user, String assistant) {

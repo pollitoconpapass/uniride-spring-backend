@@ -36,6 +36,11 @@ final class TextoHablado {
             respuesta.aclaracion().campos().stream().filter(campo -> "ruta".equals(campo.id())).findFirst()
                     .ifPresent(campo -> partes.add(rutasParaSeleccionar(campo.opciones())));
         }
+        if (respuesta.aclaracion() != null
+                && CoordinacionConductorIntent.esHerramienta(respuesta.aclaracion().operacion())) {
+            var opciones = respuesta.aclaracion().campos().getFirst().opciones();
+            partes.add(opcionesParaSeleccionar(opciones, "Opción", "Puedes indicar el número de la opción."));
+        }
         if (!respuesta.rutas().isEmpty())
             partes.add(enumerar("ruta", "rutas", respuesta.rutas().stream().map(TextoHablado::ruta).toList()));
         if (!respuesta.viajes().isEmpty())
@@ -80,11 +85,15 @@ final class TextoHablado {
     }
 
     private static String rutasParaSeleccionar(List<OpcionAclaracion> opciones) {
+        return opcionesParaSeleccionar(opciones, "Ruta", "Puedes indicar el número de la ruta.");
+    }
+
+    private static String opcionesParaSeleccionar(List<OpcionAclaracion> opciones, String prefijo, String instruccion) {
         String lista = String.join(". ", opciones.stream().limit(MAX_ITEMS)
-                .map(opcion -> "Ruta " + limpiar(opcion.etiqueta().replace(" → ", " a ").replace(" · ", ", ")))
+                .map(opcion -> prefijo + " " + limpiar(opcion.etiqueta().replace(" → ", " a ").replace(" · ", ", ")))
                 .toList());
         return lista + "." + (opciones.size() > MAX_ITEMS ? " Hay más opciones en pantalla." : "")
-                + " Puedes indicar el número de la ruta.";
+                + " " + instruccion;
     }
 
     private static String viaje(ViajeResumen viaje) {

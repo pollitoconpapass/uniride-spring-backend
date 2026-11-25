@@ -46,6 +46,16 @@ public interface ViajeRepository extends JpaRepository<Viaje, Long> {
             @Param("rutaEliminada") com.uniride.enums.EstadoRuta rutaEliminada,
             Pageable pageable);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"ruta.conductor"})
+    @Query("SELECT v FROM Viaje v JOIN v.ruta r WHERE r.conductor.id = :conductorId "
+            + "AND v.id = COALESCE(:viajeId, v.id) AND v.estado IN :estados "
+            + "AND LOWER(r.origen) LIKE CONCAT('%', COALESCE(:origen, ''), '%') ESCAPE '!' "
+            + "AND LOWER(r.destino) LIKE CONCAT('%', COALESCE(:destino, ''), '%') ESCAPE '!' "
+            + "AND v.fecha = COALESCE(:fecha, v.fecha) AND v.hora = COALESCE(:hora, v.hora) "
+            + "ORDER BY v.fecha ASC, v.hora ASC, v.id ASC")
+    Page<Viaje> buscarCoordinacionConductor(Long conductorId, Long viajeId, List<EstadoViaje> estados,
+            String origen, String destino, LocalDate fecha, LocalTime hora, Pageable pageable);
+
     Page<Viaje> findByRutaIdOrderByFechaAscHoraAsc(Long rutaId, Pageable pageable);
 
     Optional<Viaje> findByIdAndRutaConductorId(Long id, Long conductorId);
