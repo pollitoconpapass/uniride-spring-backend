@@ -44,7 +44,7 @@ class PostgresMigracionIntegrationTest {
         Flyway flyway=Flyway.configure().dataSource(url,user,password).schemas(schema).defaultSchema(schema)
                 .baselineVersion("1").cleanDisabled(true).load();
         flyway.baseline();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(8);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         try(var connection=DriverManager.getConnection(url,user,password);var statement=connection.createStatement();
             var result=statement.executeQuery("SELECT correo_institucional,telefono,intentos_otp FROM "+schema+".usuarios")) {
@@ -122,6 +122,18 @@ class PostgresMigracionIntegrationTest {
                 insertarPendiente(connection, table, owner, tipo);
             assertThat(filasConfirmacion(connection, table)).hasSize(15);
             assertThatThrownBy(() -> insertarPendiente(connection, table, owner, "EDITAR_VIAJE"))
+                    .isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23514"));
+
+            Flyway v10 = configuration.target(MigrationVersion.fromVersion("10")).load();
+            assertThat(v10.migrate().migrationsExecuted).isEqualTo(1);
+            v10.validate();
+            assertThat(v10.info().current().getVersion().getVersion()).isEqualTo("10");
+            assertThat(filasConfirmacion(connection, table)).hasSize(15);
+            for (String tipo : new String[]{"EDITAR_PERFIL", "EDITAR_INFO_ADICIONAL", "CAMBIAR_ROL",
+                    "REGISTRAR_CURSO", "ELIMINAR_CURSO"})
+                insertarPendiente(connection, table, owner, tipo);
+            assertThat(filasConfirmacion(connection, table)).hasSize(20);
+            assertThatThrownBy(() -> insertarPendiente(connection, table, owner, "ELIMINAR_USUARIO"))
                     .isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23514"));
         }
     }
