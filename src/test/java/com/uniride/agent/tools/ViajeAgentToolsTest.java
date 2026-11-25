@@ -51,6 +51,20 @@ class ViajeAgentToolsTest {
     }
 
     @Test
+    void buscarViajesNaturalUsaFranjaYRangoHorarioUs30() {
+        LocalDate manana = LocalDate.of(2026, 11, 24);
+        var trip = new ViajeResumen(9L, 1L, "Surco", "UPC", "Martes", manana,
+                LocalTime.of(7, 0), "Parque", "Ana", 4, EstadoViaje.PROGRAMADO, null);
+        when(consultas.buscar(null, "UPC", null, manana, null, null, null, "temprano", 0))
+                .thenReturn(new PaginaAgente<>(List.of(trip), 0, 10, 1, false));
+
+        var resultado = tools.buscarViajes(null, "UPC", null, manana, null, null, null, "temprano", 0);
+        assertThat(resultado.items()).containsExactly(trip);
+        verify(consultas).buscar(null, "UPC", null, manana, null, null, null, "temprano", 0);
+        verifyNoInteractions(confirmaciones);
+    }
+
+    @Test
     void solicitarUnirseRechazaAlConductorSinConsultarViajes() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
         assertThat(tools.solicitarUnirse(null, null, null, null, null, TipoCompensacion.FAVOR).estado())

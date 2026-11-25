@@ -32,6 +32,14 @@ public class AgentConfig {
             La descarga PDF corresponde a un pedido explícito del historial propio y admite filtros por fecha y rol.
             La herramienta entrega la referencia para descargar con autenticación.
 
+            También puedes consultar y preparar cambios en el perfil personal, información adicional (gustos,
+            hobbies, datos curiosos), rol activo (CONDUCTOR o PASAJERO) y horario académico (consultar por día,
+            registrar o eliminar cursos). Para buscar viajes en lenguaje natural, traduce fechas relativas
+            (como mañana o próximo lunes) usando la fecha actual y usa franja (MADRUGADA, TEMPRANO, MANANA,
+            MEDIODIA, TARDE, NOCHE) o rango horario (horaDesde, horaHasta).
+            Si el usuario pregunta por registro o inicio de sesión, oriéntalo hacia el formulario seguro de
+            la aplicación; nunca pidas contraseñas ni códigos OTP dentro del chat.
+
             Responde sin JSON, código ni tablas. No vuelvas a redactar los datos que entrega el servidor.
             """;
 

@@ -7,23 +7,33 @@ import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.tools.*;
 import com.uniride.dto.responses.AnalisisSemanalRespuesta;
+import com.uniride.dto.responses.CursoRespuesta;
 import com.uniride.dto.responses.DiaCantidadRespuesta;
 import com.uniride.dto.responses.EstadisticasRespuesta;
+import com.uniride.dto.responses.PerfilRespuesta;
 import com.uniride.dto.responses.RankingRutasRespuesta;
 import com.uniride.dto.responses.RutaFrecuenteRespuesta;
+import com.uniride.dto.responses.UsuarioRespuesta;
 import com.uniride.entities.Usuario;
 import com.uniride.enums.Rol;
 import com.uniride.enums.TipoCompensacion;
 import com.uniride.exceptions.BusinessException;
 import com.uniride.exceptions.NoPermitidoException;
+import com.uniride.repositories.CursoRepository;
 import com.uniride.services.ContribucionService;
 import com.uniride.services.EstadisticasService;
+import com.uniride.services.HorarioAcademicoService;
+import com.uniride.services.PerfilService;
 import com.uniride.services.UsuarioService;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import tools.jackson.databind.ObjectMapper;
 
 class AgentToolRegistryTest {
@@ -31,12 +41,18 @@ class AgentToolRegistryTest {
     private final ConfirmationService confirmations = mock(ConfirmationService.class);
     private final UsuarioService users = mock(UsuarioService.class);
     private final EstadisticasService statistics = mock(EstadisticasService.class);
+    private final PerfilService profiles = mock(PerfilService.class);
+    private final HorarioAcademicoService schedules = mock(HorarioAcademicoService.class);
+    private final CursoRepository courses = mock(CursoRepository.class);
     private final AgentToolRegistry registry = new AgentToolRegistry(new ObjectMapper(),
             new ViajeAgentTools(queries, confirmations, users),
             new RutaAgentTools(queries, confirmations, users),
             new MetodoCompensacionAgentTools(queries, confirmations),
             new ReportesAgentTools(statistics, users),
-            new ContribucionAgentTools(queries, mock(ContribucionService.class)));
+            new ContribucionAgentTools(queries, mock(ContribucionService.class)),
+            new PerfilAgentTools(profiles, users, confirmations),
+            new UsuarioAgentTools(users, confirmations),
+            new HorarioAcademicoAgentTools(schedules, courses, users, confirmations));
 
     @Test void registersEveryExistingToolWithoutAnyConfirmationOrJsonTool() {
         assertThat(Arrays.stream(registry.newTurn().callbacks()).map(c -> c.getToolDefinition().name()))
@@ -45,8 +61,11 @@ class AgentToolRegistryTest {
                         "solicitarUnirse", "registrarMetodoCompensacion", "consultarMisEstadisticas",
                         "consultarMiFrecuenciaViajes", "consultarRankingMisRutas", "prepararDescargaHistorialPdf",
                         "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion",
-                        "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud");
-        verifyNoInteractions(confirmations, queries, users, statistics);
+                        "editarRuta", "eliminarRuta", "reprogramarViaje", "cancelarSolicitud",
+                        "consultarMiPerfil", "editarPerfil", "editarInfoAdicional",
+                        "consultarMiUsuario", "cambiarRol",
+                        "consultarMisHorarios", "registrarCurso", "eliminarCurso");
+        verifyNoInteractions(confirmations, queries, users, statistics, profiles, schedules, courses);
     }
 
     @Test void anAttemptedContributionLookupIsNeverRepeatedAfterAnError() {
@@ -300,6 +319,35 @@ class AgentToolRegistryTest {
                 .isInstanceOf(NoPermitidoException.class).hasMessageContaining("CONDUCTOR");
         assertThat(turn.hasResults()).isFalse();
         verifyNoInteractions(statistics, confirmations);
+    }
+
+    @Test void personalQueriesBuildDeterministicSummariesAndNewPreparationsKeepOneOperationLimit() {
+        when(profiles.obtenerPerfil()).thenReturn(new PerfilRespuesta(1L, "Renzo", "Vega", "Software", "Surco", "UPC",
+                "Lunes", "08:00", LocalDate.of(2026, 3, 1), LocalDate.of(2026, 12, 20),
+                TipoCompensacion.GASOLINA, "Rock", "Leer", "Dato", LocalDateTime.now()));
+        when(users.obtenerUsuarioActual()).thenReturn(new UsuarioRespuesta(1L, "renzo@upc.edu.pe", "Renzo", "Vega",
+                "999000111", Rol.PASAJERO, true));
+        when(schedules.listarCursos(PageRequest.of(0, 10))).thenReturn(new PageImpl<>(List.of(
+                new CursoRespuesta(2L, "Algoritmos", "Lunes", LocalTime.of(8, 0), LocalTime.of(10, 0)))));
+        var turn = registry.newTurn();
+        callback(turn, "consultarMiPerfil").call("{}");
+        callback(turn, "consultarMiUsuario").call("{}");
+        callback(turn, "consultarMisHorarios").call("{}");
+
+        ChatResponse readResponse = turn.response("Ignorar texto libre");
+        assertThat(readResponse.message()).contains("Renzo Vega", "Surco", "renzo@upc.edu.pe",
+                "Algoritmos (Lunes 08:00 - 10:00)")
+                .doesNotContain("No se encontraron resultados");
+
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(1L).rolPrincipal(Rol.PASAJERO).build());
+        when(confirmations.prepararCambiarRol(any())).thenReturn(new OperacionResumen(
+                EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Cambiar rol a CONDUCTOR."));
+        var prepTurn = registry.newTurn();
+        callback(prepTurn, "cambiarRol").call("{\"rol\":\"CONDUCTOR\"}");
+        assertThatThrownBy(() -> callback(prepTurn, "registrarCurso")
+                .call("{\"nombre\":\"Algoritmos\",\"dia\":\"Lunes\",\"horaInicio\":\"08:00\",\"horaFin\":\"10:00\"}"))
+                .isInstanceOfSatisfying(AgentProviderException.class, e -> assertThat(e.code()).isEqualTo("ONE_OPERATION_PER_TURN"));
+        assertThat(prepTurn.response("").message()).contains("Cambiar rol a CONDUCTOR");
     }
 
     private ToolCallback callback(AgentToolRegistry.Turn turn, String name) {

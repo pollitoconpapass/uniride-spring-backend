@@ -61,6 +61,8 @@ class ConfirmationServiceIntegrationTest {
     @Autowired SolicitudRepository requests;
     @Autowired MetodoCompensacionRepository methods;
     @Autowired MetodoCompensacionService methodService;
+    @Autowired HorarioAcademicoRepository schedules;
+    @Autowired CursoRepository courses;
     @Autowired TransactionTemplate transaction;
     @Autowired ObjectMapper mapper;
     @Autowired PerfilRolService roles;
@@ -166,7 +168,12 @@ class ConfirmationServiceIntegrationTest {
         "EDITAR_RUTA, sí",
         "ELIMINAR_RUTA, confirmo",
         "REPROGRAMAR_VIAJE, sí",
-        "CANCELAR_SOLICITUD, adelante"
+        "CANCELAR_SOLICITUD, adelante",
+        "EDITAR_PERFIL, sí",
+        "EDITAR_INFO_ADICIONAL, confirmo",
+        "CAMBIAR_ROL, adelante",
+        "REGISTRAR_CURSO, sí",
+        "ELIMINAR_CURSO, confirmo"
     })
     void acceptsAllPersistedOperationTypesInChat(TipoOperacion type, String response) throws Exception {
         Usuario owner = switch (type) {
@@ -179,6 +186,7 @@ class ConfirmationServiceIntegrationTest {
                     metodo(owner, TipoCompensacion.DINERO, "Yape", true);
             default -> null;
         };
+        var existingCourse = type == TipoOperacion.ELIMINAR_CURSO ? course(owner, "Matemáticas", "Martes", 8, 10) : null;
         var prepared = switch (type) {
             case CREAR_RUTA -> service.prepararRuta(routeRequest());
             case CREAR_VIAJE -> service.prepararViaje(route().getId(), tripRequest());
@@ -201,6 +209,17 @@ class ConfirmationServiceIntegrationTest {
                         viaje.getId(), viaje.getRuta().getOrigen(), viaje.getRuta().getDestino(), viaje.getDia(),
                         viaje.getFecha(), viaje.getHora(), EstadoSolicitud.PENDIENTE)));
             }
+            case EDITAR_PERFIL -> service.prepararEditarPerfil(new PerfilRequest(
+                    "Ana", "Prueba", "Software", "Barranco", "UPC", "Lunes", "08:00",
+                    LocalDate.of(2026, 3, 1), LocalDate.of(2026, 12, 20), TipoCompensacion.GASOLINA),
+                    "Actualizar distrito a Barranco.");
+            case EDITAR_INFO_ADICIONAL -> service.prepararEditarInfoAdicional(
+                    new InfoAdicionalRequest("Escuchar rock", "Leer", "Me gusta viajar"),
+                    "Actualizar información adicional.");
+            case CAMBIAR_ROL -> service.prepararCambiarRol(new CambiarRolRequest(Rol.PASAJERO));
+            case REGISTRAR_CURSO -> service.prepararRegistrarCurso(
+                    new CursoRequest("Algoritmos", "Lunes", LocalTime.of(8, 0), LocalTime.of(10, 0)));
+            case ELIMINAR_CURSO -> service.prepararEliminarCurso(existingCourse.getId());
         };
         UUID id = prepared.confirmacion().id();
         UUID conversation = bindProposal(owner, prepared);
@@ -231,6 +250,15 @@ class ConfirmationServiceIntegrationTest {
                     .isEqualTo(tripRequest().fecha().plusDays(1));
             case CANCELAR_SOLICITUD -> assertThat(requests.findById(persisted.parametros().get(0).asLong())
                     .orElseThrow().getEstado()).isEqualTo(EstadoSolicitud.CANCELADA);
+            case EDITAR_PERFIL -> assertThat(profiles.findByUsuarioId(driver.getId()).orElseThrow().getDistrito())
+                    .isEqualTo("Barranco");
+            case EDITAR_INFO_ADICIONAL -> assertThat(profiles.findByUsuarioId(driver.getId()).orElseThrow().getGustos())
+                    .isEqualTo("Escuchar rock");
+            case CAMBIAR_ROL -> assertThat(users.findById(driver.getId()).orElseThrow().getRolPrincipal())
+                    .isEqualTo(Rol.PASAJERO);
+            case REGISTRAR_CURSO -> assertThat(courses.findById(resource).orElseThrow().getNombre())
+                    .isEqualTo("Algoritmos");
+            case ELIMINAR_CURSO -> assertThat(courses.existsById(existingCourse.getId())).isFalse();
         }
     }
 
@@ -1263,5 +1291,34 @@ class ConfirmationServiceIntegrationTest {
     Viaje trip() {
         return trips.save(Viaje.builder().ruta(route()).fecha(tripRequest().fecha()).hora(tripRequest().hora())
                 .dia("Lunes").estado(EstadoViaje.PROGRAMADO).build());
+    }
+
+    private Curso course(Usuario owner, String nombre, String dia, int inicio, int fin) {
+        HorarioAcademico horario = schedules.findByUsuarioId(owner.getId())
+                .orElseGet(() -> schedules.save(HorarioAcademico.builder().usuario(owner).build()));
+        return courses.save(Curso.builder().horarioAcademico(horario).nombre(nombre).dia(dia)
+                .horaInicio(LocalTime.of(inicio, 0)).horaFin(LocalTime.of(fin, 0)).build());
+    }
+
+    @Test void rejectsStaleProfileAndRoleConfirmationsWhenStateChangedBeforeConfirming() {
+        var perfilPrep = service.prepararEditarPerfil(new PerfilRequest(
+                "Ana", "Prueba", "Software", "Barranco", "UPC", "Lunes", "08:00",
+                LocalDate.of(2026, 3, 1), LocalDate.of(2026, 12, 20), TipoCompensacion.GASOLINA),
+                "Actualizar distrito.");
+        Perfil perfil = profiles.findByUsuarioId(driver.getId()).orElseThrow();
+        perfil.setDistrito("Lince");
+        profiles.save(perfil);
+
+        assertThatThrownBy(() -> service.confirmar(perfilPrep.confirmacion().id()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Los datos cambiaron desde la preparación");
+
+        var rolPrep = service.prepararCambiarRol(new CambiarRolRequest(Rol.PASAJERO));
+        driver.setRolPrincipal(Rol.PASAJERO);
+        users.save(driver);
+
+        assertThatThrownBy(() -> service.confirmar(rolPrep.confirmacion().id()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Los datos cambiaron desde la preparación");
     }
 }

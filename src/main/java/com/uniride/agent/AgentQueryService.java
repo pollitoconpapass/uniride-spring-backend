@@ -78,9 +78,30 @@ public class AgentQueryService {
 
     public PaginaAgente<ViajeResumen> buscar(String origen, String destino, String dia,
             LocalDate fecha, LocalTime hora, Integer pagina) {
+        return buscar(origen, destino, dia, fecha, hora, null, null, null, pagina);
+    }
+
+    public PaginaAgente<ViajeResumen> buscar(String origen, String destino, String dia,
+            LocalDate fecha, LocalTime hora, LocalTime horaDesde, LocalTime horaHasta,
+            String franja, Integer pagina) {
         requireRole(Rol.PASAJERO);
-        return PaginaAgente.from(buscarDisponibles(origen, destino, dia, fecha, hora,
-                pageable(pagina, PAGE_SIZE)).map(this::viajeResumen));
+        LocalTime[] rangoFranja = resolverFranja(franja);
+        LocalTime desde = horaDesde != null ? horaDesde : (rangoFranja == null ? null : rangoFranja[0]);
+        LocalTime hasta = horaHasta != null ? horaHasta : (rangoFranja == null ? null : rangoFranja[1]);
+        if (desde != null && hasta != null && hasta.isBefore(desde)) {
+            throw new CamposInvalidosException("La hora máxima no puede ser anterior a la hora mínima.");
+        }
+        PageRequest page = pageable(pagina, PAGE_SIZE);
+        if (desde == null && hasta == null) {
+            return PaginaAgente.from(buscarDisponibles(origen, destino, dia, fecha, hora, page)
+                    .map(this::viajeResumen));
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        return PaginaAgente.from(viajes.buscarViajesRelevantesPorFechaYRango(
+                normalizar(origen), normalizar(destino), normalizarDia(dia), hora, desde, hasta,
+                null, EstadoViaje.PROGRAMADO, EstadoRuta.ELIMINADA,
+                now.toLocalDate(), now.toLocalTime(), fecha, page)
+                .map(this::viajeResumen));
     }
 
     /** Two rows are sufficient to detect ambiguity across the whole matching set. */
@@ -190,6 +211,24 @@ public class AgentQueryService {
     private String normalizarDia(String value) {
         String normalized = normalizar(value);
         return normalized == null ? null : Normalizer.normalize(normalized, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+    }
+
+    private LocalTime[] resolverFranja(String franja) {
+        String normalized = normalizarDia(franja);
+        if (normalized == null) return null;
+        String limpia = normalized
+                .replaceFirst("^(?:por la |en la |de la |al |de |por |en )+", "")
+                .trim();
+        return switch (limpia) {
+            case "madrugada" -> new LocalTime[] { LocalTime.of(0, 0), LocalTime.of(5, 59) };
+            case "temprano", "manana temprano" -> new LocalTime[] { LocalTime.of(5, 0), LocalTime.of(9, 0) };
+            case "manana" -> new LocalTime[] { LocalTime.of(6, 0), LocalTime.of(12, 0) };
+            case "mediodia", "medio dia" -> new LocalTime[] { LocalTime.of(11, 0), LocalTime.of(14, 0) };
+            case "tarde" -> new LocalTime[] { LocalTime.of(12, 0), LocalTime.of(18, 0) };
+            case "noche" -> new LocalTime[] { LocalTime.of(18, 0), LocalTime.of(23, 59) };
+            default -> throw new CamposInvalidosException(
+                    "Franja horaria no válida. Usa madrugada, temprano, mañana, mediodía, tarde o noche.");
+        };
     }
 
     private RutaResumen rutaResumen(Ruta r) {
