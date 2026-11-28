@@ -136,6 +136,7 @@ requiere confirmación. [Ejemplos de Swagger y resultado estructurado](docs/agen
 
 Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md),
+[la estructura del módulo](docs/modulo_agente_indicaciones.md),
 el [diseño del agente por voz](docs/agente_voz.md) y el
 [informe de auditoría del agente](docs/auditoria-hardening-agente-ia.md).
 No habilites `ddl-auto: update`: Flyway migra y Hibernate valida el esquema.

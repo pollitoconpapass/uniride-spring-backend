@@ -1,0 +1,24 @@
+package com.uniride.agent.core;
+
+import com.uniride.agent.app.dto.ChatRequest;
+import com.uniride.agent.app.dto.ChatResponse;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/agent")
+@RequiredArgsConstructor
+public class AgentController {
+
+    private final AgentService agentService;
+
+    @PostMapping("/chat")
+    public ChatResponse chat(@Valid @RequestBody ChatRequest request, Authentication auth) {
+        return agentService.chat(request.message(), request.conversationId());
+    }
+}
