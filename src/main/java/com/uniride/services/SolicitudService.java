@@ -232,15 +232,7 @@ public class SolicitudService {
                     "Solicitud ya cancelada",
                     "La solicitud " + id + " ya estaba cancelada. No se registro otra cancelacion.");
         }
-        if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
-            throw new BusinessException(mensajeEstadoActual(solicitud));
-        }
-        if (solicitud.getViaje().getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException(
-                    "El viaje ya no está activo; estado actual: "
-                            + solicitud.getViaje().getEstado());
-        }
-        validarSalidaFutura(solicitud.getViaje());
+        validarCancelacion(solicitud);
 
         solicitud.setEstado(EstadoSolicitud.CANCELADA);
         Solicitud cancelada = solicitudRepository.save(solicitud);
@@ -251,6 +243,25 @@ public class SolicitudService {
                         + solicitud.getViaje().getDia() + " " + solicitud.getViaje().getFecha() + ".");
 
         return solicitudMapper.toSolicitudRespuesta(cancelada);
+    }
+
+    @Transactional(readOnly = true)
+    public void validarCancelacion(Long id) {
+        Usuario pasajero = usuarioService.usuarioActual();
+        validarCancelacion(solicitudRepository.findByIdAndPasajeroId(id, pasajero.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Solicitud no encontrada")));
+    }
+
+    private void validarCancelacion(Solicitud solicitud) {
+        if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
+            throw new BusinessException(mensajeEstadoActual(solicitud));
+        }
+        if (solicitud.getViaje().getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException(
+                    "El viaje ya no está activo; estado actual: "
+                            + solicitud.getViaje().getEstado());
+        }
+        validarSalidaFutura(solicitud.getViaje());
     }
 
     @Transactional(readOnly = true)

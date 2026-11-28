@@ -42,6 +42,13 @@ public final class TextoHablado {
             var opciones = respuesta.aclaracion().campos().getFirst().opciones();
             partes.add(opcionesParaSeleccionar(opciones, "Opción", "Puedes indicar el número de la opción."));
         }
+        if (respuesta.aclaracion() != null && List.of("solicitarUnirse", "eliminarCurso", "editarPerfil")
+                .contains(respuesta.aclaracion().operacion())) {
+            respuesta.aclaracion().campos().stream()
+                    .filter(campo -> List.of("viaje", "curso", "campoPerfil").contains(campo.id())).findFirst()
+                    .ifPresent(campo -> partes.add(opcionesParaSeleccionar(campo.opciones(),
+                            "Opción", "Puedes indicar el número de la opción.")));
+        }
         if (!respuesta.rutas().isEmpty())
             partes.add(enumerar("ruta", "rutas", respuesta.rutas().stream().map(TextoHablado::ruta).toList()));
         if (!respuesta.viajes().isEmpty())

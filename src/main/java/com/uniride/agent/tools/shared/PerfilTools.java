@@ -1,6 +1,10 @@
 package com.uniride.agent.tools.shared;
 
+import static com.uniride.agent.conversation.Aclaraciones.Campo.*;
+
 import com.uniride.agent.confirmation.ConfirmationService;
+import com.uniride.agent.conversation.Aclaraciones;
+import com.uniride.agent.conversation.Aclaraciones.Campo;
 import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.agent.dto.PerfilAgenteRespuesta;
@@ -53,8 +57,9 @@ public class PerfilTools {
     }
 
     @Tool(description = """
-            Prepara la edición o creación del perfil personal del usuario autenticado. NO aplica cambios todavía;
-            devuelve una propuesta que el usuario debe confirmar. Incluye solo los campos indicados por el usuario.
+            Prepara cambios en datos personales, académicos o disponibilidad, incluido el método favorito.
+            Para «editar mis datos» invoca sin argumentos y Java preguntará qué campo cambiar.
+            Los gustos y hobbies se editan con editarInfoAdicional; gestionar un método registrado es otra operación.
             """)
     public OperacionResumen editarPerfil(
             @ToolParam(description = "Nuevo nombre", required = false) String nombre,
@@ -81,17 +86,16 @@ public class PerfilTools {
                 && fechaInicioClases == null && fechaFinClases == null && metodoCompensacionFavorito == null) {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
                     "Indica qué dato de tu perfil deseas modificar (nombre, apellidos, carrera, distrito, "
-                            + "universidad, días u horarios disponibles, fechas de clases o método de compensación favorito).");
+                            + "universidad, días u horarios disponibles, fechas de clases o método de compensación favorito).")
+                    .conAclaracion(Aclaraciones.crear("editarPerfil", CAMPO_PERFIL.obligatorio()));
         }
 
         PerfilRespuesta actual = obtenerPerfilOpcional();
         if (actual == null) {
-            List<String> faltantes = faltantesNuevoPerfil(nNombre, nApellidos, nCarrera, nDistrito, nUniversidad,
+            List<Campo> faltantes = faltantesNuevoPerfil(nNombre, nApellidos, nCarrera, nDistrito, nUniversidad,
                     nDias, nHorarios, fechaInicioClases, fechaFinClases, metodoCompensacionFavorito);
             if (!faltantes.isEmpty()) {
-                return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                        "Aún no tienes un perfil registrado. Para completarlo faltan estos datos obligatorios: "
-                                + String.join(", ", faltantes) + ".");
+                return Aclaraciones.faltantes("editarPerfil", faltantes.stream().limit(8).map(Campo::obligatorio).toList());
             }
         }
 
@@ -146,7 +150,8 @@ public class PerfilTools {
 
         if (nGustos == null && nHobbies == null && nDatos == null) {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Indica qué deseas actualizar en tus gustos, hobbies o datos curiosos.");
+                    "Indica qué deseas actualizar en tus gustos, hobbies o datos curiosos.")
+                    .conAclaracion(Aclaraciones.alternativa("editarInfoAdicional", GUSTOS, HOBBIES, DATOS_CURIOSOS));
         }
 
         PerfilRespuesta actual = obtenerPerfilOpcional();
@@ -175,14 +180,12 @@ public class PerfilTools {
                     "Tu información adicional ya incluye esos datos.");
         }
 
-        List<String> faltantes = new ArrayList<>();
-        if (esBlanco(gustosFinal) && esBlanco(actual.gustos())) faltantes.add("gustos");
-        if (esBlanco(hobbiesFinal) && esBlanco(actual.hobbies())) faltantes.add("hobbies");
-        if (esBlanco(datosFinal) && esBlanco(actual.datosCuriosos())) faltantes.add("datos curiosos");
+        List<Campo> faltantes = new ArrayList<>();
+        if (esBlanco(gustosFinal) && esBlanco(actual.gustos())) faltantes.add(GUSTOS);
+        if (esBlanco(hobbiesFinal) && esBlanco(actual.hobbies())) faltantes.add(HOBBIES);
+        if (esBlanco(datosFinal) && esBlanco(actual.datosCuriosos())) faltantes.add(DATOS_CURIOSOS);
         if (!faltantes.isEmpty()) {
-            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Para guardar tu información adicional faltan estos campos obligatorios: "
-                            + String.join(", ", faltantes) + ".");
+            return Aclaraciones.faltantes("editarInfoAdicional", faltantes.stream().map(Campo::obligatorio).toList());
         }
 
         InfoAdicionalRequest request = new InfoAdicionalRequest(
@@ -208,21 +211,21 @@ public class PerfilTools {
         }
     }
 
-    private List<String> faltantesNuevoPerfil(String nombre, String apellidos, String carrera, String distrito,
+    private List<Campo> faltantesNuevoPerfil(String nombre, String apellidos, String carrera, String distrito,
             String universidad, String dias, String horarios, LocalDate inicio, LocalDate fin,
             TipoCompensacion metodo) {
-        List<String> faltantes = new ArrayList<>();
-        if (nombre == null) faltantes.add("nombre");
-        if (apellidos == null) faltantes.add("apellidos");
-        if (carrera == null) faltantes.add("carrera");
-        if (distrito == null) faltantes.add("distrito");
-        if (universidad == null) faltantes.add("universidad");
-        if (dias == null) faltantes.add("días disponibles");
-        if (horarios == null) faltantes.add("horarios disponibles");
-        if (inicio == null) faltantes.add("fecha de inicio de clases");
-        if (fin == null) faltantes.add("fecha de fin de clases");
+        List<Campo> faltantes = new ArrayList<>();
+        if (nombre == null) faltantes.add(NOMBRE);
+        if (apellidos == null) faltantes.add(APELLIDOS);
+        if (carrera == null) faltantes.add(CARRERA);
+        if (distrito == null) faltantes.add(DISTRITO);
+        if (universidad == null) faltantes.add(UNIVERSIDAD);
+        if (dias == null) faltantes.add(DIAS_DISPONIBLES);
+        if (horarios == null) faltantes.add(HORARIOS_DISPONIBLES);
+        if (inicio == null) faltantes.add(INICIO_CLASES);
+        if (fin == null) faltantes.add(FIN_CLASES);
         if (metodo == null && usuarioService.usuarioActual().getRolPrincipal() == Rol.CONDUCTOR) {
-            faltantes.add("método de compensación favorito");
+            faltantes.add(FAVORITO);
         }
         return faltantes;
     }
@@ -291,7 +294,8 @@ public class PerfilTools {
             @ToolParam(description = "Nuevo rol activo: CONDUCTOR o PASAJERO", required = false) Rol rol) {
         if (rol == null) {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Indica si deseas cambiar tu rol activo a CONDUCTOR o PASAJERO.");
+                    "Indica si deseas cambiar tu rol activo a CONDUCTOR o PASAJERO.")
+                    .conAclaracion(Aclaraciones.crear("cambiarRol", ROL.obligatorio()).conOpcionesRapidas());
         }
         Usuario actual = usuarioService.usuarioActual();
         if (actual.getRolPrincipal() == rol) {

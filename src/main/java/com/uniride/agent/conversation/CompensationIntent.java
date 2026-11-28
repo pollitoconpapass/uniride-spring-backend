@@ -183,6 +183,7 @@ public final class CompensationIntent {
 
     public static Decision classify(String message, Draft draft) {
         String text = clean(message);
+        if (favoritoDelPerfil(text)) return OTHER;
         if (AgentConversationStore.containsSecrets(message) || ConfirmationIntent.classify(message) != ConfirmationIntent.OTRA
                 || NEGATION.matcher(text).find()) {
             return blocked(null, null);
@@ -253,12 +254,16 @@ public final class CompensationIntent {
     public static boolean contextoGestion(String mensaje) {
         if (mensaje == null) return false;
         var texto = AgentText.normalizar(mensaje);
-        return GESTION_SEMANTICA.matcher(texto).find()
+        return !favoritoDelPerfil(texto) && GESTION_SEMANTICA.matcher(texto).find()
                 && !texto.matches("(?s).*\\b(?:no|ni|ignora|simula|herramienta|instrucciones)\\b.*")
                 && !hasUnquotedAction(texto.replaceFirst("^(?:por favor,? )?(?:(?:quiero|quisiera|necesito|"
                         + "puedes|podrias|ayudame a) )?\\w+\\s*", ""))
                 && verboInicial(texto, "agreg|anad|incorpor|registr|activ|desactiv|habilit|inhabilit|edit|actualiz|"
                         + "modific|cambi|quit|elimin|borr|retir");
+    }
+
+    private static boolean favoritoDelPerfil(String texto) {
+        return AgentText.normalizar(texto).matches(".*\\b(?:metodo(?: de compensacion)?|compensacion) favorit[oa]\\b.*");
     }
 
     public static Decision desdeTool(String herramienta, String mensaje) {
@@ -467,9 +472,9 @@ public final class CompensationIntent {
         Campo requested = field.matches() ? fieldFrom(field.group(1)) : Campo.SIN_INDICAR;
         String targetExpression = requested == Campo.SIN_INDICAR ? subject : field.group(2);
         String method = ownedSelector(targetExpression);
-        if (method == null && requested != Campo.SIN_INDICAR
-                && !OTHER_RESOURCE.matcher(targetExpression.replaceFirst("(?iu)^(?:el|la|un|una|mi|mis) +", "")).find()) {
-            method = targetExpression;
+        if (method == null && requested != Campo.SIN_INDICAR) {
+            String referencia = targetExpression.replaceFirst("(?iu)^(?:el|la|un|una) +", "");
+            if (referenciaDirecta(referencia)) method = referencia;
         }
         if (method == null) return OTHER;
         String expression = " " + method;
@@ -588,7 +593,11 @@ public final class CompensationIntent {
         String explicitMethod = methodText(subject);
         if (explicitMethod != null || subject == null) return explicitMethod;
         var name = OWNED_NAME.matcher(subject);
-        return name.matches() && !OTHER_RESOURCE.matcher(name.group(1)).find() ? name.group(1) : null;
+        return name.matches() && referenciaDirecta(name.group(1)) ? name.group(1) : null;
+    }
+
+    private static boolean referenciaDirecta(String subject) {
+        return AgentText.normalizar(subject).matches("^(?:dinero|gasolina|favor|yape|plin)\\b.*");
     }
 
     private static Selector selector(String text) {

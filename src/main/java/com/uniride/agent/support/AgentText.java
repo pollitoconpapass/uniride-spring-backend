@@ -26,9 +26,8 @@ public final class AgentText {
     private static final Pattern DIACRITICOS = Pattern.compile("\\p{M}+");
     private static final String CAPACIDADES = "Puedo consultar datos de UniRide o preparar una operación para tu confirmación.";
     private static final Pattern PREGUNTA = Pattern.compile(
-            "^¿?(?:qu[eé]|qui[eé]n(?:es)?|cu[aá]l(?:es)?|cu[aá]nt[oa]s?|cu[aá]ndo|d[oó]nde|"
-                    + "(?:en|para|desde|hasta|con|a|de) (?:qu[eé]|cu[aá]l(?:es)?|qui[eé]n(?:es)?))\\s[^?¿\\r\\n<>]{1,300}\\?$",
-            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+            "(?:^|(?<=\\s))(?<pregunta>¿[^?¿\\r\\n<>]{1,300}\\?|(?:qu[eé]|cu[aá]l(?:es)?|"
+                    + "cu[aá]ndo|d[oó]nde)\\s[^?¿\\r\\n<>]{1,300}\\?)$", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     private AgentText() { }
 
@@ -54,10 +53,11 @@ public final class AgentText {
             return "¿Sobre qué parte de esa operación de UniRide necesitas información?";
         if (tema.matches(".*\\b(?:clima|pronostico|receta|chiste)\\b.*"))
             return "Puedo ayudarte con movilidad universitaria y tu cuenta de UniRide.";
-        if (PREGUNTA.matcher(text).matches() && !AgentConversationStore.containsSecrets(text)
-                && !normalizar(text).matches("(?s).*(?:https?://|/api/|\\buuid\\b|\\botp\\b|\\bcontrasen\\w*|"
+        var pregunta = PREGUNTA.matcher(text);
+        if (pregunta.find() && !AgentConversationStore.containsSecrets(text)
+                && !normalizar(text).matches("(?s).*(?:https?://|www\\.|/api/|\\buuid\\b|\\botp\\b|\\bcontrasen\\w*|"
                         + "\\bjwt\\b|\\btoken\\b|\\bapi key\\b|\\bclave\\b|\\bya (?:he |se )?(?:cre|regis|elimi|"
-                        + "cancel|confirm|ejecut|program|prepar|complet)\\w*).*")) return text;
+                        + "cancel|confirm|ejecut|program|prepar|complet)\\w*).*")) return pregunta.group("pregunta");
         return "No pude identificar la consulta o acción de UniRide. ¿Qué dato quieres consultar o qué cambio quieres preparar?";
     }
 

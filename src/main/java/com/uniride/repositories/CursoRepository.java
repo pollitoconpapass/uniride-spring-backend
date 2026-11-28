@@ -24,7 +24,7 @@ public interface CursoRepository extends JpaRepository<Curso, Long> {
     Page<Curso> buscarPorUsuario(@Param("usuarioId") Long usuarioId, Pageable pageable);
 
     @Query("SELECT c FROM Curso c WHERE c.horarioAcademico.id = :horarioId "
-            + "AND LOWER(c.dia) = LOWER(:dia) "
+            + "AND REPLACE(REPLACE(LOWER(c.dia), 'é', 'e'), 'á', 'a') = REPLACE(REPLACE(LOWER(:dia), 'é', 'e'), 'á', 'a') "
             + "AND c.horaInicio < :horaFin AND c.horaFin > :horaInicio")
     List<Curso> buscarConflictos(@Param("horarioId") Long horarioId,
             @Param("dia") String dia,

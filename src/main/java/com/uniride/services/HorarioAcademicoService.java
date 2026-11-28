@@ -43,6 +43,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class HorarioAcademicoService {
+    public static final List<String> DIAS = List.of("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo");
+    private static final LocalTime INICIO_CLASES = LocalTime.of(6, 0);
+    private static final LocalTime FIN_CLASES = LocalTime.of(23, 0);
 
     private static final long TAMANO_MAXIMO_BYTES = 1024L * 1024L;
     private static final int OCR_DPI = 200;
@@ -106,8 +109,8 @@ public class HorarioAcademicoService {
         HorarioAcademico horario = obtenerOCrearHorario(usuario);
 
         List<Curso> cursos = new ArrayList<>();
-        for (CursoRequest request : requests) {
-            validarCurso(request);
+        for (CursoRequest entrada : requests) {
+            CursoRequest request = validarCurso(entrada);
             Curso curso = cursoMapper.toCurso(request);
             curso.setHorarioAcademico(horario);
 
@@ -124,6 +127,19 @@ public class HorarioAcademicoService {
                 "Tus cursos y horarios fueron guardados correctamente.");
 
         return cursoMapper.toListaCursoRespuesta(guardados);
+    }
+
+    @Transactional(readOnly = true)
+    public CursoRequest validarRegistro(CursoRequest entrada) {
+        CursoRequest request = validarCurso(entrada);
+        var usuario = usuarioService.usuarioActual();
+        var horario = horarioAcademicoRepository.findByUsuarioId(usuario.getId()).orElse(null);
+        if (horario != null) {
+            Curso curso = cursoMapper.toCurso(request);
+            Curso conflicto = buscarConflicto(horario, curso, List.of());
+            if (conflicto != null) throw new BusinessException(mensajeConflicto(conflicto, curso));
+        }
+        return request;
     }
 
     @Transactional(readOnly = true)
@@ -184,14 +200,16 @@ public class HorarioAcademicoService {
                 .build());
 
         boolean hayConflictos = !importacion.conflictos().isEmpty();
+        boolean hayOmisiones = hayConflictos || !importacion.invalidos().isEmpty();
         notificacionService.notificar(usuario,
-                hayConflictos ? TipoNotificacion.ADVERTENCIA : TipoNotificacion.EXITO,
+                hayOmisiones ? TipoNotificacion.ADVERTENCIA : TipoNotificacion.EXITO,
                 "Archivo cargado",
                 "El archivo " + nombreArchivo + " fue cargado correctamente."
                         + (hayConflictos
                                 ? " " + importacion.conflictos().size()
                                         + " cursos no se importaron por conflicto de horario."
-                                : ""));
+                                : "") + (importacion.invalidos().isEmpty() ? ""
+                                        : " " + importacion.invalidos().size() + " cursos omitidos por horario inválido."));
 
         return new ArchivoRespuesta(mensajeImportacion(importacion),
                 importacion.importados(),
@@ -205,7 +223,7 @@ public class HorarioAcademicoService {
         if (importacion.importados() > 0) {
             mensaje = "Archivo subido correctamente. Se importaron "
                     + importacion.importados() + " cursos.";
-        } else if (conflictos.isEmpty()) {
+        } else if (conflictos.isEmpty() && importacion.invalidos().isEmpty()) {
             mensaje = "Archivo subido correctamente. No se detectaron cursos en el archivo.";
         } else {
             mensaje = "Archivo subido correctamente. Ningún curso del archivo pudo importarse.";
@@ -215,10 +233,14 @@ public class HorarioAcademicoService {
                     + String.join(" | ", conflictos)
                     + ". Elimina o edita el curso existente y vuelve a subir el archivo.";
         }
+        if (!importacion.invalidos().isEmpty()) {
+            mensaje += " " + importacion.invalidos().size() + " cursos omitidos por horario inválido. "
+                    + importacion.invalidos().getFirst();
+        }
         return mensaje;
     }
 
-    private void validarCurso(CursoRequest request) {
+    private CursoRequest validarCurso(CursoRequest request) {
         if (request == null) {
             throw new CamposInvalidosException("Debes ingresar los datos del curso; no se permiten elementos nulos");
         }
@@ -228,6 +250,8 @@ public class HorarioAcademicoService {
         if (request.dia() == null || request.dia().isBlank()) {
             throw new CamposInvalidosException("Falta ingresar el día de un curso");
         }
+        String dia = canonizarDia(request.dia());
+        if (dia == null) throw new CamposInvalidosException("El día del curso debe ser de lunes a domingo");
         if (request.horaInicio() == null) {
             throw new CamposInvalidosException("Falta ingresar la hora de inicio de un curso");
         }
@@ -237,6 +261,18 @@ public class HorarioAcademicoService {
         if (!request.horaFin().isAfter(request.horaInicio())) {
             throw new CamposInvalidosException("La hora de fin debe ser posterior a la hora de inicio");
         }
+        if (request.horaInicio().isBefore(INICIO_CLASES) || request.horaFin().isAfter(FIN_CLASES)) {
+            throw new CamposInvalidosException("El curso debe estar entre las 06:00 y las 23:00");
+        }
+        return new CursoRequest(request.nombre().strip(), dia, request.horaInicio(), request.horaFin());
+    }
+
+    public static String canonizarDia(String texto) {
+        if (texto == null) return null;
+        String clave = java.text.Normalizer.normalize(texto.strip(), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "");
+        return DIAS.stream().filter(dia -> dia.replace('é', 'e').replace('á', 'a').equalsIgnoreCase(clave))
+                .findFirst().orElse(null);
     }
 
     private HorarioAcademico obtenerOCrearHorario(Usuario usuario) {
@@ -309,15 +345,23 @@ public class HorarioAcademicoService {
 
         List<Curso> cursos = new ArrayList<>();
         List<String> conflictos = new ArrayList<>();
+        List<String> invalidos = new ArrayList<>();
         Set<String> clavesVistas = new HashSet<>();
 
         for (CursoParseado parseado : parsearCursos(texto)) {
+            CursoRequest request;
+            try {
+                request = validarCurso(new CursoRequest(parseado.nombre(), parseado.dia(), parseado.horaInicio(), parseado.horaFin()));
+            } catch (CamposInvalidosException invalido) {
+                invalidos.add(invalido.getMessage());
+                continue;
+            }
 
-            String clave = parseado.nombre()
+            String clave = request.nombre()
                     + "|"
-                    + parseado.dia()
+                    + request.dia()
                     + "|"
-                    + parseado.horaInicio();
+                    + request.horaInicio();
 
             if (!clavesVistas.add(clave)) {
                 continue;
@@ -326,18 +370,18 @@ public class HorarioAcademicoService {
             if (cursoRepository
                     .existsByHorarioAcademicoIdAndNombreAndDiaAndHoraInicio(
                             horario.getId(),
-                            parseado.nombre(),
-                            parseado.dia(),
-                            parseado.horaInicio())) {
+                            request.nombre(),
+                            request.dia(),
+                            request.horaInicio())) {
                 continue;
             }
 
             Curso curso = Curso.builder()
                     .horarioAcademico(horario)
-                    .nombre(parseado.nombre())
-                    .dia(parseado.dia())
-                    .horaInicio(parseado.horaInicio())
-                    .horaFin(parseado.horaFin())
+                    .nombre(request.nombre())
+                    .dia(request.dia())
+                    .horaInicio(request.horaInicio())
+                    .horaFin(request.horaFin())
                     .build();
 
             Curso enConflicto =
@@ -357,7 +401,7 @@ public class HorarioAcademicoService {
 
         return new ImportacionArchivo(
                 cursos.size(),
-                conflictos);
+                conflictos, invalidos);
     }
 
     private Curso buscarConflicto(HorarioAcademico horario, Curso curso, List<Curso> pendientes) {
@@ -390,7 +434,7 @@ public class HorarioAcademicoService {
 
     record ImportacionArchivo(
             int importados,
-            List<String> conflictos) {
+            List<String> conflictos, List<String> invalidos) {
     }
 
     String extraerTexto(byte[] bytes) {

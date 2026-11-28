@@ -1,9 +1,15 @@
 package com.uniride.agent.tools.shared;
 
+import static com.uniride.agent.conversation.Aclaraciones.Campo.*;
+import static com.uniride.services.HorarioAcademicoService.canonizarDia;
+
 import com.uniride.agent.confirmation.ConfirmationService;
+import com.uniride.agent.conversation.Aclaraciones;
+import com.uniride.agent.dto.CampoAclaracion;
 import com.uniride.agent.dto.CursoResumen;
 import com.uniride.agent.dto.EstadoOperacion;
 import com.uniride.agent.dto.OperacionResumen;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.agent.dto.PaginaAgente;
 import com.uniride.dto.requests.CursoRequest;
 import com.uniride.entities.Curso;
@@ -15,14 +21,12 @@ import com.uniride.exceptions.ResourceNotFoundException;
 import com.uniride.repositories.CursoRepository;
 import com.uniride.services.HorarioAcademicoService;
 import com.uniride.services.UsuarioService;
-import java.text.Normalizer;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
+import org.springframework.ai.chat.model.ToolContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -35,14 +39,7 @@ import org.springframework.stereotype.Component;
 public class HorarioTools {
 
     private static final int PAGE_SIZE = 10;
-    private static final Map<String, String> DIAS_CANONICOS = Map.of(
-            "lunes", "Lunes",
-            "martes", "Martes",
-            "miercoles", "Miércoles",
-            "jueves", "Jueves",
-            "viernes", "Viernes",
-            "sabado", "Sábado",
-            "domingo", "Domingo");
+    public static final String CONTEXTO_CURSO = "seleccionCurso";
 
     private final HorarioAcademicoService horarioAcademicoService;
     private final CursoRepository cursoRepository;
@@ -81,37 +78,27 @@ public class HorarioTools {
     }
 
     @Tool(description = """
-            Prepara el registro de un curso en el horario académico del usuario.
-            NO lo guarda todavía; devuelve una propuesta pendiente de confirmación.
+            Prepara agregar una clase o asignatura al horario académico. Envía solo el nombre,
+            día, inicio y fin conocidos; Java pide los datos que falten antes de preparar la propuesta.
             """)
     public OperacionResumen registrarCurso(
             @ToolParam(description = "Nombre del curso", required = false) String nombre,
             @ToolParam(description = "Día de la semana (Lunes a Domingo)", required = false) String dia,
             @ToolParam(description = "Hora de inicio HH:mm en 24 horas", required = false) LocalTime horaInicio,
             @ToolParam(description = "Hora de fin HH:mm en 24 horas", required = false) LocalTime horaFin) {
-        List<String> faltantes = new ArrayList<>();
-        if (blanco(nombre)) faltantes.add("nombre del curso");
-        if (blanco(dia)) faltantes.add("día de la semana");
-        if (horaInicio == null) faltantes.add("hora de inicio");
-        if (horaFin == null) faltantes.add("hora de fin");
-        if (!faltantes.isEmpty()) {
-            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Para registrar el curso faltan: " + String.join(", ", faltantes) + ".");
-        }
         String diaCanonico = canonizarDia(dia);
-        if (diaCanonico == null) {
-            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Día no válido. Usa Lunes, Martes, Miércoles, Jueves, Viernes, Sábado o Domingo.");
-        }
-        if (!horaFin.isAfter(horaInicio)) {
-            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "La hora de fin debe ser posterior a la hora de inicio.");
-        }
+        List<CampoAclaracion> faltantes = new ArrayList<>();
+        if (blanco(nombre)) faltantes.add(NOMBRE_CURSO.obligatorio());
+        if (diaCanonico == null) faltantes.add(DIA_CURSO.obligatorio());
+        if (horaInicio == null) faltantes.add(HORA_INICIO.obligatorio());
+        if (horaFin == null) faltantes.add(HORA_FIN.obligatorio());
+        if (!faltantes.isEmpty()) return Aclaraciones.faltantes("registrarCurso", faltantes);
         try {
             return confirmaciones.prepararRegistrarCurso(
-                    new CursoRequest(nombre.trim(), diaCanonico, horaInicio, horaFin));
+                    new CursoRequest(nombre.strip(), diaCanonico, horaInicio, horaFin));
         } catch (CamposInvalidosException e) {
-            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, e.getMessage());
+            return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, e.getMessage())
+                    .conAclaracion(Aclaraciones.alternativa("registrarCurso", HORA_INICIO, HORA_FIN));
         } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
@@ -126,17 +113,23 @@ public class HorarioTools {
             @ToolParam(description = "Nombre o parte del nombre del curso", required = false) String nombre,
             @ToolParam(description = "Día de la semana, opcional si hay varios horarios", required = false) String dia,
             @ToolParam(description = "Hora de inicio HH:mm, opcional si hay ambigüedad", required = false)
-            LocalTime horaInicio) {
+            LocalTime horaInicio, ToolContext contexto) {
+        if (contexto != null && contexto.getContext().get(CONTEXTO_CURSO) instanceof Map<?, ?> campos
+                && campos.get("curso") instanceof String id) {
+            return prepararEliminar(Long.valueOf(id));
+        }
         if (blanco(nombre) && blanco(dia) && horaInicio == null) {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                    "Indica el nombre del curso que deseas eliminar.");
+                    "Indica qué curso de tu horario quieres eliminar.")
+                    .conAclaracion(Aclaraciones.alternativa("eliminarCurso", NOMBRE_CURSO, DIA_CURSO, HORA_INICIO));
         }
         String diaClave = null;
         if (!blanco(dia)) {
             String diaCanonico = canonizarDia(dia);
             if (diaCanonico == null) {
                 return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
-                        "Día no válido. Usa Lunes, Martes, Miércoles, Jueves, Viernes, Sábado o Domingo.");
+                        "Elige un día de lunes a domingo.")
+                        .conAclaracion(Aclaraciones.crear("eliminarCurso", DIA_CURSO.obligatorio()));
             }
             diaClave = normalizarTexto(diaCanonico);
         }
@@ -148,6 +141,7 @@ public class HorarioTools {
                 .filter(c -> nombreClave == null || normalizarTexto(c.getNombre()).contains(nombreClave))
                 .filter(c -> diaFiltro == null || normalizarTexto(c.getDia()).equals(diaFiltro))
                 .filter(c -> horaInicio == null || horaInicio.equals(c.getHoraInicio()))
+                .sorted(Comparator.comparing(Curso::getDia).thenComparing(Curso::getHoraInicio).thenComparing(Curso::getId))
                 .toList();
 
         if (coincidencias.isEmpty()) {
@@ -155,16 +149,27 @@ public class HorarioTools {
                     "No encontré ningún curso con esos datos en tu horario académico.");
         }
         if (coincidencias.size() > 1) {
-            String opciones = coincidencias.stream().limit(6)
-                    .map(c -> "«" + c.getNombre() + "» (" + c.getDia() + " " + c.getHoraInicio()
-                            + " - " + c.getHoraFin() + ")")
-                    .collect(Collectors.joining("; "));
+            var opciones = coincidencias.stream().limit(PAGE_SIZE).map(c -> {
+                String nombreSeguro = com.uniride.agent.dto.AclaracionAgente.textoSeguro(c.getNombre(), 80)
+                        ? c.getNombre() : "Curso";
+                return new OpcionAclaracion(c.getId().toString(), nombreSeguro + " (" + c.getDia() + " " + c.getHoraInicio() + ")");
+            }).toList();
             return new OperacionResumen(EstadoOperacion.AMBIGUO, null,
-                    "Encontré varios cursos que coinciden: " + opciones
-                            + ". Indica el día o la hora de inicio para identificar cuál eliminar.");
+                    "Encontré varios cursos que coinciden. Identifica cuál quieres eliminar.")
+                    .conAclaracion(coincidencias.size() <= PAGE_SIZE
+                            ? Aclaraciones.crear("eliminarCurso", CURSO.conOpciones(opciones)).conOpcionesRapidas()
+                            : Aclaraciones.alternativa("eliminarCurso", NOMBRE_CURSO, DIA_CURSO, HORA_INICIO));
         }
+        return prepararEliminar(coincidencias.getFirst().getId());
+    }
+
+    public OperacionResumen eliminarCurso(String nombre, String dia, LocalTime horaInicio) {
+        return eliminarCurso(nombre, dia, horaInicio, null);
+    }
+
+    private OperacionResumen prepararEliminar(Long curso) {
         try {
-            return confirmaciones.prepararEliminarCurso(coincidencias.getFirst().getId());
+            return confirmaciones.prepararEliminarCurso(curso);
         } catch (CamposInvalidosException e) {
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null, e.getMessage());
         } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
@@ -180,14 +185,8 @@ public class HorarioTools {
         return page;
     }
 
-    private static String canonizarDia(String dia) {
-        if (blanco(dia)) return null;
-        return DIAS_CANONICOS.get(normalizarTexto(dia));
-    }
-
     private static String normalizarTexto(String texto) {
-        String n = Normalizer.normalize(texto.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD);
-        return n.replaceAll("\\p{M}", "");
+        return com.uniride.agent.support.AgentText.sinAcentos(texto.strip());
     }
 
     private static boolean blanco(String valor) {

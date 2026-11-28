@@ -74,8 +74,12 @@ class HorarioAcademicoAgentToolsTest {
     void registrarCursoValidaDatosYPreparaConfirmacion() {
         assertThat(tools.registrarCurso("Algoritmos", "Lunes", LocalTime.of(8, 0), null).estado())
                 .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
-        assertThat(tools.registrarCurso("Algoritmos", "Lunes", LocalTime.of(10, 0), LocalTime.of(8, 0)).estado())
-                .isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        var horarioInvalido = new CursoRequest("Algoritmos", "Lunes", LocalTime.of(10, 0), LocalTime.of(8, 0));
+        when(confirmaciones.prepararRegistrarCurso(horarioInvalido))
+                .thenThrow(new CamposInvalidosException("La hora de fin debe ser posterior a la hora de inicio"));
+        var correccion = tools.registrarCurso("Algoritmos", "Lunes", LocalTime.of(10, 0), LocalTime.of(8, 0));
+        assertThat(correccion.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
+        assertThat(correccion.aclaracion().alMenosUno()).containsExactly("horaInicio", "horaFin");
 
         var expected = new CursoRequest("Algoritmos", "Lunes", LocalTime.of(8, 0), LocalTime.of(10, 0));
         var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma curso.");

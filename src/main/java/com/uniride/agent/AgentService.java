@@ -3,6 +3,7 @@ package com.uniride.agent;
 import com.openai.errors.OpenAIServiceException;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.conversation.Aclaraciones.EnvioAclaracion;
+import com.uniride.agent.conversation.Aclaraciones;
 import com.uniride.agent.conversation.AgentConversationStore;
 import com.uniride.agent.conversation.CompensationIntent;
 import com.uniride.agent.conversation.ConfirmationIntent;
@@ -51,6 +52,7 @@ import org.springframework.transaction.TransactionException;
 
 @Service
 public class AgentService {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AgentService.class);
 
     private static final DateTimeFormatter FORMATO_HORA = DateTimeFormatter.ofPattern("HH:mm");
     private static final Pattern POSIBLE_SOLICITUD_COMPUESTA = Pattern.compile(
@@ -92,11 +94,15 @@ public class AgentService {
         try (var lease = conversations.open(usuario.getId(), usuario.getRolPrincipal(), conversationId)) {
             var activa = lease.aclaracion();
             var campos = EnvioAclaracion.leer(message, activa);
+            if (campos == null && usuario.getRolPrincipal() != Rol.PASAJERO && IntencionAclarable.esPeticionDeCupo(message)) {
+                throw new NoPermitidoException("Solicitar un cupo requiere el rol PASAJERO.");
+            }
             String anterior = campos == null ? message : EnvioAclaracion.paraHistorial(activa, campos);
             ChatResponse response;
             var decision = campos == null ? ConfirmationIntent.classify(message) : ConfirmationIntent.OTRA;
             var contexto = new ContextoTurno(usuario.getRolPrincipal(), lease, message, anterior, voz,
-                    activa, lease.coordinacion(), lease.contribucion(), lease.borradorActivo());
+                    activa, lease.coordinacion(), lease.contribucion(), lease.borradorActivo(),
+                    Aclaraciones.continuarCambio(message, campos, activa, lease.borradorActivo()));
             var coordinacion = CoordinacionConductorIntent.resolver(message, campos, activa, contexto.coordinacion(),
                     usuario.getRolPrincipal(), clock);
             if (coordinacion != null) {
@@ -143,15 +149,17 @@ public class AgentService {
             var compensation = campos == null ? CompensationIntent.classify(message,
                     activa == null || coincideMetodo ? borradorMetodo : null)
                     : coincideMetodo ? CompensationIntent.continuarCampos(campos, borradorMetodo) : null;
-            if (campos != null && contribucion == null && historial == null && rutaOViaje == null && compensation == null)
+            if (campos != null && contribucion == null && historial == null && rutaOViaje == null
+                    && compensation == null && contexto.cambio() == null)
                 throw new CamposInvalidosException("Revisa los campos de la aclaración e intenta de nuevo.");
-            boolean reanudacion = campos != null || reanudacionRuta
+            boolean reanudacion = campos != null || reanudacionRuta || contexto.cambio() != null
                     || coincideHistorial && anteriorPdf != null && historial != null && historialActual == null
                     || coincideContribucion && contribucion != null && ContribucionIntent.classify(message, null, clock) == null
                     || coincideMetodo && (compensation.allowedTool() != null || compensation.draft() != null)
                     && CompensationIntent.classify(message, null).equals(CompensationIntent.classify("", null));
 
             if (activa != null && campos == null && rutaOViaje == null && contribucion == null && historial == null
+                    && contexto.cambio() == null
                     && decision != ConfirmationIntent.CANCELAR && lease.confirmacionPendiente() == null
                     && compensation.allowedTool() == null && compensation.message() == null
                     && !IntencionAclarable.cambiaDeTema(message) && AgentReportIntent.classify(message).isEmpty()
@@ -188,7 +196,8 @@ public class AgentService {
 
     private record ContextoTurno(Rol rol, AgentConversationStore.Lease lease, String mensaje, String historialMensaje,
                                  boolean voz, AclaracionAgente aclaracion, CoordinacionConductorIntent.Sesion coordinacion,
-                                 ContribucionIntent.Borrador contribucion, AgentConversationStore.Draft borrador) { }
+                                 ContribucionIntent.Borrador contribucion, AgentConversationStore.Draft borrador,
+                                 AgentConversationStore.CambioPersonal cambio) { }
 
     private ChatResponse completar(ContextoTurno contexto, ChatResponse response) {
         var lease = contexto.lease();
@@ -199,7 +208,16 @@ public class AgentService {
             response = response.conAclaracion(aclaracion);
         }
         response = response.withConversationId(lease.id());
-        if (lease.coordinacion() != null) {
+        if (response.resultados().stream().noneMatch(r -> List.of("buscarViajes", "consultarMisSolicitudes",
+                "consultarMisRutas").contains(r.tipo())))
+            lease.guardarLecturas(new AgentConversationStore.Lecturas(List.of(), List.of(), List.of()));
+        boolean cambioPersonal = contexto.cambio() != null || response.resultados().stream()
+                .map(resultado -> AgentRouter.capabilities().get(resultado.tipo())).filter(java.util.Objects::nonNull)
+                .anyMatch(info -> info.context() == AgentRouter.Context.PERSONAL);
+        if (cambioPersonal) {
+            lease.complete("El usuario solicitó un cambio personal o académico.", response,
+                    "La solicitud se atendió mediante el formulario o propuesta del servidor.");
+        } else if (lease.coordinacion() != null) {
             lease.complete(contexto.historialMensaje(), response, "Se atendió una consulta de coordinación del conductor.");
         } else {
             lease.complete(contexto.historialMensaje(), response);
@@ -326,13 +344,13 @@ public class AgentService {
         var role = contexto.rol();
         String message = contexto.historialMensaje();
         var history = lease.providerHistory();
-        boolean solicitudViaje = CompensationIntent.isTripRequest(message) || (history.size() >= 2
+        boolean solicitudViaje = IntencionAclarable.esPeticionDeCupo(message) || CompensationIntent.isTripRequest(message) || (history.size() >= 2
                 && history.get(history.size() - 2) instanceof UserMessage anterior
                 && CompensationIntent.isTripRequest(anterior.getText()));
         var turn = tools.newTurn(historial,
                 compensation, solicitudViaje, contribucion == null ? null : contribucion.filtros());
         turn.contextoAclaracion(message, role, clock, contexto.aclaracion(), contexto.coordinacion(), contexto.contribucion());
-        turn.continuarCambioPersonal(contexto.borrador());
+        turn.referenciasDeBusqueda(lease.lecturas());
         try {
             if (coordinacion != null) {
                 turn.procesar(coordinacion);
@@ -347,6 +365,10 @@ public class AgentService {
             }
             if (rutaOViaje != null && turn.tieneHerramienta(rutaOViaje.accion().herramienta())) {
                 turn.procesar(rutaOViaje);
+                return turn.preparacionIncierta() ? preparacionIncierta(turn) : turn.response("");
+            }
+            if (contexto.cambio() != null) {
+                turn.procesar(contexto.cambio());
                 return turn.preparacionIncierta() ? preparacionIncierta(turn) : turn.response("");
             }
             if (historial != null && (continuacion || historial.aclaracionEstructurada() != null
@@ -368,6 +390,8 @@ public class AgentService {
                     && !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find()) {
                 var borrador = IntencionAclarable.siFaltanDatos(message, role, clock);
                 if (borrador != null && turn.tieneHerramienta(borrador.accion().herramienta())) turn.procesar(borrador);
+                else turn.completarSolicitudSinTool();
+                if (!turn.hasResults()) LOG.debug("Agente rol={} decisión=sin_resultado_ni_aclaracion_java", role);
             }
             turn.recoverReports(reportes);
             return turn.response(text);
@@ -391,6 +415,7 @@ public class AgentService {
             }
             throw providerFailure(failure);
         } finally {
+            lease.guardarLecturas(turn.lecturas());
             if (contribucion != null && turn.contribucion() != null) {
                 lease.guardarContribucion(contribucion.siguiente(turn.contribucion()));
             } else if (turn.siguienteContribucion() != null) {
@@ -418,6 +443,8 @@ public class AgentService {
                 + ". Rol activo: " + role + (voz ? ". Respuesta para voz." : ".") + "\n" + message;
         boolean terminalResults = !POSIBLE_SOLICITUD_COMPUESTA.matcher(message).find();
         var callbacks = turn.callbacks(role, terminalResults);
+        if (LOG.isDebugEnabled()) LOG.debug("Agente rol={} recorrido=semantico herramientas={}", role,
+                java.util.Arrays.stream(callbacks).map(callback -> callback.getToolDefinition().name()).toList());
         try (var diagnostics = GroqHttpDiagnostics.open()) {
             try {
                 var response = chatClient.prompt().system(instructions.forRole(role)).messages(history).user(contexto)

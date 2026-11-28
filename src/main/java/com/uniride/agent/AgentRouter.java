@@ -9,6 +9,7 @@ import static com.uniride.agent.tools.shared.ReportesTools.DESCARGA_HISTORIAL_PD
 import com.uniride.agent.confirmation.EstadoConfirmacion;
 import com.uniride.agent.confirmation.IntentoPreparacion;
 import com.uniride.agent.conversation.AgentConversationStore;
+import com.uniride.agent.conversation.Aclaraciones;
 import com.uniride.agent.conversation.CompensationIntent;
 import com.uniride.agent.conversation.ConfirmationIntent;
 import com.uniride.agent.conversation.ContribucionIntent;
@@ -31,6 +32,7 @@ import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -40,6 +42,7 @@ import tools.jackson.databind.node.ObjectNode;
 /** Registers the capabilities once and binds each invocation to its authenticated turn. */
 @Component
 public class AgentRouter {
+    private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(AgentRouter.class);
     private static final String OWN_METHODS = "consultarMisMetodosCompensacion";
     private static final ToolMetadata RETURN_DIRECT = ToolMetadata.builder().returnDirect(true).build();
     private static final String NO_ARGUMENTS = "{}";
@@ -47,7 +50,7 @@ public class AgentRouter {
 
     enum Scope { CONDUCTOR, PASAJERO, SHARED }
     enum Access { READ, PREPARE }
-    enum Context { NONE, ROUTE_OR_TRIP, COORDINATION, COMPENSATION, CONTRIBUTION, PDF }
+    enum Context { NONE, ROUTE_OR_TRIP, COORDINATION, COMPENSATION, CONTRIBUTION, PDF, PERSONAL }
     record Capability(Scope scope, Access access, Context context) {
         boolean allows(Rol role) {
             return role == null || scope == Scope.SHARED || scope.name().equals(role.name());
@@ -102,7 +105,7 @@ public class AgentRouter {
         register(catalog, Scope.PASAJERO, Access.READ, Context.CONTRIBUTION, NOMBRE);
         register(catalog, Scope.SHARED, Access.READ, Context.NONE, OWN_METHODS, "consultarMiPerfil",
                 "consultarMiUsuario", "consultarMisHorarios", "consultarMisEstadisticas", "consultarMiFrecuenciaViajes");
-        register(catalog, Scope.SHARED, Access.PREPARE, Context.NONE,
+        register(catalog, Scope.SHARED, Access.PREPARE, Context.PERSONAL,
                 "editarPerfil", "editarInfoAdicional", "cambiarRol", "registrarCurso", "eliminarCurso");
         register(catalog, Scope.SHARED, Access.PREPARE, Context.COMPENSATION, "registrarMetodoCompensacion",
                 "actualizarMetodoCompensacion", "cambiarEstadoMetodoCompensacion", "eliminarMetodoCompensacion");
@@ -166,7 +169,9 @@ public class AgentRouter {
         private ContribucionIntent.Solicitud solicitudContribucion;
         private AclaracionAgente aclaracionActiva;
         private boolean aclaracionContextual;
-        private AgentConversationStore.CambioPersonal personalAnterior;
+        private AgentConversationStore.Lecturas lecturasAnteriores = new AgentConversationStore.Lecturas(List.of(), List.of(), List.of());
+        private List<ViajeResumen> viajesEncontrados = List.of();
+        private List<ViajeResumen> solicitudesEncontradas = List.of();
         private AgentConversationStore.CambioPersonal personal;
 
         private Turn(HistorialPdfIntent.Solicitud historialPdf, CompensationIntent.Decision compensation,
@@ -192,8 +197,9 @@ public class AgentRouter {
             this.contribucionAnterior = contribucionAnterior;
         }
 
-        void continuarCambioPersonal(AgentConversationStore.Draft anterior) {
-            if (anterior instanceof AgentConversationStore.CambioPersonal cambio) personalAnterior = cambio;
+        void referenciasDeBusqueda(AgentConversationStore.Lecturas anteriores) { lecturasAnteriores = anteriores; }
+        AgentConversationStore.Lecturas lecturas() {
+            return new AgentConversationStore.Lecturas(viajesEncontrados, rutas, solicitudesEncontradas);
         }
 
         boolean tieneHerramienta(String nombre) {
@@ -201,9 +207,14 @@ public class AgentRouter {
         }
 
         void procesar(IntencionAclarable.Borrador borrador) {
-            rutaOViaje = borrador;
+            rutaOViaje = borrador.vincularLecturas(mensajeUsuario, lecturasAnteriores);
             String nombre = borrador.accion().herramienta();
-            execute(callback(nombre), mapper.writeValueAsString(borrador.argumentos()), new ToolContext(Map.of()));
+            execute(callback(nombre), mapper.writeValueAsString(rutaOViaje.argumentos()), EMPTY_CONTEXT);
+        }
+
+        void procesar(AgentConversationStore.CambioPersonal cambio) {
+            personal = cambio;
+            execute(callback(cambio.herramienta()), mapper.writeValueAsString(argumentosCambio()), EMPTY_CONTEXT);
         }
 
         void procesar(CoordinacionConductorIntent.Pedido pedido) {
@@ -262,16 +273,27 @@ public class AgentRouter {
             }).toArray(ToolCallback[]::new);
         }
 
+        void completarSolicitudSinTool() {
+            if (IntencionAclarable.esPeticionDeCupo(mensajeUsuario) && tieneHerramienta("solicitarUnirse")) {
+                var borrador = IntencionAclarable.desdeTool("solicitarUnirse", Map.of(), mensajeUsuario, rolUsuario, reloj);
+                if (borrador != null) procesar(borrador);
+                return;
+            }
+            var candidatas = callbacks.keySet().stream().filter(this::tieneHerramienta)
+                    .filter(nombre -> capability(nombre).context() == Context.PERSONAL)
+                    .map(nombre -> Aclaraciones.cambioDesdeTool(nombre, Map.of(), mensajeUsuario))
+                    .filter(Objects::nonNull).toList();
+            if (candidatas.size() == 1) procesar(candidatas.getFirst());
+        }
+
         private boolean available(String name, Rol role) {
             var info = capability(name);
             if (!info.allows(role)) return false;
             if (filtrosContribucion != null) return Context.CONTRIBUTION == info.context();
             if (role == null) return true;
-            if (compensation.blockPreparations() && info.access() == Access.PREPARE) return false;
-            if (personalAnterior != null && name.equals(personalAnterior.herramienta())
-                    && !IntencionAclarable.cambiaDeTema(mensajeUsuario)) return true;
             return switch (info.context()) {
-                case COMPENSATION -> !solicitudViaje && CompensationIntent.contextoGestion(mensajeUsuario);
+                case COMPENSATION -> !compensation.blockPreparations() && !solicitudViaje
+                        && CompensationIntent.contextoGestion(mensajeUsuario);
                 case CONTRIBUTION -> ContribucionIntent.contextoConsulta(mensajeUsuario);
                 case PDF -> historialPdf != null || HistorialPdfIntent.contextoDescarga(mensajeUsuario);
                 default -> true;
@@ -320,6 +342,7 @@ public class AgentRouter {
             if (++calls > 8) throw invalid("TOOL_LIMIT", "El agente alcanzó el límite de herramientas por mensaje.");
             String name = delegate.getToolDefinition().name();
             var info = capability(name);
+            LOG.debug("Agente rol={} herramienta={} recorrido={}", rolUsuario, name, proveedor ? "semantico" : "local");
             if (!info.allows(rolUsuario)) {
                 throw new com.uniride.exceptions.NoPermitidoException("Esta acción requiere el rol " + info.scope() + ".");
             }
@@ -345,6 +368,7 @@ public class AgentRouter {
                     solicitudBloqueada = "Indica explícitamente qué operación deseas solicitar y los datos que correspondan.";
                     return responderSinEjecutar(name + NO_ARGUMENTS, solicitudBloqueada);
                 }
+                seleccion = seleccion.vincularLecturas(mensajeUsuario, lecturasAnteriores);
                 arguments = seleccion.argumentos();
                 input = mapper.writeValueAsString(arguments);
             }
@@ -354,8 +378,9 @@ public class AgentRouter {
             if (receipts.containsKey(key)) return receipts.get(key);
             if (prepara && prepared)
                 throw invalid("ONE_OPERATION_PER_TURN", "Solo se puede preparar una operación por mensaje. Revisa la confirmación pendiente.");
-            if (prepara && (compensation.blockPreparations() || (compensation.allowedTool() != null && !coincide))) {
-                return responderSinEjecutar(key, "Usa únicamente la acción explícita y los datos indicados por el usuario.");
+            if (preparaCompensacion && (compensation.blockPreparations() || (compensation.allowedTool() != null && !coincide))
+                    || proveedor && prepara && IntencionAclarable.bloqueaPreparacion(mensajeUsuario)) {
+                return bloquear(key, "Usa únicamente la acción explícita y los datos indicados por el usuario.");
             }
             if (preparaCompensacion && !argumentosVerificados) {
                 var intencion = proveedor ? CompensationIntent.desdeTool(name, mensajeUsuario) : null;
@@ -369,15 +394,32 @@ public class AgentRouter {
             if (contextual) {
                 context = crearContexto(info.context(), name, proveedor);
                 if (context == null) return bloquear(key, solicitudBloqueada);
-            } else if (proveedor && prepara && info.context() == Context.NONE) {
-                var verificados = argumentosPersonales(name, arguments);
-                if (verificados == null) return bloquear(key, "Indica explícitamente el cambio que quieres preparar.");
+            } else if (proveedor && info.context() == Context.PERSONAL) {
+                personal = Aclaraciones.cambioDesdeTool(name, arguments instanceof Map<?, ?> parametros ? parametros : Map.of(),
+                        mensajeUsuario);
+                if (personal == null) return bloquear(key, "¿Qué cambio quieres preparar en tu perfil u horario?");
+                var verificados = argumentosCambio();
                 input = mapper.writeValueAsString(verificados);
                 key = name + mapper.writeValueAsString(canonical(verificados));
                 if (receipts.containsKey(key)) return receipts.get(key);
-                personal = new AgentConversationStore.CambioPersonal(name, verificados);
+            }
+            if (info.context() == Context.PERSONAL && personal != null
+                    && "pendiente".equals(personal.argumentos().get("accionCurso"))) {
+                var resultado = new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                        "¿Quieres agregar ese curso a tu horario?")
+                        .conAclaracion(Aclaraciones.crear(name, Aclaraciones.Campo.ACCION_CURSO.obligatorio()).conOpcionesRapidas());
+                capture(name, mapper.valueToTree(resultado));
+                return responderSinEjecutar(key, resultado.detalle());
             }
             var borrador = seleccion == null ? rutaOViaje : seleccion;
+            if (borrador != null && name.equals(borrador.accion().herramienta())
+                    && (borrador.accion() == IntencionAclarable.Accion.UNIRSE
+                    || borrador.accion() == IntencionAclarable.Accion.CANCELAR)) {
+                context = new ToolContext(Map.of(IntencionAclarable.CONTEXTO_CUPO, borrador));
+            }
+            if ("eliminarCurso".equals(name)) {
+                context = new ToolContext(Map.of(HorarioTools.CONTEXTO_CURSO, personal == null ? Map.of() : personal.argumentos()));
+            }
             SeleccionRutaViaje seleccionRuta = null;
             if ("crearViaje".equals(name) && borrador != null && borrador.rutaViaje() != null) {
                 seleccionRuta = new SeleccionRutaViaje(borrador.rutaViaje());
@@ -447,59 +489,16 @@ public class AgentRouter {
             };
         }
 
-        private Map<String, Object> argumentosPersonales(String name, Object arguments) {
-            String texto = normalizar(mensajeUsuario);
-            if (texto.matches("(?s).*\\b(?:no|nunca|ignora|simula|herramienta|instrucciones|argumentos)\\b.*")
-                    || texto.matches("^(?:como|que pasa si|explicame|puedo|podria|debo|es posible|quiero saber)\\b.*"))
-                return null;
-            String accion = switch (name) {
-                case "editarPerfil" -> "(?:edit|actualiz|cambi|modific|corrig)\\w*";
-                case "editarInfoAdicional" -> "(?:agreg|anad|edit|actualiz|cambi|modific|pon)\\w*";
-                case "cambiarRol" -> "(?:cambi|pas|us|utiliz|conviert|convert|quiero)\\w*";
-                case "registrarCurso" -> "(?:agreg|anad|registr|inscrib)\\w*";
-                case "eliminarCurso" -> "(?:elimin|borr|quit|retir)\\w*";
-                default -> throw new IllegalStateException("Preparación sin validación: " + name);
-            };
-            String entidad = switch (name) {
-                case "editarPerfil" -> "perfil|nombre|apellidos?|carrera|distrito|universidad|disponibilidad|favorit[oa]|fecha.*clases";
-                case "editarInfoAdicional" -> "gustos?|hobb(?:y|ies)|pasatiempos?|datos curiosos|informacion adicional|me gusta";
-                case "cambiarRol" -> "rol|conductor[ae]?|pasajer[oa]";
-                default -> "cursos?|clases?|asignaturas?|horario academico";
-            };
-            Map<String, Object> verificados = new LinkedHashMap<>();
-            boolean sigueActivo = personalAnterior != null && name.equals(personalAnterior.herramienta())
-                    && !IntencionAclarable.cambiaDeTema(mensajeUsuario)
-                    && ConfirmationIntent.classify(mensajeUsuario) == ConfirmationIntent.OTRA
-                    && !mensajeUsuario.contains("?");
-            if (sigueActivo) verificados.putAll(personalAnterior.argumentos());
-            else if (!texto.matches("^(?:por favor,? )?(?:(?:quiero|quisiera|necesito|puedes|podrias|ayudame a) )?"
-                    + accion + "\\b.*\\b(?:" + entidad + ")\\b.*")) return null;
-            if (arguments instanceof Map<?, ?> valores) {
-                valores.forEach((campo, valor) -> {
-                    if (campo instanceof String clave && valor instanceof String literal
-                            && !literal.isBlank() && figuraEnMensaje(texto, literal)) verificados.put(clave, valor);
-                });
-                if ("cambiarRol".equals(name) && verificados.containsKey("rol") && !sigueActivo) {
-                    String rol = normalizar((String) verificados.get("rol"));
-                    if (!texto.matches(".*\\b(?:a|como|ser|modo|rol\\s*:?\\s*(?:de)?)\\s+"
-                            + java.util.regex.Pattern.quote(rol) + "\\b.*")) {
-                        verificados.remove("rol");
-                    }
-                }
-                if ("editarInfoAdicional".equals(name) && !sigueActivo) {
-                    verificados.put("agregar", texto.matches(".*\\b(?:agreg|anad|sum)\\w*\\b.*"));
-                }
-            }
-            return verificados;
-        }
-
-        private boolean figuraEnMensaje(String texto, String valor) {
-            String literal = normalizar(valor);
-            return java.util.regex.Pattern.compile("(?<![\\p{L}\\d])"
-                    + java.util.regex.Pattern.quote(literal) + "(?![\\p{L}\\d])").matcher(texto).find();
+        private Map<String, Object> argumentosCambio() {
+            var argumentos = new LinkedHashMap<>(personal.argumentos());
+            argumentos.remove("campoPerfil");
+            argumentos.remove("curso");
+            argumentos.remove("accionCurso");
+            return argumentos;
         }
 
         private String bloquear(String key, String mensaje) {
+            LOG.debug("Agente decisión=aclaracion_por_intencion_o_contexto");
             solicitudBloqueada = mensaje;
             return responderSinEjecutar(key, mensaje);
         }
@@ -518,6 +517,10 @@ public class AgentRouter {
                     if (cause instanceof com.uniride.exceptions.BusinessException business) throw business;
                     if (cause instanceof com.uniride.exceptions.ResourceNotFoundException missing) throw missing;
                     if (cause instanceof AgentProviderException controlled) throw controlled;
+                    if (LOG.isDebugEnabled()) LOG.debug("Agente herramienta={} fallo={} origen={}",
+                            delegate.getToolDefinition().name(), cause.getClass().getSimpleName(),
+                            Arrays.stream(cause.getStackTrace()).filter(frame -> frame.getClassName().startsWith("com.uniride"))
+                                    .findFirst().orElse(null));
                 }
                 throw invalid("TOOL_EXECUTION_FAILED", "No se pudo completar la herramienta. No se repitió ninguna acción.");
             } finally {
@@ -542,7 +545,15 @@ public class AgentRouter {
                     validarAclaracion(name, resultado.aclaracion());
                     contribucion = resultado;
                 }
-                case "buscarViajes", "consultarMisViajes", "consultarMisSolicitudes" ->
+                case "buscarViajes" -> {
+                    viajesEncontrados = items.valueStream().map(item -> mapper.treeToValue(item, ViajeResumen.class)).toList();
+                    viajes.addAll(viajesEncontrados);
+                }
+                case "consultarMisSolicitudes" -> {
+                    solicitudesEncontradas = items.valueStream().map(item -> mapper.treeToValue(item, ViajeResumen.class)).toList();
+                    viajes.addAll(solicitudesEncontradas);
+                }
+                case "consultarMisViajes" ->
                     items.forEach(item -> viajes.add(mapper.treeToValue(item, ViajeResumen.class)));
                 case "consultarMisRutas" ->
                     items.forEach(item -> rutas.add(mapper.treeToValue(item, RutaResumen.class)));
@@ -551,6 +562,8 @@ public class AgentRouter {
                 default -> {
                     if (data.has("estado") && data.has("detalle")) {
                         var resultado = mapper.treeToValue(data, OperacionResumen.class);
+                        LOG.debug("Agente herramienta={} estado={} aclaracion={}", name, resultado.estado(),
+                                resultado.aclaracion() != null);
                         validarAclaracion(name, resultado.aclaracion());
                         if (!propuestaPendiente()) {
                             camposOperacion = resultado.aclaracion();
@@ -612,6 +625,9 @@ public class AgentRouter {
                     return esquema;
                 }
                 if (dato.operacion().equals(compensation.allowedTool()) && compensation.recoveryArgs() != null) return dato;
+                if (personal != null && dato.operacion().equals(personal.herramienta())) {
+                    return Aclaraciones.precisarCambio(dato, personal);
+                }
             }
             if (aclaracionContextual) return compensation.aclaracion();
             return historialPdf == null ? null : historialPdf.aclaracionEstructurada();

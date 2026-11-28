@@ -5,6 +5,8 @@ import static com.uniride.agent.support.AgentText.normalizar;
 
 import com.uniride.agent.conversation.Aclaraciones.Campo;
 import com.uniride.agent.dto.AclaracionAgente;
+import com.uniride.agent.dto.ViajeResumen;
+import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.enums.Rol;
 import java.time.Clock;
@@ -20,6 +22,7 @@ import java.util.regex.Pattern;
 
 /** Bounded input for route and trip callbacks. A continuation can change only prompted fields. */
 public final class IntencionAclarable {
+    public static final String CONTEXTO_CUPO = "seleccionCupo";
     private static final String INICIO = "^(?:por favor,? )?(?:ahora )?(?:(?:quiero|quisiera|necesito|puedes|podrias|ayudame a) )?";
     private static final Pattern OTRA_CREACION = Pattern.compile(INICIO + "cre(?:a|ar) (?:otr[oa]|un[oa] mas)$");
     private static final Pattern CAMBIAR_HORA = Pattern.compile(INICIO + "(?:cambia|cambiar|modifica|modificar) la hora$");
@@ -29,7 +32,7 @@ public final class IntencionAclarable {
             + "muestra|busca|consulta|cancela|elimina|mira)\\w*\\b");
     private static final Pattern NUEVO_TEMA = Pattern.compile(INICIO + "(?:crea\\w*|publica\\w*|"
             + "elimina\\w*|registra\\w*|reprograma\\w*|edita\\w*|cambia\\w*|activa\\w*|desactiva\\w*|"
-            + "cancela\\w*|muestra\\w*|busca\\w*|dime|consulta\\w*|descarga\\w*|exporta\\w*|"
+            + "cancela\\w*|agrega\\w*|anade\\w*|quita\\w*|muestra\\w*|busca\\w*|dime|consulta\\w*|descarga\\w*|exporta\\w*|"
             + "quiero|olvida|hola|gracias|ayudame con|ensena\\w*|(?:mis|mi) (?:rutas?|viajes?|solicitudes?|metodos?|"
             + "estadisticas|historial))\\b");
     private static final Pattern ETIQUETA = Pattern.compile("(?iu)(?:^|(?:[;,\\r\\n]|\\b(?:con|y|e)\\b)\\s*)"
@@ -37,7 +40,7 @@ public final class IntencionAclarable {
             + "zonas sin parada|nota de contribuci[oó]n|nueva fecha|nueva hora|tipo de compensaci[oó]n|preferencia|"
             + "d[ií]a(?: de la semana)?|origen|destino|fecha|hora)\\s*(?::\\s*|\\s+)(?:de\\s+(?=[+-]?\\d))?");
     private static final Pattern ORIGEN_EXPLICITO = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida|solicitud|cupo|reserva) de) "
-            + "([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)(?=$|[.,;!?]| (?:a |hacia |con |del? \\d|el \\d))");
+            + "([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)(?=$|[.,;!?]| (?:a |hacia |con |por |del? \\d|el \\d))");
     private static final Pattern DESTINO_VIAJE = Pattern.compile("(?iu)\\b(?:desde|(?:ruta|viaje|salida) de) [^,;!?]+? "
             + "(?:a (?!las? )|hacia )(?:la |el )?([\\p{L}\\p{N}][\\p{L}\\p{N} .’'()-]{0,254}?)"
             + "(?=$|[.,;!?]| (?:a las? |con |del? \\d|el \\d|para |por favor))");
@@ -70,8 +73,25 @@ public final class IntencionAclarable {
             + "(?:solo|solamente) (?:consult\\w*|pregunt\\w*|quiero saber))\\b");
     private static final Pattern CANCELAR_TODAS = Pattern.compile("^(?:cancel\\w*) (?:todas|todos) "
             + "(?:(?:las|mis|los) )?(?:solicitudes|cupos|reservas)\\b");
+    private static final Pattern PEDIDO_CUPO = Pattern.compile(
+            "^(?:inscrib\\w*|inscrit\\w*|registr(?:a(?:r)?me)|apunt\\w*|anot\\w*|particip\\w*|"
+                    + "sumar\\w*|unir\\w*|ir|viajar|reserv\\w*|solicit\\w*|pedir|pide\\w*)\\b");
+    private static final Pattern REFERENCIA_CUPO = Pattern.compile(
+            "\\b(?:viajes?|salidas?|cupo|asiento|sitio|conductor|(?:al|en el|para el) de|ir con)\\b");
 
     private IntencionAclarable() { }
+
+    public static boolean bloqueaPreparacion(String mensaje) {
+        String texto = normalizar(mensaje);
+        return RECHAZO.matcher(texto).find() || texto.matches(
+                "^(?:por favor,? )?(?:no|nunca|jamas|como|que pasa si|explicame|puedo|podria|debo|es posible|quiero saber)\\b.*");
+    }
+
+    public static boolean esPeticionDeCupo(String mensaje) {
+        String texto = PETICION.matcher(normalizar(mensaje)).replaceFirst("");
+        return PEDIDO_CUPO.matcher(texto).find() && REFERENCIA_CUPO.matcher(texto).find()
+                && !bloqueaPreparacion(mensaje);
+    }
 
     public enum Accion {
         CREAR_RUTA("crearRuta", Rol.CONDUCTOR, "(?:crea|crear|publica|publicar) (?:una |otra |mi |nueva )?ruta(?: mas)?",
@@ -125,14 +145,22 @@ public final class IntencionAclarable {
 
     public record Contexto(Accion accion, String origen, String destino, String fecha, String hora) { }
 
-    public record Borrador(Accion accion, Map<Campo, String> datos, boolean todas, SeleccionRutaViaje.Estado rutaViaje)
+    public record Borrador(Accion accion, Map<Campo, String> datos, boolean todas, SeleccionRutaViaje.Estado rutaViaje,
+            Map<String, ViajeResumen> opcionesViaje, ViajeResumen viajeElegido)
             implements AgentConversationStore.Draft {
         Borrador(Accion accion, Map<Campo, String> datos) { this(accion, datos, false); }
         Borrador(Accion accion, Map<Campo, String> datos, boolean todas) {
             this(accion, datos, todas, accion == Accion.CREAR_VIAJE ? SeleccionRutaViaje.INICIAL : null);
         }
 
-        public Borrador { datos = Map.copyOf(datos); }
+        private Borrador(Accion accion, Map<Campo, String> datos, boolean todas, SeleccionRutaViaje.Estado rutaViaje) {
+            this(accion, datos, todas, rutaViaje, Map.of(), null);
+        }
+
+        public Borrador {
+            datos = Map.copyOf(datos);
+            opcionesViaje = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(opcionesViaje));
+        }
 
         public Map<String, Object> argumentos() {
             var argumentos = new LinkedHashMap<String, Object>();
@@ -150,7 +178,51 @@ public final class IntencionAclarable {
             });
             var estado = rutaViaje;
             if (estado != null && campos.containsKey(RUTA.id())) estado = estado.elegir(campos.get(RUTA.id()));
-            return new Borrador(accion, valores, todas, estado);
+            var seleccionado = opcionesViaje.getOrDefault(campos.getOrDefault(VIAJE.id(), ""), viajeElegido);
+            return new Borrador(accion, valores, todas, estado, seleccionado == null ? opcionesViaje : Map.of(), seleccionado);
+        }
+
+        private Borrador vincularViaje(String mensaje, List<ViajeResumen> recientes) {
+            if (accion != Accion.UNIRSE || recientes.isEmpty() || viajeElegido != null || !opcionesViaje.isEmpty()) return this;
+            String texto = normalizar(mensaje);
+            var posibles = recientes.stream().filter(v -> coincide(v, texto, datos)).toList();
+            if (posibles.isEmpty()) return this;
+            var opciones = new LinkedHashMap<String, ViajeResumen>();
+            posibles.forEach(v -> opciones.put(java.util.UUID.randomUUID().toString(), v));
+            var form = campoViaje(opciones);
+            String ordinal = texto.replaceFirst("^.*?\\b(?:al|a la|en el|en la|para el|para la) ", "").strip();
+            String elegido = Aclaraciones.EnvioAclaracion.valorSeleccionado(form, ordinal);
+            boolean apunta = datos.containsKey(ORIGEN) || datos.containsKey(DESTINO) || datos.containsKey(FECHA)
+                    || datos.containsKey(HORA)
+                    || texto.matches(".*\\b(?:ese|este|esa|esta|dicho|dicha) (?:viaje|salida|conductor)\\b.*")
+                    || posibles.size() < recientes.size()
+                    || posibles.stream().anyMatch(v -> menciona(texto, v.origen()) || menciona(texto, v.conductorNombre()));
+            if (elegido != null) return new Borrador(accion, datos, todas, null, Map.of(), opciones.get(elegido));
+            if (apunta && posibles.size() == 1) return new Borrador(accion, datos, todas, null, Map.of(), posibles.getFirst());
+            return new Borrador(accion, datos, todas, null, opciones, null);
+        }
+
+        public Borrador vincularLecturas(String mensaje, AgentConversationStore.Lecturas lecturas) {
+            String texto = normalizar(mensaje);
+            if (accion == Accion.CREAR_VIAJE && datos.get(ORIGEN) == null && datos.get(DESTINO) == null
+                    && rutaViaje != null && rutaViaje.elegida() == null && rutaViaje.opciones().isEmpty()
+                    && lecturas.rutas().size() == 1 && texto.matches(".*\\b(?:esa|esta|misma|dicha) ruta\\b.*")) {
+                var ruta = lecturas.rutas().getFirst();
+                return conRutaViaje(SeleccionRutaViaje.Estado.desdeConsulta(ruta));
+            }
+            if (accion == Accion.CANCELAR && datos.isEmpty() && !todas
+                    && lecturas.solicitudes().size() == 1 && texto.matches(".*\\b(?:esa|esta|dicha) solicitud\\b.*")) {
+                var viaje = lecturas.solicitudes().getFirst();
+                var filtros = continuar(Map.of(ORIGEN.id(), viaje.origen(), DESTINO.id(), viaje.destino(),
+                        FECHA.id(), viaje.fecha().toString(), HORA.id(), viaje.hora().toString()));
+                return new Borrador(accion, filtros.datos(), false, null, Map.of(), viaje);
+            }
+            return vincularViaje(mensaje, lecturas.viajes());
+        }
+
+        public AclaracionAgente formularioViaje() {
+            return opcionesViaje.isEmpty() ? null
+                    : Aclaraciones.crear(accion.herramienta, campoViaje(opcionesViaje)).conOpcionesRapidas();
         }
 
         public Borrador conRutaViaje(SeleccionRutaViaje.Estado estado) {
@@ -210,6 +282,40 @@ public final class IntencionAclarable {
                 case CANCELAR -> false;
             };
         }
+    }
+
+    private static boolean coincide(ViajeResumen viaje, String texto, Map<Campo, String> filtros) {
+        if (!filtros.getOrDefault(FECHA, viaje.fecha().toString()).equals(viaje.fecha().toString())
+                || filtros.containsKey(HORA) && !LocalTime.parse(filtros.get(HORA)).equals(viaje.hora())) return false;
+        if (!normalizar(viaje.origen()).contains(normalizar(filtros.get(ORIGEN)))
+                || !normalizar(viaje.destino()).contains(normalizar(filtros.get(DESTINO)))) return false;
+        var origen = Pattern.compile("\\b(?:al de|en el de|viaje de|salida de) ([^,.!?]+?)(?= por | con |$)").matcher(texto);
+        if (origen.find() && !normalizar(viaje.origen()).equals(origen.group(1).strip())) return false;
+        var referencia = Pattern.compile("\\b(?:el de|por|con) ([\\p{L} .'-]+?)(?= a las | desde |$)").matcher(texto);
+        if (referencia.find()) {
+            String nombre = referencia.group(1).strip();
+            if (!nombre.matches("(?:ese|este|el|la|favor|dinero|gasolina)\\b.*")
+                    && !menciona(normalizar(viaje.conductorNombre()), nombre)
+                    && !normalizar(viaje.origen()).equals(nombre)) return false;
+        }
+        return true;
+    }
+
+    private static boolean menciona(String texto, String valor) {
+        String nombre = normalizar(valor);
+        return !nombre.isBlank() && Pattern.compile("(?<![\\p{L}\\d])"
+                + Pattern.quote(nombre) + "(?![\\p{L}\\d])").matcher(texto).find();
+    }
+
+    private static com.uniride.agent.dto.CampoAclaracion campoViaje(Map<String, ViajeResumen> opciones) {
+        var etiquetas = new ArrayList<OpcionAclaracion>();
+        opciones.forEach((id, v) -> {
+            String dato = v.origen() + " → " + v.destino() + ", " + v.conductorNombre();
+            String numero = "Viaje " + (etiquetas.size() + 1);
+            String etiqueta = AclaracionAgente.textoSeguro(dato, 85) ? numero + " · " + dato : numero;
+            etiquetas.add(new OpcionAclaracion(id, etiqueta + " · " + v.fecha() + " " + v.hora()));
+        });
+        return VIAJE.conOpciones(etiquetas);
     }
 
     public static Borrador inicioLocal(String mensaje, Contexto anterior, Clock clock) {
@@ -274,6 +380,9 @@ public final class IntencionAclarable {
                     accion = candidata;
                 }
             }
+            if (accion == null && Accion.UNIRSE.herramienta.equals(herramienta) && esPeticionDeCupo(frase)) {
+                accion = Accion.UNIRSE;
+            }
             if (accion == null) continue;
             if (seleccion != null || accion.rol != rol || !accion.herramienta.equals(herramienta)) return null;
             seleccion = new Clausula(accion, frase);
@@ -304,6 +413,16 @@ public final class IntencionAclarable {
 
     public static Borrador continuar(String mensaje, Borrador borrador, AclaracionAgente esquema, Contexto contexto, Clock clock) {
         if (borrador == null || esquema == null) return null;
+        if (!borrador.opcionesViaje().isEmpty() && !cambiaDeTema(mensaje)) {
+            var selector = esquema.campos().stream().filter(c -> c.id().equals(VIAJE.id())).findFirst().orElse(null);
+            String referencia = selector == null ? null : Aclaraciones.EnvioAclaracion.valorSeleccionado(selector, mensaje);
+            if (referencia != null) return borrador.continuar(Map.of(VIAJE.id(), referencia));
+            var opciones = borrador.opcionesViaje().entrySet().stream()
+                    .filter(e -> menciona(normalizar(mensaje), e.getValue().origen())
+                            || menciona(normalizar(mensaje), e.getValue().conductorNombre())).toList();
+            if (opciones.size() == 1) return borrador.continuar(Map.of(VIAJE.id(), opciones.getFirst().getKey()));
+            return null;
+        }
         String texto = normalizar(mensaje);
         var solicitados = borrador.accion.campos.stream()
                 .filter(c -> esquema.campos().stream().anyMatch(f -> f.id().equals(c.id()))).toList();
@@ -374,6 +493,7 @@ public final class IntencionAclarable {
     }
 
     public static boolean cambiaDeTema(String mensaje) {
+        if (esPeticionDeCupo(mensaje)) return true;
         String texto = normalizar(mensaje);
         if (NUEVO_TEMA.matcher(texto).find()) return true;
         String peticion = PETICION.matcher(texto).replaceFirst("");

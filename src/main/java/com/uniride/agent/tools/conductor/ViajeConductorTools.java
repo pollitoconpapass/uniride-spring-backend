@@ -95,7 +95,17 @@ public class ViajeConductorTools {
                 ? s : null;
         var seleccion = turno == null ? SeleccionRutaViaje.INICIAL : turno.estado();
         var ruta = seleccion.elegida();
-        if (ruta != null && consultas.rutaParaCrearViaje(ruta.id()).filter(ruta::equals).isEmpty())
+        if (seleccion.consultada() != null) {
+            var consultada = seleccion.consultada();
+            ruta = consultas.rutaParaCrearViaje(consultada.rutaId()).filter(actual ->
+                    java.util.Objects.equals(actual.origen(), consultada.origen())
+                            && java.util.Objects.equals(actual.destino(), consultada.destino())
+                            && java.util.Objects.equals(actual.capacidadMaxima(), consultada.capacidadMaxima())
+                            && java.util.Objects.equals(actual.puntosReferencia(), consultada.puntosReferencia())
+                            && java.util.Objects.equals(actual.zonasSinParada(), consultada.zonasSinParada())).orElse(null);
+            if (ruta == null) return ofrecerAlternativas(turno, fecha, hora, RUTA_CAMBIO);
+        }
+        else if (ruta != null && consultas.rutaParaCrearViaje(ruta.id()).filter(ruta::equals).isEmpty())
             return ofrecerAlternativas(turno, fecha, hora, RUTA_CAMBIO);
         if (ruta == null) {
             boolean filtrado = !blanco(origenRuta) || !blanco(destinoRuta);

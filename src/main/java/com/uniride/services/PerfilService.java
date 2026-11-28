@@ -60,17 +60,8 @@ public class PerfilService {
 
     @Transactional
     public PerfilRespuesta guardarDatosPersonales(PerfilRequest request) {
-        if (request == null || request.fechaInicioClases() == null || request.fechaFinClases() == null
-                || request.fechaFinClases().isBefore(request.fechaInicioClases())) {
-            throw new CamposInvalidosException("La fecha de fin de clases no puede ser anterior al inicio");
-        }
         Usuario usuario = usuarioService.usuarioActual();
-
-        if (request.metodoCompensacionFavorito() == null
-                && usuario.getRolPrincipal() == Rol.CONDUCTOR) { // -> solo los conductores tienen metodo de compensacion favorito
-            throw new CamposInvalidosException(
-                    "El método de compensación favorito es obligatorio para conductores");
-        }
+        validarDatosPersonales(usuario.getRolPrincipal(), request);
 
         Perfil perfil = perfilRepository.findByUsuarioId(usuario.getId()).orElse(null);
 
@@ -94,16 +85,34 @@ public class PerfilService {
         return perfilMapper.toPerfilRespuesta(guardado);
     }
 
+    public void validarDatosPersonales(Rol rol, PerfilRequest request) {
+        if (request == null || request.fechaInicioClases() == null || request.fechaFinClases() == null
+                || request.fechaFinClases().isBefore(request.fechaInicioClases())) {
+            throw new CamposInvalidosException("La fecha de fin de clases no puede ser anterior al inicio");
+        }
+        if (request.metodoCompensacionFavorito() == null && rol == Rol.CONDUCTOR) {
+            throw new CamposInvalidosException("El método de compensación favorito es obligatorio para conductores");
+        }
+    }
+
     @Transactional
     public PerfilRespuesta guardarInfoAdicional(InfoAdicionalRequest request) {
-        if (request == null) {
-            throw new CamposInvalidosException("Debes ingresar información adicional");
-        }
-
         Usuario usuario = usuarioService.usuarioActual();
         Perfil perfil = perfilRepository.findByUsuarioId(usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Primero completa tu perfil personal"));
+        var cambio = validarInfoAdicional(perfil, request);
+        perfil.setGustos(cambio.gustos());
+        perfil.setHobbies(cambio.hobbies());
+        perfil.setDatosCuriosos(cambio.datosCuriosos());
+        Perfil guardado = perfilRepository.save(perfil);
 
+        notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Información adicional actualizada",
+                "Tus gustos, hobbies y datos curiosos se guardaron correctamente.");
+        return perfilMapper.toPerfilRespuesta(guardado);
+    }
+
+    public InfoAdicionalRequest validarInfoAdicional(Perfil perfil, InfoAdicionalRequest request) {
+        if (request == null) throw new CamposInvalidosException("Debes ingresar información adicional");
         // Al editar, un campo omitido (null) conserva su valor. Una cadena vacía
         // enviada explícitamente no elimina silenciosamente un dato obligatorio.
         String gustos = valorResultante(request.gustos(), perfil.getGustos());
@@ -130,15 +139,7 @@ public class PerfilService {
             throw new CamposInvalidosException("Debes indicar al menos un campo para actualizar");
         }
 
-        perfil.setGustos(gustos);
-        perfil.setHobbies(hobbies);
-        perfil.setDatosCuriosos(datosCuriosos);
-        Perfil guardado = perfilRepository.save(perfil);
-
-        notificacionService.notificar(usuario, TipoNotificacion.EXITO, "Información adicional actualizada",
-                "Tus gustos, hobbies y datos curiosos se guardaron correctamente.");
-
-        return perfilMapper.toPerfilRespuesta(guardado);
+        return new InfoAdicionalRequest(gustos, hobbies, datosCuriosos);
     }
 
     private String valorResultante(String valorNuevo, String valorActual) {

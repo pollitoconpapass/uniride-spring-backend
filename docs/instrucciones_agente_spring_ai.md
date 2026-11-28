@@ -50,6 +50,18 @@ los callbacks del ámbito autorizado. Coordinación, contribución y PDF reciben
 Los servicios comprueban permisos y propiedad. Groq recibe hasta cuatro
 intercambios completos previos además de la petición actual.
 
+El backend guarda una página acotada de referencias recientes por consulta y
+valida la opción vigente antes de preparar. Los datos de una aclaración personal
+se retienen en el borrador y el historial del modelo usa un resumen del turno.
+El catálogo separa la disponibilidad del callback de la autorización de la
+preparación. Una selección de Groq debe corroborarse con el mensaje o el
+formulario vigente antes de preparar una escritura.
+
+En `DEBUG`, `AgentService` informa rol y herramientas ofrecidas.
+`AgentRouter` informa el callback elegido, si el recorrido fue local o
+semántico y el estado producido. `GroqHttpDiagnostics` informa las rondas
+HTTP. Estos mensajes excluyen texto personal, argumentos y credenciales.
+
 Las decisiones de confirmación, las sugerencias US29 reconocidas, las consultas
 explícitas de listado propio de métodos y las preparaciones de compensación con
 datos verificados se resuelven directamente en Java. Cuando el modelo selecciona

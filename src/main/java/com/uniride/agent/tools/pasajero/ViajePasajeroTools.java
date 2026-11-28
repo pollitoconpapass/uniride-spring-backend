@@ -8,6 +8,7 @@ import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.conversation.Aclaraciones.Campo;
 import com.uniride.agent.conversation.Aclaraciones.Salida;
 import com.uniride.agent.conversation.Aclaraciones;
+import com.uniride.agent.conversation.IntencionAclarable;
 import com.uniride.agent.dto.*;
 import com.uniride.agent.support.AgentQueryService;
 import com.uniride.dto.requests.SolicitudRequest;
@@ -19,6 +20,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -75,10 +77,9 @@ public class ViajePasajeroTools {
     }
 
     @Tool(description = """
-            Prepara una solicitud de cupo para el pasajero. NO envía todavía la solicitud.
-            Identifica el viaje por origen, destino, día, fecha y hora, sin pedir IDs.
-            Si hay varias coincidencias pide más datos. Requiere preferencia DINERO, GASOLINA o FAVOR.
-            La propuesta requiere una decisión explícita del usuario procesada por el servidor.
+            Prepara pedir un cupo, inscribirse o reservar un asiento en una salida. No envía la solicitud.
+            Usa origen, destino, día, fecha y hora conocidos. Si la referencia es a un resultado reciente,
+            invoca aunque falten argumentos; Java lo resuelve y pide elegir si es ambiguo. Nunca envíes IDs.
             """)
     public OperacionResumen solicitarUnirse(
             @ToolParam(description = "Origen", required = false) String origen,
@@ -86,9 +87,22 @@ public class ViajePasajeroTools {
             @ToolParam(description = "Día", required = false) String dia,
             @ToolParam(description = "Fecha yyyy-MM-dd", required = false) LocalDate fecha,
             @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora,
-            @ToolParam(description = "Preferencia DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion preferencia) {
+            @ToolParam(description = "Preferencia DINERO, GASOLINA o FAVOR", required = false) TipoCompensacion preferencia,
+            ToolContext contexto) {
         if (!rol(Rol.PASAJERO))
             return new OperacionResumen(EstadoOperacion.ERROR, null, "Solo un pasajero puede solicitar un cupo.");
+        if (contexto != null && contexto.getContext().get(IntencionAclarable.CONTEXTO_CUPO) instanceof IntencionAclarable.Borrador cupo) {
+            if (cupo.formularioViaje() != null) return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
+                    "¿En cuál de estos viajes quieres solicitar un cupo?").conAclaracion(cupo.formularioViaje());
+            if (cupo.viajeElegido() != null && preferencia != null) {
+                try {
+                    return confirmaciones.prepararSolicitudDeViajeConsultado(cupo.viajeElegido(), new SolicitudRequest(null, preferencia, null));
+                } catch (BusinessException | ResourceNotFoundException invalido) {
+                    return new OperacionResumen(EstadoOperacion.ERROR, null,
+                            invalido.getMessage() + ". Busca viajes disponibles para elegir otra salida.");
+                }
+            }
+        }
         var correcciones = filtrosViaje(origen, destino, dia);
         if (preferencia == null && correcciones.isEmpty())
             return new OperacionResumen(EstadoOperacion.DATOS_FALTANTES, null,
@@ -115,6 +129,11 @@ public class ViajePasajeroTools {
         }
     }
 
+    public OperacionResumen solicitarUnirse(String origen, String destino, String dia, LocalDate fecha, LocalTime hora,
+                                            TipoCompensacion preferencia) {
+        return solicitarUnirse(origen, destino, dia, fecha, hora, preferencia, null);
+    }
+
     @Tool(description = """
             Prepara cancelar una o varias solicitudes propias pendientes del pasajero. NO las cancela todavía.
             Filtra por origen, destino, día, fecha u hora si el usuario los indicó.
@@ -127,13 +146,18 @@ public class ViajePasajeroTools {
             @ToolParam(description = "Día de la semana", required = false) String dia,
             @ToolParam(description = "Fecha yyyy-MM-dd", required = false) LocalDate fecha,
             @ToolParam(description = "Hora HH:mm en 24 horas", required = false) LocalTime hora,
-            @ToolParam(description = "true solo si pidió cancelar todas las solicitudes pendientes", required = false) Boolean todas) {
+            @ToolParam(description = "true solo si pidió cancelar todas las solicitudes pendientes", required = false) Boolean todas,
+            ToolContext contexto) {
         if (!rol(Rol.PASAJERO))
             return new OperacionResumen(EstadoOperacion.ERROR, null, "Solo un pasajero puede cancelar solicitudes propias.");
         var correcciones = filtrosViaje(origen, destino, dia);
         if (!correcciones.isEmpty()) return faltantes("cancelarSolicitud", correcciones);
         try {
             var candidatas = consultas.candidatasCancelacion(origen, destino, dia, fecha, hora);
+            if (contexto != null && contexto.getContext().get(IntencionAclarable.CONTEXTO_CUPO)
+                    instanceof IntencionAclarable.Borrador borrador && borrador.viajeElegido() != null) {
+                candidatas = candidatas.stream().filter(s -> s.viajeId().equals(borrador.viajeElegido().viajeId())).toList();
+            }
             if (candidatas.isEmpty())
                 return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null,
                         "No encontré solicitudes pendientes propias con esos datos.");
@@ -151,6 +175,11 @@ public class ViajePasajeroTools {
         } catch (BusinessException | ResourceNotFoundException | NoPermitidoException e) {
             return new OperacionResumen(EstadoOperacion.ERROR, null, e.getMessage());
         }
+    }
+
+    public OperacionResumen cancelarSolicitud(String origen, String destino, String dia, LocalDate fecha, LocalTime hora,
+                                              Boolean todas) {
+        return cancelarSolicitud(origen, destino, dia, fecha, hora, todas, null);
     }
 
     private static OperacionResumen identificarSalida(String operacion) {

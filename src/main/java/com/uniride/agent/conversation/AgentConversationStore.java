@@ -5,6 +5,8 @@ import com.uniride.agent.dto.AclaracionAgente;
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.ConfirmacionResumen;
 import com.uniride.agent.dto.EstadoOperacion;
+import com.uniride.agent.dto.ViajeResumen;
+import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.support.AgentProviderException;
 import com.uniride.enums.Rol;
 import java.time.*;
@@ -106,6 +108,19 @@ public class AgentConversationStore {
         public CambioPersonal { argumentos = Map.copyOf(argumentos); }
     }
 
+    public record Lecturas(List<ViajeResumen> viajes, List<RutaResumen> rutas, List<ViajeResumen> solicitudes) {
+        public Lecturas {
+            viajes = salidasValidas(viajes);
+            rutas = rutas.stream().limit(10).toList();
+            solicitudes = salidasValidas(solicitudes);
+        }
+
+        private static List<ViajeResumen> salidasValidas(List<ViajeResumen> valores) {
+            return valores.stream().filter(v -> v.viajeId() != null && v.fecha() != null && v.hora() != null)
+                    .limit(10).toList();
+        }
+    }
+
     private static final class Session {
         private final Long userId;
         private final Rol role;
@@ -117,6 +132,7 @@ public class AgentConversationStore {
         private AclaracionAgente aclaracion;
         private IntencionAclarable.Contexto ultimoContexto;
         private CoordinacionConductorIntent.Sesion coordinacion;
+        private Lecturas lecturas = new Lecturas(List.of(), List.of(), List.of());
         private UUID confirmacionPendiente;
         private ConfirmacionResumen confirmacionResuelta;
         private Session(Long userId, Rol role, Instant now) {
@@ -178,6 +194,8 @@ public class AgentConversationStore {
         public void guardarContexto(IntencionAclarable.Contexto contexto) { session.ultimoContexto = contexto; }
         public CoordinacionConductorIntent.Sesion coordinacion() { return session.coordinacion; }
         public void guardarCoordinacion(CoordinacionConductorIntent.Sesion coordinacion) { session.coordinacion = coordinacion; }
+        public Lecturas lecturas() { return session.lecturas; }
+        public void guardarLecturas(Lecturas lecturas) { session.lecturas = lecturas; }
         public HistorialPdfIntent.Solicitud historial() { return draft(HistorialPdfIntent.Solicitud.class); }
         public void guardarHistorial(HistorialPdfIntent.Solicitud historial) { guardarDraft(HistorialPdfIntent.Solicitud.class, historial); }
 

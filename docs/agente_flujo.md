@@ -87,6 +87,19 @@ Los cinco campos originales se conservan. `resultados` es un sobre extensible: `
 
 Cuando faltan datos para continuar, `aclaracion` puede incluir los campos que Java solicita en ese turno. El mismo contrato está disponible por voz. [Esquema v1 y fixtures de Angular](agente_aclaraciones.md)
 
+Si el turno anterior buscó viajes, el backend conserva hasta diez resultados
+autorizados de esa página. «Inscríbeme al de San Borja» y «Quiero ir con Jose»
+pueden seleccionar por origen o conductor. Una referencia ambigua como «ese viaje»
+ofrece opciones del servidor. La elección queda vinculada a la conversación y a
+la aclaración. Al preparar se comprueba que el viaje seleccionado conserva su
+fecha, hora y ruta y sigue aceptando solicitudes. Después se requiere la
+confirmación de la propuesta.
+
+Las rutas y solicitudes propias recientes también se pueden usar con una
+referencia inequívoca. Un cambio de tema descarta las lecturas recientes.
+Los borradores personales conservan únicamente los cambios propuestos y sus
+formularios. Los envíos parciales y por voz se procesan localmente.
+
 Continuar sesión:
 
 ```json

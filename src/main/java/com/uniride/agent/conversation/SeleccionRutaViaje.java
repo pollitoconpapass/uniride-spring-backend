@@ -1,5 +1,6 @@
 package com.uniride.agent.conversation;
 
+import com.uniride.agent.dto.RutaResumen;
 import com.uniride.dto.responses.RutaRespuesta;
 import java.util.Map;
 
@@ -9,8 +10,15 @@ public final class SeleccionRutaViaje {
     public static final Estado INICIAL = new Estado(null, Map.of(), 0, false, false);
 
     public record Estado(RutaRespuesta elegida, Map<String, RutaRespuesta> opciones,
-                         int pagina, boolean hayMas, boolean limpiarFiltros) {
+                         int pagina, boolean hayMas, boolean limpiarFiltros, RutaResumen consultada) {
         public Estado { opciones = Map.copyOf(opciones); }
+        public Estado(RutaRespuesta elegida, Map<String, RutaRespuesta> opciones, int pagina, boolean hayMas, boolean limpiarFiltros) {
+            this(elegida, opciones, pagina, hayMas, limpiarFiltros, null);
+        }
+
+        public static Estado desdeConsulta(RutaResumen ruta) {
+            return new Estado(null, Map.of(), 0, false, false, ruta);
+        }
 
         Estado elegir(String referencia) {
             var ruta = opciones.get(referencia);

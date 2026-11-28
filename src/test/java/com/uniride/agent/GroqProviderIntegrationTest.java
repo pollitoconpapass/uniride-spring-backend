@@ -108,6 +108,240 @@ import tools.jackson.databind.ObjectMapper;
 
 /** Exercises the real Spring AI/OpenAI transport against loopback only; no database or real API key. */
 class GroqProviderIntegrationTest {
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            Inscríbeme al de San Borja | solicitarUnirse
+            Regístrame en el viaje de San Borja por Jose | solicitarUnirse
+            Reserva un sitio en ese viaje | solicitarUnirse
+            Quiero inscribirme en un viaje | solicitarUnirse
+            Agrega un curso a mi horario | registrarCurso
+            Agrega un curso a mi horario para el jueves | registrarCurso
+            Agrega matemática a mi horario | registrarCurso
+            Quiero editar mi info personal | editarPerfil
+            """)
+    void semanticRequestsReturnDomainSpecificForms(String message, String tool) {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        if ("solicitarUnirse".equals(tool)) {
+            when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+            service = service(Duration.ofSeconds(3), confirmations, new ViajePasajeroTools(queries, confirmations, users));
+        } else {
+            service = service(Duration.ofSeconds(3), confirmations,
+                    new PerfilTools(mock(PerfilService.class), users, confirmations),
+                    new com.uniride.agent.tools.shared.HorarioTools(mock(com.uniride.services.HorarioAcademicoService.class),
+                            mock(com.uniride.repositories.CursoRepository.class), users, confirmations));
+        }
+        String arguments = message.contains("jueves") ? "{\"dia\":\"Jueves\"}"
+                : message.contains("matemática") ? "{\"nombre\":\"Matemática\"}" : "{}";
+        enqueue(200, toolCall(tool, arguments));
+
+        var response = service.chat(message, (UUID) null);
+
+        assertThat(response.aclaracion()).isNotNull();
+        assertThat(response.aclaracion().operacion()).isEqualTo(tool);
+        if (message.contains("jueves")) assertThat(response.aclaracion().campos()).extracting(CampoAclaracion::id).doesNotContain("dia");
+        if (message.contains("matemática")) assertThat(response.aclaracion().campos()).extracting(CampoAclaracion::id).doesNotContain("nombreCurso");
+        verifyNoInteractions(confirmations);
+        assertThat(requests).hasSize(1);
+    }
+
+    @Test
+    void anEnrollmentRequestFromADriverReportsTheRoleRestriction() {
+        assertThatThrownBy(() -> service.chat("Inscríbeme al de San Borja", (UUID) null))
+                .isInstanceOf(NoPermitidoException.class).hasMessageContaining("PASAJERO");
+        assertThat(requests).isEmpty();
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            Inscríbeme al de San Borja | false
+            Regístrame en el viaje de San Borja por Jose | false
+            Quiero ir con Jose | false
+            Reserva un sitio en ese viaje | true
+            """)
+    void enrollsOnlyInTheTripSelectedFromThePreviousPage(String message, boolean ambiguous) {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        var surco = new ViajeResumen(41L, 8L, "Surco", "UPC", "Miércoles", FECHA_VIAJE,
+                LocalTime.of(7, 0), "Parque", "Ana", 3, EstadoViaje.PROGRAMADO, null);
+        var sanBorja = new ViajeResumen(42L, 9L, "San Borja", "UPC", "Miércoles", FECHA_VIAJE,
+                LocalTime.of(8, 0), "Plaza", "Jose", 4, EstadoViaje.PROGRAMADO, null);
+        when(queries.buscar(null, null, null, null, null, null))
+                .thenReturn(new PaginaAgente<>(List.of(surco, sanBorja), 0, 10, 2, false));
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        service = service(Duration.ofSeconds(3), confirmations, new ViajePasajeroTools(queries, confirmations, users));
+        enqueue(200, toolCall("buscarViajes"));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        var consulta = service.chat("Busca viajes disponibles", (UUID) null);
+        assertThat(consulta.viajes()).containsExactly(surco, sanBorja);
+
+        enqueue(200, toolCall("solicitarUnirse", "{\"viajeId\":41,\"preferencia\":\"FAVOR\"}"));
+        var datos = service.chat(message, consulta.conversationId());
+        verifyNoInteractions(confirmations);
+        if (ambiguous) {
+            assertThat(datos.aclaracion().campos().getFirst().opciones()).hasSize(2);
+            datos = service.chatVoz("la segunda opción", datos.conversationId());
+        }
+        assertThat(datos.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("compensacion");
+        var solicitud = new SolicitudRequest(null, TipoCompensacion.DINERO, null);
+        var propuesta = pending(TipoOperacion.SOLICITAR_UNIRSE, "Solicitar salida San Borja", Map.of());
+        when(confirmations.prepararSolicitudDeViajeConsultado(sanBorja, solicitud)).thenReturn(propuesta);
+        assertThat(submit(datos, Map.of("compensacion", "DINERO")).operacion().confirmacion())
+                .isEqualTo(propuesta.confirmacion());
+        verify(confirmations).prepararSolicitudDeViajeConsultado(sanBorja, solicitud);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).hasSize(3);
+        JsonNode esquema = requests.getLast().path("tools").valueStream()
+                .map(item -> item.path("function")).filter(f -> "solicitarUnirse".equals(f.path("name").asText()))
+                .findFirst().orElseThrow().path("parameters");
+        assertThat(esquema.path("properties").propertyNames()).doesNotContain("contexto", "viajeId");
+        assertThat(esquema.path("required").size()).isZero();
+    }
+
+    @Test
+    void academicFormKeepsTheDayAndContinuesWithPartialSubmissionAndVoice() {
+        var confirmations = mock(ConfirmationService.class);
+        var horarios = new com.uniride.agent.tools.shared.HorarioTools(mock(com.uniride.services.HorarioAcademicoService.class),
+                mock(com.uniride.repositories.CursoRepository.class), users, confirmations);
+        service = service(Duration.ofSeconds(3), confirmations, horarios);
+        enqueue(200, toolCall("registrarCurso"));
+        var respuesta = service.chat("Agrega un curso a mi horario para el jueves", (UUID) null);
+        assertThat(respuesta.aclaracion().campos()).extracting(CampoAclaracion::id)
+                .containsExactly("nombreCurso", "horaInicio", "horaFin");
+        var parcial = submit(respuesta, Map.of("nombreCurso", "Matemática", "horaInicio", "08:00"));
+        assertThat(parcial.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("horaFin");
+        verifyNoInteractions(confirmations);
+        var esperado = new com.uniride.dto.requests.CursoRequest("Matemática", "Jueves", LocalTime.of(8, 0), LocalTime.of(10, 0));
+        var propuesta = pending(TipoOperacion.REGISTRAR_CURSO, "Registrar curso", Map.of());
+        when(confirmations.prepararRegistrarCurso(esperado)).thenReturn(propuesta);
+        var resultado = service.chatVoz("10:00", parcial.conversationId());
+        assertThat(resultado.operacion().confirmacion()).isEqualTo(propuesta.confirmacion());
+        verify(confirmations).prepararRegistrarCurso(esperado);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).hasSize(1);
+    }
+
+    @Test
+    void profileCategoryAndValueContinueLocally() {
+        var confirmations = mock(ConfirmationService.class);
+        var perfiles = mock(PerfilService.class);
+        when(perfiles.obtenerPerfil()).thenReturn(new com.uniride.dto.responses.PerfilRespuesta(7L, "Ana", "Prueba",
+                "Software", "Surco", "UPC", "Lunes", "08:00", FECHA_VIAJE, FECHA_VIAJE.plusMonths(3),
+                TipoCompensacion.FAVOR, "Jazz", "Leer", "Dato", null));
+        service = service(Duration.ofSeconds(3), confirmations, new PerfilTools(perfiles, users, confirmations));
+        enqueue(200, toolCall("editarPerfil"));
+        var inicial = service.chat("Quiero editar mi info personal", (UUID) null);
+        assertThat(inicial.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("campoPerfil");
+        var campo = service.chatVoz("Distrito", inicial.conversationId());
+        assertThat(campo.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("distrito");
+        var propuesta = pending(TipoOperacion.EDITAR_PERFIL, "Actualizar distrito", Map.of());
+        when(confirmations.prepararEditarPerfil(any(), any())).thenReturn(propuesta);
+        assertThat(service.chatVoz("Barranco", campo.conversationId()).operacion().confirmacion())
+                .isEqualTo(propuesta.confirmacion());
+        var solicitud = ArgumentCaptor.forClass(com.uniride.dto.requests.PerfilRequest.class);
+        verify(confirmations).prepararEditarPerfil(solicitud.capture(), any());
+        assertThat(solicitud.getValue().distrito()).isEqualTo("Barranco");
+        assertThat(solicitud.getValue().carrera()).isEqualTo("Software");
+        assertThat(requests).hasSize(1);
+    }
+
+    @Test
+    void personalInterestsUseTheAdditionalInfoToolAndPreserveOtherValues() {
+        var confirmations = mock(ConfirmationService.class);
+        var perfiles = mock(PerfilService.class);
+        when(perfiles.obtenerPerfil()).thenReturn(new com.uniride.dto.responses.PerfilRespuesta(7L, "Ana", "Prueba",
+                "Software", "Surco", "UPC", "Lunes", "08:00", FECHA_VIAJE, FECHA_VIAJE.plusMonths(3),
+                TipoCompensacion.FAVOR, "Jazz", "Leer", "Dato", null));
+        service = service(Duration.ofSeconds(3), confirmations, new PerfilTools(perfiles, users, confirmations));
+        var cambio = new com.uniride.dto.requests.InfoAdicionalRequest("Jazz, rock", null, null);
+        var propuesta = pending(TipoOperacion.EDITAR_INFO_ADICIONAL, "Actualizar gustos", Map.of());
+        when(confirmations.prepararEditarInfoAdicional(org.mockito.ArgumentMatchers.eq(cambio), any())).thenReturn(propuesta);
+        enqueue(200, toolCall("editarInfoAdicional", "{\"gustos\":\"rock\",\"hobbies\":\"inventado\",\"agregar\":false}"));
+        var respuesta = service.chat("Agrega rock a mis gustos musicales", (UUID) null);
+        assertThat(respuesta.operacion().confirmacion()).isEqualTo(propuesta.confirmacion());
+        verify(confirmations).prepararEditarInfoAdicional(org.mockito.ArgumentMatchers.eq(cambio), any());
+        verifyNoMoreInteractions(confirmations);
+    }
+
+    @Test
+    void removingACourseUsesOnlyAnOptionIssuedForThatForm() {
+        var confirmations = mock(ConfirmationService.class);
+        var cursos = mock(com.uniride.repositories.CursoRepository.class);
+        var manana = com.uniride.entities.Curso.builder().id(11L).nombre("Matemática").dia("Miércoles")
+                .horaInicio(LocalTime.of(8, 0)).horaFin(LocalTime.of(10, 0)).build();
+        var tarde = com.uniride.entities.Curso.builder().id(12L).nombre("Matemática").dia("Miércoles")
+                .horaInicio(LocalTime.of(16, 0)).horaFin(LocalTime.of(18, 0)).build();
+        when(cursos.buscarPorUsuario(7L, org.springframework.data.domain.Pageable.unpaged()))
+                .thenReturn(new PageImpl<>(List.of(manana, tarde)));
+        service = service(Duration.ofSeconds(3), confirmations,
+                new com.uniride.agent.tools.shared.HorarioTools(mock(com.uniride.services.HorarioAcademicoService.class),
+                        cursos, users, confirmations));
+        enqueue(200, toolCall("eliminarCurso", "{\"curso\":999}"));
+        var formulario = service.chat("Elimina el curso del miércoles", (UUID) null);
+        assertThat(formulario.operacion().estado()).isEqualTo(EstadoOperacion.AMBIGUO);
+        assertThatThrownBy(() -> submit(formulario, Map.of("curso", "999"))).isInstanceOf(CamposInvalidosException.class);
+        verifyNoInteractions(confirmations);
+        var propuesta = pending(TipoOperacion.ELIMINAR_CURSO, "Eliminar curso", Map.of());
+        when(confirmations.prepararEliminarCurso(12L)).thenReturn(propuesta);
+        assertThat(service.chatVoz("la segunda opción", formulario.conversationId()).operacion().confirmacion())
+                .isEqualTo(propuesta.confirmacion());
+        verify(confirmations).prepararEliminarCurso(12L);
+        verifyNoMoreInteractions(confirmations);
+        assertThat(requests).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            Muéstrame mis solicitudes | consultarMisSolicitudes
+            ¿Qué datos tengo en mi perfil? | consultarMiPerfil
+            ¿Cuál es mi correo institucional? | consultarMiUsuario
+            ¿Qué clases tengo? | consultarMisHorarios
+            """)
+    void existingReadCapabilitiesReachTheRegisteredDomainTools(String mensaje, String herramienta) {
+        var queries = mock(AgentQueryService.class);
+        var confirmations = mock(ConfirmationService.class);
+        var perfiles = mock(PerfilService.class);
+        var horario = mock(com.uniride.services.HorarioAcademicoService.class);
+        when(users.usuarioActual()).thenReturn(Usuario.builder().id(7L).rolPrincipal(Rol.PASAJERO).build());
+        when(users.obtenerUsuarioActual()).thenReturn(new com.uniride.dto.responses.UsuarioRespuesta(7L,
+                "ana@upc.edu.pe", "Ana", "Prueba", "999000111", Rol.PASAJERO, true));
+        when(perfiles.obtenerPerfil()).thenReturn(new com.uniride.dto.responses.PerfilRespuesta(7L, "Ana", "Prueba",
+                "Software", "Surco", "UPC", "Lunes", "08:00", FECHA_VIAJE, FECHA_VIAJE.plusMonths(3),
+                TipoCompensacion.FAVOR, "Jazz", "Leer", "Dato", null));
+        when(horario.listarCursos(PageRequest.of(0, 10))).thenReturn(new PageImpl<>(List.of(
+                new com.uniride.dto.responses.CursoRespuesta(1L, "Matemática", "Jueves", LocalTime.of(8, 0), LocalTime.of(10, 0)))));
+        when(queries.solicitudes(null, null)).thenReturn(new PaginaAgente<>(List.of(
+                new ViajeResumen(11L, 8L, "Surco", "UPC", "Lunes", FECHA_VIAJE, LocalTime.NOON, "Parque",
+                        "Ana", 3, EstadoViaje.PROGRAMADO, EstadoSolicitud.PENDIENTE)), 0, 10, 1, false));
+        service = service(Duration.ofSeconds(3), confirmations, new PerfilTools(perfiles, users, confirmations),
+                new ViajePasajeroTools(queries, confirmations, users), new com.uniride.agent.tools.shared.HorarioTools(
+                        horario, mock(com.uniride.repositories.CursoRepository.class), users, confirmations));
+        enqueue(200, toolCall(herramienta));
+        enqueue(200, completion(GENERIC_COMPLETION, "stop"));
+        var respuesta = service.chat(mensaje, (UUID) null);
+        assertThat(respuesta.resultados()).extracting(ResultadoAgente::tipo).containsExactly(herramienta);
+        assertThat(respuesta.operacion()).isNull();
+        assertThat(requests).hasSize(2);
+        verifyNoInteractions(confirmations);
+    }
+
+    @Test
+    void aDescribedClassAsksForTheActionWithoutCreatingAProposal() {
+        var confirmations = mock(ConfirmationService.class);
+        service = service(Duration.ofSeconds(3), confirmations, new com.uniride.agent.tools.shared.HorarioTools(
+                mock(com.uniride.services.HorarioAcademicoService.class), mock(com.uniride.repositories.CursoRepository.class),
+                users, confirmations));
+        enqueue(200, toolCall("registrarCurso"));
+        var aclaracion = service.chat("Tengo Física los martes de 8 a 10.", (UUID) null);
+        assertThat(aclaracion.aclaracion().campos()).extracting(CampoAclaracion::id).containsExactly("accionCurso");
+        verifyNoInteractions(confirmations);
+        var curso = new com.uniride.dto.requests.CursoRequest("Física", "Martes", LocalTime.of(8, 0), LocalTime.of(10, 0));
+        var propuesta = pending(TipoOperacion.REGISTRAR_CURSO, "Registrar Física", Map.of());
+        when(confirmations.prepararRegistrarCurso(curso)).thenReturn(propuesta);
+        assertThat(submit(aclaracion, Map.of("accionCurso", "registrar")).operacion().confirmacion())
+                .isEqualTo(propuesta.confirmacion());
+        assertThat(requests).hasSize(1);
+    }
     private static final String JSON_TOOL_ERROR = "Tool call validation failed: attempted to call tool 'json' which was not in request.tools";
     private static final String RANKING_QUESTION = "¿Cuáles son mis rutas más utilizadas como conductor?";
     private static final String GENERIC_COMPLETION = "Puedo ayudarte con una consulta de UniRide.";
