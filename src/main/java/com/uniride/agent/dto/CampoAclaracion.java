@@ -12,12 +12,16 @@ public record CampoAclaracion(String id, String etiqueta, TipoCampoAclaracion ti
     private static final Set<String> IDS = Set.of("ruta", "origen", "destino", "origenActual", "destinoActual", "nuevoOrigen",
             "referencias", "capacidad", "zonasSinParada", "notaContribucion", "dia", "fecha", "hora", "nuevaFecha",
             "nuevaHora", "viaje", "solicitud", "compensacion", "descripcion", "tipoActual", "descripcionActual", "nuevoTipo",
-            "nuevaDescripcion", "activo", "pasajeros", "conductor", "desde", "hasta", "tipo", "periodo", "anio");
+            "nuevaDescripcion", "activo", "pasajeros", "conductor", "desde", "hasta", "tipo", "periodo", "anio",
+            "campoPerfil", "nombre", "apellidos", "carrera", "distrito", "universidad", "diasDisponibles",
+            "horariosDisponibles", "fechaInicioClases", "fechaFinClases", "metodoCompensacionFavorito",
+            "gustos", "hobbies", "datosCuriosos", "rol", "nombreCurso", "horaInicio", "horaFin", "curso", "accionCurso");
 
     public CampoAclaracion {
         Objects.requireNonNull(tipo);
         if (id == null || !IDS.contains(id)
-                || ("ruta".equals(id) || "viaje".equals(id) || "solicitud".equals(id)) && tipo != TipoCampoAclaracion.SELECT
+                || ("ruta".equals(id) || "viaje".equals(id) || "solicitud".equals(id) || "curso".equals(id))
+                        && tipo != TipoCampoAclaracion.SELECT
                 || !AclaracionAgente.textoSeguro(etiqueta, 120)
                 || (ayuda != null && !AclaracionAgente.textoSeguro(ayuda, 240))) {
             throw new IllegalArgumentException("Campo de aclaración inválido");

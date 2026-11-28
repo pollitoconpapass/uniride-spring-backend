@@ -53,6 +53,8 @@ flowchart LR
 
 Secuencia de un turno:
 
+El texto transcrito entra al mismo `AgentRouter` que usa el chat. El rol proviene del usuario autenticado y la guía de voz se añade al contexto del turno. [Arquitectura del agente](agente_arquitectura.md)
+
 1. El usuario pulsa el micrófono; Angular pide permiso si es la primera vez.
 2. Angular graba con `MediaRecorder` y corta automáticamente a los 30 s.
 3. Al soltar, envía `POST /api/agent/voz` con el audio y el `conversationId` actual.

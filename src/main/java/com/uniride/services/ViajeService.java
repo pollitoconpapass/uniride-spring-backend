@@ -110,26 +110,9 @@ public class ViajeService {
         Viaje viaje = viajeRepository.bloquearParaConductor(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
 
-        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
-            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
-        }
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
-        }
-        if (request == null || request.fecha() == null || request.hora() == null) {
-            throw new CamposInvalidosException("La fecha y la hora son obligatorias");
-        }
-        LocalDateTime nuevaSalida = LocalDateTime.of(request.fecha(), request.hora());
-        LocalDateTime ahora = LocalDateTime.now(clock);
-        if (!nuevaSalida.isAfter(ahora)) {
-            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
-        }
-        if (viaje.getFecha().equals(request.fecha()) && viaje.getHora().equals(request.hora())) {
+        if (!validarReprogramacion(viaje, request)) {
             return viajeMapper.toViajeRespuesta(viaje, "El horario no cambió");
         }
-        // Un viaje confirmado deberá confirmarse nuevamente según US17.
-        // Nunca permitir dejarlo sin posibilidad de confirmar 12 h antes.
-        validarNuevaSalida(request);
 
         List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
                 id, List.of(EstadoSolicitud.ACEPTADA));
@@ -161,6 +144,31 @@ public class ViajeService {
                         + actualizado.getFecha() + " a las " + actualizado.getHora()
                         + ". Si estaba confirmado, debes confirmarlo nuevamente.");
         return viajeMapper.toViajeRespuesta(actualizado, "Horario del viaje actualizado");
+    }
+
+    /** El llamador obtiene el viaje propio antes de comprobar las reglas de reprogramación. */
+    public boolean validarReprogramacion(Viaje viaje, ViajeRequest request) {
+        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
+        }
+        if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
+        }
+        if (request == null || request.fecha() == null || request.hora() == null) {
+            throw new CamposInvalidosException("La fecha y la hora son obligatorias");
+        }
+        LocalDateTime nuevaSalida = LocalDateTime.of(request.fecha(), request.hora());
+        LocalDateTime ahora = LocalDateTime.now(clock);
+        if (!nuevaSalida.isAfter(ahora)) {
+            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
+        }
+        if (viaje.getFecha().equals(request.fecha()) && viaje.getHora().equals(request.hora())) {
+            return false;
+        }
+        // Un viaje confirmado deberá confirmarse nuevamente según US17.
+        // Nunca permitir dejarlo sin posibilidad de confirmar 12 h antes.
+        validarNuevaSalida(request);
+        return true;
     }
 
     @Transactional

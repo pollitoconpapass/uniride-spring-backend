@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.support.AgentQueryService;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;

@@ -1,10 +1,12 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.conductor.RutaTools;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-import com.uniride.agent.AgentQueryService;
+import com.uniride.agent.support.AgentQueryService;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.RutaRequest;
@@ -25,7 +27,7 @@ class RutaAgentToolsTest {
     @Mock AgentQueryService consultas;
     @Mock ConfirmationService confirmaciones;
     @Mock UsuarioService usuarioService;
-    @InjectMocks RutaAgentTools tools;
+    @InjectMocks RutaTools tools;
 
     @Test
     void consultarMisRutasDevuelveActivasYVencidas() {

@@ -7,7 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.uniride.agent.AgentConversationFixture;
-import com.uniride.agent.AgentConversationStore;
+import com.uniride.agent.conversation.AgentConversationStore;
 import com.uniride.agent.AgentService;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
@@ -63,6 +63,7 @@ class ConfirmationServiceIntegrationTest {
     @Autowired MetodoCompensacionService methodService;
     @Autowired HorarioAcademicoRepository schedules;
     @Autowired CursoRepository courses;
+    @Autowired com.uniride.services.HorarioAcademicoService horario;
     @Autowired TransactionTemplate transaction;
     @Autowired ObjectMapper mapper;
     @Autowired PerfilRolService roles;
@@ -86,6 +87,55 @@ class ConfirmationServiceIntegrationTest {
     @AfterEach void clearIdentity() {
         SecurityContextHolder.clearContext();
         verifyNoInteractions(chatClient);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"05:59:59, 07:00", "22:00, 23:00:01", "10:00, 09:00"})
+    void courseTimeValidationIsSharedByManualAndAgentPaths(String inicio, String fin) {
+        var request = new CursoRequest("Matemática", "Jueves", LocalTime.parse(inicio), LocalTime.parse(fin));
+        long anteriores = courses.count();
+        long propuestas = confirmations.count();
+        assertThatThrownBy(() -> horario.guardarCursos(List.of(request))).isInstanceOf(CamposInvalidosException.class);
+        assertThatThrownBy(() -> service.prepararRegistrarCurso(request)).isInstanceOf(CamposInvalidosException.class);
+        assertThat(courses.count()).isEqualTo(anteriores);
+        assertThat(confirmations.count()).isEqualTo(propuestas);
+    }
+
+    @Test void courseBoundaryAndConcurrentOverlapAreCheckedAgainAtConfirmation() {
+        var request = new CursoRequest("Matemática", "miercoles", LocalTime.of(6, 0), LocalTime.of(23, 0));
+        long anteriores = courses.count();
+        var propuesta = service.prepararRegistrarCurso(request).confirmacion();
+        assertThat(courses.count()).isEqualTo(anteriores);
+        horario.guardarCursos(List.of(new CursoRequest("Física", "Miércoles", LocalTime.of(7, 0), LocalTime.of(8, 0))));
+        assertThatThrownBy(() -> service.confirmar(propuesta.id())).isInstanceOf(BusinessException.class);
+        assertThat(courses.count()).isEqualTo(anteriores + 1);
+    }
+
+    @Test void publishedRouteCannotBePreparedForDeletionWhileATripIsInProgress() {
+        var viaje = trip();
+        viaje.setEstado(EstadoViaje.EN_PROGRESO);
+        trips.save(viaje);
+        long anteriores = confirmations.count();
+        assertThatThrownBy(() -> service.prepararEliminacionRuta(viaje.getRuta().getId()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("viajes en progreso");
+        assertThat(confirmations.count()).isEqualTo(anteriores);
+    }
+
+    @Test void aConsultedTripThatChangedCannotBePreparedAsTheOldDeparture() {
+        var viaje = trip();
+        var referencia = new ViajeResumen(viaje.getId(), viaje.getRuta().getId(), viaje.getRuta().getOrigen(),
+                viaje.getRuta().getDestino(), viaje.getDia(), viaje.getFecha(), viaje.getHora(),
+                "Parque", "Ana", 4, EstadoViaje.PROGRAMADO, null);
+        viaje.setHora(viaje.getHora().plusHours(1));
+        trips.save(viaje);
+        authenticate(passenger);
+        long previas = confirmations.count();
+        long solicitudes = requests.count();
+        assertThatThrownBy(() -> service.prepararSolicitudDeViajeConsultado(referencia,
+                new SolicitudRequest(null, TipoCompensacion.DINERO, null)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("salida cambió");
+        assertThat(confirmations.count()).isEqualTo(previas);
+        assertThat(requests.count()).isEqualTo(solicitudes);
     }
 
     @Test void directActivationStaysPendingUntilTheUserConfirmsItInChat() {

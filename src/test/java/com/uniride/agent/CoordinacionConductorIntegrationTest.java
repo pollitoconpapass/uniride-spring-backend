@@ -1,5 +1,8 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.CoordinacionConductorIntent;
+import com.uniride.agent.voice.TextoHablado;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;

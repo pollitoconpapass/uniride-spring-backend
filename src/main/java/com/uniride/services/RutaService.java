@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.Objects;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -192,46 +193,11 @@ public class RutaService {
         Ruta ruta = rutaRepository.findByIdAndConductorId(id, conductor.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ruta no encontrada"));
 
-        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
-            throw new BusinessException("No se puede editar una ruta eliminada");
-        }
-        if (request == null || request.origen() == null || request.origen().isBlank()
-                || request.puntosReferencia() == null || request.puntosReferencia().isBlank()
-                || request.capacidadMaxima() == null || request.capacidadMaxima() < 1) {
-            throw new CamposInvalidosException("Completa origen, puntos de referencia y capacidad mayor a cero");
-        }
-
-        boolean cambioRelevante = ruta.getCapacidadMaxima() != request.capacidadMaxima()
-                || !Objects.equals(ruta.getOrigen(), request.origen())
-                || !Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia())
-                || !Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada());
-
-        // Bloquear antes de contar: aceptación solo toma la fila Viaje.
-        List<Viaje> viajesBloqueados = cambioRelevante ? viajeRepository.findByRutaId(id) : List.of();
-        Map<Long, Usuario> pasajerosAfectados = new LinkedHashMap<>();
-        if (cambioRelevante) {
-            for (Viaje viaje : viajesBloqueados) {
-                if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
-                    throw new BusinessException("No puedes cambiar detalles de una ruta con viajes en progreso");
-                }
-                if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
-                    continue; // No modificar reglas sobre viajes históricos.
-                }
-                List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
-                        viaje.getId(), List.of(EstadoSolicitud.ACEPTADA));
-                if (aceptadas.size() > request.capacidadMaxima()) {
-                    throw new BusinessException("La capacidad no puede ser inferior a los "
-                            + aceptadas.size() + " pasajeros aceptados de un viaje");
-                }
-                for (Solicitud solicitud : aceptadas) {
-                    pasajerosAfectados.put(solicitud.getPasajero().getId(), solicitud.getPasajero());
-                }
-            }
-            if (!pasajerosAfectados.isEmpty() && !confirmarImpacto) {
-                throw new BusinessException("ADVERTENCIA: la edición de la ruta afecta a "
-                        + pasajerosAfectados.size() + " pasajero(s) aceptado(s). "
-                        + "Confirma usando ?confirmarImpacto=true.");
-            }
+        Map<Long, Usuario> pasajerosAfectados = validarEdicion(ruta, request, true);
+        if (!pasajerosAfectados.isEmpty() && !confirmarImpacto) {
+            throw new BusinessException("ADVERTENCIA: la edición de la ruta afecta a "
+                    + pasajerosAfectados.size() + " pasajero(s) aceptado(s). "
+                    + "Confirma usando ?confirmarImpacto=true.");
         }
 
         rutaMapper.actualizarRuta(request, ruta);
@@ -251,6 +217,51 @@ public class RutaService {
         return rutaMapper.toRutaRespuesta(guardada);
     }
 
+    public Map<Long, Usuario> validarEdicion(Ruta ruta, RutaRequest request) {
+        return validarEdicion(ruta, request, false);
+    }
+
+    private Map<Long, Usuario> validarEdicion(Ruta ruta, RutaRequest request, boolean bloquear) {
+        if (ruta.getEstado() == EstadoRuta.ELIMINADA) {
+            throw new BusinessException("No se puede editar una ruta eliminada");
+        }
+        if (request == null || request.origen() == null || request.origen().isBlank()
+                || request.puntosReferencia() == null || request.puntosReferencia().isBlank()
+                || request.capacidadMaxima() == null || request.capacidadMaxima() < 1) {
+            throw new CamposInvalidosException("Completa origen, puntos de referencia y capacidad mayor a cero");
+        }
+
+        boolean cambioRelevante = ruta.getCapacidadMaxima() != request.capacidadMaxima()
+                || !Objects.equals(ruta.getOrigen(), request.origen())
+                || !Objects.equals(ruta.getPuntosReferencia(), request.puntosReferencia())
+                || !Objects.equals(ruta.getZonasSinParada(), request.zonasSinParada());
+
+        Map<Long, Usuario> pasajerosAfectados = new LinkedHashMap<>();
+        if (cambioRelevante) {
+            // La escritura bloquea antes de contar. La preparación consulta sin bloquear.
+            List<Viaje> viajes = bloquear ? viajeRepository.findByRutaId(ruta.getId())
+                    : viajeRepository.findByRutaIdOrderByFechaAscHoraAsc(ruta.getId(), Pageable.unpaged()).getContent();
+            for (Viaje viaje : viajes) {
+                if (viaje.getEstado() == EstadoViaje.EN_PROGRESO) {
+                    throw new BusinessException("No puedes cambiar detalles de una ruta con viajes en progreso");
+                }
+                if (viaje.getEstado() != EstadoViaje.PROGRAMADO) {
+                    continue; // No modificar reglas sobre viajes históricos.
+                }
+                List<Solicitud> aceptadas = solicitudRepository.findByViajeIdAndEstadoIn(
+                        viaje.getId(), List.of(EstadoSolicitud.ACEPTADA));
+                if (aceptadas.size() > request.capacidadMaxima()) {
+                    throw new BusinessException("La capacidad no puede ser inferior a los "
+                            + aceptadas.size() + " pasajeros aceptados de un viaje");
+                }
+                for (Solicitud solicitud : aceptadas) {
+                    pasajerosAfectados.put(solicitud.getPasajero().getId(), solicitud.getPasajero());
+                }
+            }
+        }
+        return pasajerosAfectados;
+    }
+
     @Transactional
     public void eliminar(Long id, boolean confirmar) {
         Usuario conductor = usuarioService.usuarioActual();
@@ -263,13 +274,9 @@ public class RutaService {
             return;
         }
 
-        List<Viaje> viajes = viajeRepository.findByRutaId(id);
+        List<Viaje> viajes = viajeRepository.findByRutaId(ruta.getId());
+        validarEliminacion(viajes);
         LocalDateTime ahora = LocalDateTime.now(clock);
-
-        // Nunca interrumpir un viaje que ya está en ejecución.
-        if (viajes.stream().anyMatch(v -> v.getEstado() == EstadoViaje.EN_PROGRESO)) {
-            throw new BusinessException("No puedes eliminar una ruta con viajes en progreso");
-        }
 
         boolean tienePasajerosAceptados = viajes.stream().anyMatch(v ->
                 solicitudRepository.countByViajeIdAndEstado(v.getId(), EstadoSolicitud.ACEPTADA) > 0);
@@ -318,5 +325,16 @@ public class RutaService {
             throw new CamposInvalidosException("Debes indicar tu universidad en el perfil para publicar rutas");
         }
         return perfil.getUniversidad();
+    }
+
+    public void validarEliminacion(Ruta ruta) {
+        validarEliminacion(viajeRepository.findByRutaIdOrderByFechaAscHoraAsc(ruta.getId(), Pageable.unpaged()).getContent());
+    }
+
+    private void validarEliminacion(List<Viaje> viajes) {
+        // Nunca interrumpir un viaje que ya está en ejecución.
+        if (viajes.stream().anyMatch(v -> v.getEstado() == EstadoViaje.EN_PROGRESO)) {
+            throw new BusinessException("No puedes eliminar una ruta con viajes en progreso");
+        }
     }
 }

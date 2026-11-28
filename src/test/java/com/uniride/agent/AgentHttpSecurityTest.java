@@ -1,6 +1,14 @@
 package com.uniride.agent;
 
-import static com.uniride.agent.tools.ContribucionAgentTools.NOMBRE;
+import com.uniride.agent.controller.AgentController;
+import com.uniride.agent.controller.AgentVozController;
+import com.uniride.agent.controller.ConfirmationController;
+import com.uniride.agent.conversation.AgentConversationStore;
+import com.uniride.agent.support.AgentProviderException;
+import com.uniride.agent.support.AgentQueryService;
+import com.uniride.agent.voice.TranscripcionService;
+
+import static com.uniride.agent.tools.pasajero.ContribucionTools.NOMBRE;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.mockito.ArgumentMatchers.*;
@@ -19,11 +27,11 @@ import com.uniride.agent.dto.ResolucionConfirmacion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.confirmation.*;
-import com.uniride.agent.tools.ContribucionAgentTools;
-import com.uniride.agent.tools.MetodoCompensacionAgentTools;
-import com.uniride.agent.tools.ReportesAgentTools;
-import com.uniride.agent.tools.RutaAgentTools;
-import com.uniride.agent.tools.ViajeAgentTools;
+import com.uniride.agent.tools.pasajero.ContribucionTools;
+import com.uniride.agent.tools.shared.CompensacionTools;
+import com.uniride.agent.tools.shared.ReportesTools;
+import com.uniride.agent.tools.conductor.RutaTools;
+import com.uniride.agent.tools.conductor.ViajeConductorTools;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
 import com.uniride.dto.requests.RutaRequest;
 import com.uniride.dto.requests.ViajeRequest;
@@ -60,6 +68,7 @@ import com.uniride.services.MetodoCompensacionService;
 import com.uniride.services.RutaService;
 import com.uniride.services.SolicitudService;
 import com.uniride.services.UsuarioService;
+import com.uniride.services.NotificacionService;
 import com.uniride.services.ViajeService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
@@ -448,7 +457,7 @@ class AgentHttpSecurityTest {
                 mock(SolicitudService.class), mock(MetodoCompensacionService.class), routeRepository,
                 mock(ViajeRepository.class), mock(PerfilRepository.class), mock(EntityManager.class),
                 new ObjectMapper(), validator, clock);
-        ChatClient chatClient = localAgent(users, new ViajeAgentTools(queries, service, users, clock), service);
+        ChatClient chatClient = localAgent(users, new ViajeConductorTools(queries, service, users, clock, mock(NotificacionService.class)), service);
 
         JsonNode first = json(sendChat("Crea un viaje", null, bearer()).andExpect(status().isOk()));
         verifyNoInteractions(pendingStore, trips);
@@ -562,7 +571,7 @@ class AgentHttpSecurityTest {
                     mock(SolicitudService.class), mock(MetodoCompensacionService.class), mock(RutaRepository.class),
                     mock(ViajeRepository.class), mock(PerfilRepository.class), mock(EntityManager.class),
                     new ObjectMapper(), validator, Clock.fixed(NOW, ZoneId.of("America/Lima")));
-            return new RutaAgentTools(mock(AgentQueryService.class), confirmationService, users);
+            return new RutaTools(mock(AgentQueryService.class), confirmationService, users, mock(EstadisticasService.class));
         });
         JsonNode first = json(sendChat("Crea una ruta desde Surco con capacidad 3", null, bearer())
                 .andExpect(status().isOk())
@@ -610,12 +619,12 @@ class AgentHttpSecurityTest {
     }
 
     private ChatClient routeAgent() {
-        return localAgent(users -> new RutaAgentTools(mock(AgentQueryService.class), confirmations, users));
+        return localAgent(users -> new RutaTools(mock(AgentQueryService.class), confirmations, users, mock(EstadisticasService.class)));
     }
 
     private ChatClient tripAgent(AgentQueryService queries) {
-        return localAgent(users -> new ViajeAgentTools(queries, confirmations, users,
-                Clock.fixed(NOW, ZoneId.of("America/Lima"))));
+        return localAgent(users -> new ViajeConductorTools(queries, confirmations, users,
+                Clock.fixed(NOW, ZoneId.of("America/Lima")), mock(NotificacionService.class)));
     }
 
     private static RutaRespuesta tripRoute(long id, String origin) {
@@ -628,7 +637,7 @@ class AgentHttpSecurityTest {
     }
 
     private ChatClient compensationAgent() {
-        return localAgent(users -> new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations));
+        return localAgent(users -> new CompensacionTools(mock(AgentQueryService.class), confirmations));
     }
 
     private ChatClient localAgent(Function<UsuarioService, Object> callbacks) {
@@ -638,9 +647,9 @@ class AgentHttpSecurityTest {
 
     private ChatClient localAgent(UsuarioService users, Object callbacks, ConfirmationService confirmationService) {
         var chatClient = mock(ChatClient.class);
-        var registry = new AgentToolRegistry(new ObjectMapper(), ToolCallbacks.from(callbacks));
+        var registry = new AgentRouter(new ObjectMapper(), ToolCallbacks.from(callbacks));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        var service = new AgentService(chatClient, users, clock, registry, new AgentConversationStore(clock), confirmationService);
+        var service = new AgentService(new AgentConfig().agentInstructions(), chatClient, users, clock, registry, new AgentConversationStore(clock), confirmationService);
         when(agent.chat(anyString(), nullable(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)));
         when(agent.chatVoz(anyString(), nullable(UUID.class)))
@@ -790,7 +799,7 @@ class AgentHttpSecurityTest {
                         .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
         var trips = mock(ViajeRepository.class);
         var queries = mock(AgentQueryService.class);
-        ChatClient chatClient = localAgent(users -> new ContribucionAgentTools(queries, new ContribucionService(trips)));
+        ChatClient chatClient = localAgent(users -> new ContribucionTools(queries, new ContribucionService(trips)));
         LocalDate firstDate = LocalDate.of(2026, 11, 25);
         LocalDate selectedDate = firstDate.plusDays(1);
         LocalTime time = LocalTime.of(8, 0);
@@ -861,10 +870,10 @@ class AgentHttpSecurityTest {
 
     private AgentService contributionAgent(ChatClient chatClient, UsuarioService usuarioService,
                                            AgentQueryService queries, ViajeRepository trips) {
-        var registry = new AgentToolRegistry(new ObjectMapper(),
-                ToolCallbacks.from(new ContribucionAgentTools(queries, new ContribucionService(trips))));
+        var registry = new AgentRouter(new ObjectMapper(),
+                ToolCallbacks.from(new ContribucionTools(queries, new ContribucionService(trips))));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        return new AgentService(chatClient, usuarioService, clock,
+        return new AgentService(new AgentConfig().agentInstructions(), chatClient, usuarioService, clock,
                 registry, new AgentConversationStore(clock), confirmations);
     }
 
@@ -923,11 +932,11 @@ class AgentHttpSecurityTest {
                         .rolPrincipal(Rol.PASAJERO).cuentaVerificada(true).build()));
         var estadisticas = mock(EstadisticasService.class);
         var usuarioService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
-        var reportes = new ReportesAgentTools(estadisticas, usuarioService);
+        var reportes = new ReportesTools(estadisticas, usuarioService);
         var chatClient = mock(ChatClient.class);
-        var registry = new AgentToolRegistry(new ObjectMapper(), ToolCallbacks.from(reportes));
+        var registry = new AgentRouter(new ObjectMapper(), ToolCallbacks.from(reportes));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
-        var service = new AgentService(chatClient, usuarioService, clock,
+        var service = new AgentService(new AgentConfig().agentInstructions(), chatClient, usuarioService, clock,
                 registry, new AgentConversationStore(clock), confirmations);
         when(agent.chat(eq("Ranking de mis rutas"), isNull(UUID.class)))
                 .thenAnswer(call -> service.chat(call.getArgument(0, String.class), (UUID) null));
@@ -1033,7 +1042,7 @@ class AgentHttpSecurityTest {
     @Test
     void historyFormAcceptsOneDateToFixAnInvertedRangeWithoutRequiringTheOtherDate() throws Exception {
         var statistics = mock(EstadisticasService.class);
-        ChatClient chatClient = localAgent(users -> new ReportesAgentTools(statistics, users));
+        ChatClient chatClient = localAgent(users -> new ReportesTools(statistics, users));
         JsonNode first = json(sendChat("Exporta mi historial del 2026-11-15 al 2026-11-02 como conductor", null, bearer())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.aclaracion.operacion").value("prepararDescargaHistorialPdf"))
@@ -1056,11 +1065,11 @@ class AgentHttpSecurityTest {
     void textualConfirmationRequiresJwtAndSerializesThePersistedReceipt() throws Exception {
         var mapper = new ObjectMapper();
         var userService = new UsuarioService(usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
-        var tools = new MetodoCompensacionAgentTools(mock(AgentQueryService.class), confirmations);
-        var registry = new AgentToolRegistry(mapper, ToolCallbacks.from(tools));
+        var tools = new CompensacionTools(mock(AgentQueryService.class), confirmations);
+        var registry = new AgentRouter(mapper, ToolCallbacks.from(tools));
         var clock = Clock.fixed(NOW, ZoneId.of("America/Lima"));
         var chatClient = mock(ChatClient.class);
-        var service = new AgentService(chatClient, userService, clock, registry,
+        var service = new AgentService(new AgentConfig().agentInstructions(), chatClient, userService, clock, registry,
                 new AgentConversationStore(clock), confirmations);
         doAnswer(call -> service.chat(call.getArgument(0, String.class), call.getArgument(1, UUID.class)))
                 .when(agent).chat(anyString(), nullable(UUID.class));

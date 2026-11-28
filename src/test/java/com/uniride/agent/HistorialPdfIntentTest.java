@@ -1,8 +1,10 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.HistorialPdfIntent;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.uniride.agent.HistorialPdfIntent.Filtros;
+import com.uniride.agent.conversation.HistorialPdfIntent.Filtros;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;

@@ -1,6 +1,6 @@
 package com.uniride.agent.confirmation;
 
-import com.uniride.agent.AgentConversationStore;
+import com.uniride.agent.conversation.AgentConversationStore;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.dto.responses.MetodoCompensacionRespuesta;
@@ -16,7 +16,6 @@ import com.uniride.services.*;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.validation.Validator;
-import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -24,11 +23,9 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
@@ -138,9 +135,26 @@ public class ConfirmationService {
 
     @Transactional(timeout = 10)
     public OperacionResumen prepararSolicitud(Long viajeId, SolicitudRequest request) {
+        return prepararSolicitud(viajeId, request, null);
+    }
+
+    @Transactional(timeout = 10)
+    public OperacionResumen prepararSolicitudDeViajeConsultado(ViajeResumen referencia, SolicitudRequest request) {
+        return prepararSolicitud(referencia.viajeId(), request, referencia);
+    }
+
+    private OperacionResumen prepararSolicitud(Long viajeId, SolicitudRequest request,
+            ViajeResumen referencia) {
         Usuario usuario = autorizado(TipoOperacion.SOLICITAR_UNIRSE);
         validar(request);
         Viaje viaje = solicitudes.validarCreacion(viajeId, request);
+        if (referencia != null && (!Objects.equals(referencia.fecha(), viaje.getFecha())
+                || !Objects.equals(referencia.hora(), viaje.getHora())
+                || !Objects.equals(referencia.rutaId(), viaje.getRuta().getId())
+                || !Objects.equals(referencia.origen(), viaje.getRuta().getOrigen())
+                || !Objects.equals(referencia.destino(), viaje.getRuta().getDestino()))) {
+            throw new BusinessException("La salida cambió desde que consultaste los viajes");
+        }
         return guardar(usuario, TipoOperacion.SOLICITAR_UNIRSE, viajeId, request, snapshot(viaje),
                 "Solicitar un cupo desde " + viaje.getRuta().getOrigen() + " hacia " + viaje.getRuta().getDestino()
                         + " el " + viaje.getFecha() + " a las " + viaje.getHora()
@@ -154,8 +168,6 @@ public class ConfirmationService {
             String puntosReferencia, String zonasSinParada, String notaContribucion) {
         Usuario usuario = autorizado(TipoOperacion.EDITAR_RUTA);
         Ruta ruta = rutaPropia(rutaId, usuario.getId());
-        if (ruta.getEstado() == EstadoRuta.ELIMINADA)
-            throw new BusinessException("No se puede editar una ruta eliminada");
         RutaRequest request = new RutaRequest(
                 nuevoOrigen == null ? ruta.getOrigen() : nuevoOrigen,
                 capacidadMaxima == null ? ruta.getCapacidadMaxima() : capacidadMaxima,
@@ -163,6 +175,7 @@ public class ConfirmationService {
                 zonasSinParada == null ? ruta.getZonasSinParada() : zonasSinParada,
                 notaContribucion == null ? ruta.getNotaContribucion() : notaContribucion);
         validar(request);
+        rutas.validarEdicion(ruta, request);
 
         List<String> cambios = new ArrayList<>();
         if (!Objects.equals(ruta.getOrigen(), request.origen())) cambios.add("origen " + request.origen());
@@ -188,6 +201,7 @@ public class ConfirmationService {
         Ruta ruta = rutaPropia(rutaId, usuario.getId());
         if (ruta.getEstado() == EstadoRuta.ELIMINADA)
             return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "La ruta ya estaba eliminada.");
+        rutas.validarEliminacion(ruta);
         return guardar(usuario, TipoOperacion.ELIMINAR_RUTA, rutaId, mapper.createObjectNode(), snapshot(ruta),
                 "Eliminar tu ruta " + ruta.getOrigen() + " → " + ruta.getDestino()
                         + ". Los viajes programados futuros se cancelarán y el historial se conserva.");
@@ -198,17 +212,10 @@ public class ConfirmationService {
         Usuario usuario = autorizado(TipoOperacion.REPROGRAMAR_VIAJE);
         Viaje viaje = viajeRepository.findByIdAndRutaConductorId(viajeId, usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Viaje no encontrado"));
-        if (viaje.getRuta().getEstado() == EstadoRuta.ELIMINADA)
-            throw new BusinessException("No se puede reprogramar un viaje de una ruta eliminada");
-        if (viaje.getEstado() != EstadoViaje.PROGRAMADO)
-            throw new BusinessException("Solo se pueden reprogramar viajes en estado PROGRAMADO");
         ViajeRequest request = new ViajeRequest(fecha, hora);
         validar(request);
-        if (!LocalDateTime.of(fecha, hora).isAfter(LocalDateTime.now(clock)))
-            throw new CamposInvalidosException("La nueva fecha y hora deben ser futuras");
-        if (viaje.getFecha().equals(fecha) && viaje.getHora().equals(hora))
+        if (!viajes.validarReprogramacion(viaje, request))
             return new OperacionResumen(EstadoOperacion.SIN_CAMBIOS, null, "El horario no cambió.");
-        viajes.validarNuevaSalida(request);
         return guardar(usuario, TipoOperacion.REPROGRAMAR_VIAJE, viajeId, request, snapshot(viaje),
                 "Reprogramar tu viaje del " + viaje.getDia() + " " + viaje.getFecha() + " a las " + viaje.getHora()
                         + " (" + viaje.getRuta().getOrigen() + " → " + viaje.getRuta().getDestino()
@@ -300,6 +307,7 @@ public class ConfirmationService {
         if (solicitudes == null || solicitudes.isEmpty())
             return new OperacionResumen(EstadoOperacion.NO_ENCONTRADO, null, "No tienes solicitudes pendientes que cancelar.");
         List<Long> ids = solicitudes.stream().map(SolicitudResumen::id).toList();
+        ids.forEach(this.solicitudes::validarCancelacion);
         String detalle = String.join("; ", solicitudes.stream()
                 .map(s -> s.origen() + " → " + s.destino() + " (" + s.fecha() + " " + s.hora() + ")").toList());
         return guardar(usuario, TipoOperacion.CANCELAR_SOLICITUD, null, ids, mapper.createObjectNode(),
@@ -311,12 +319,7 @@ public class ConfirmationService {
     public OperacionResumen prepararEditarPerfil(PerfilRequest request, String resumen) {
         Usuario usuario = autorizado(TipoOperacion.EDITAR_PERFIL);
         validar(request);
-        if (request.fechaFinClases().isBefore(request.fechaInicioClases())) {
-            throw new CamposInvalidosException("La fecha de fin de clases no puede ser anterior al inicio");
-        }
-        if (request.metodoCompensacionFavorito() == null && usuario.getRolPrincipal() == Rol.CONDUCTOR) {
-            throw new CamposInvalidosException("El método de compensación favorito es obligatorio para conductores");
-        }
+        perfilService.validarDatosPersonales(usuario.getRolPrincipal(), request);
         Perfil perfil = perfiles.findByUsuarioId(usuario.getId()).orElse(null);
         String descripcion = resumen == null || resumen.isBlank() ? "Actualizar tu perfil personal." : resumen;
         return guardar(usuario, TipoOperacion.EDITAR_PERFIL, perfil == null ? null : perfil.getId(),
@@ -329,19 +332,7 @@ public class ConfirmationService {
         validar(request);
         Perfil perfil = perfiles.findByUsuarioId(usuario.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Primero completa tu perfil personal"));
-        if (request.gustos() == null && request.hobbies() == null && request.datosCuriosos() == null) {
-            throw new CamposInvalidosException("Debes indicar al menos un campo para actualizar");
-        }
-        String gustos = valorResultante(request.gustos(), perfil.getGustos());
-        String hobbies = valorResultante(request.hobbies(), perfil.getHobbies());
-        String datosCuriosos = valorResultante(request.datosCuriosos(), perfil.getDatosCuriosos());
-        List<String> faltantes = new ArrayList<>();
-        if (gustos == null || gustos.isBlank()) faltantes.add("gustos");
-        if (hobbies == null || hobbies.isBlank()) faltantes.add("hobbies");
-        if (datosCuriosos == null || datosCuriosos.isBlank()) faltantes.add("datosCuriosos");
-        if (!faltantes.isEmpty()) {
-            throw new CamposInvalidosException("Completa los campos obligatorios: " + String.join(", ", faltantes));
-        }
+        perfilService.validarInfoAdicional(perfil, request);
         String descripcion = resumen == null || resumen.isBlank()
                 ? "Actualizar tu información adicional." : resumen;
         return guardar(usuario, TipoOperacion.EDITAR_INFO_ADICIONAL, perfil.getId(),
@@ -363,19 +354,7 @@ public class ConfirmationService {
     public OperacionResumen prepararRegistrarCurso(CursoRequest request) {
         Usuario usuario = autorizado(TipoOperacion.REGISTRAR_CURSO);
         validar(request);
-        if (!request.horaFin().isAfter(request.horaInicio())) {
-            throw new CamposInvalidosException("La hora de fin debe ser posterior a la hora de inicio");
-        }
-        String diaNormalizado = normalizarDia(request.dia());
-        for (Curso existente : cursoRepository.buscarPorUsuario(usuario.getId(), Pageable.unpaged())) {
-            if (normalizarDia(existente.getDia()).equals(diaNormalizado)
-                    && existente.getHoraInicio().isBefore(request.horaFin())
-                    && existente.getHoraFin().isAfter(request.horaInicio())) {
-                throw new BusinessException("Conflicto de horario con el curso «" + existente.getNombre() + "» ("
-                        + existente.getDia() + " de " + existente.getHoraInicio() + " a "
-                        + existente.getHoraFin() + ").");
-            }
-        }
+        request = horarioAcademicoService.validarRegistro(request);
         return guardar(usuario, TipoOperacion.REGISTRAR_CURSO, null, request,
                 mapper.createObjectNode().put("usuarioId", usuario.getId()),
                 "Registrar el curso «" + request.nombre().trim() + "» el " + request.dia()
@@ -963,16 +942,6 @@ public class ConfirmationService {
                 .put("dia", curso.getDia())
                 .put("horaInicio", Objects.toString(curso.getHoraInicio(), null))
                 .put("horaFin", Objects.toString(curso.getHoraFin(), null));
-    }
-
-    private String valorResultante(String valorNuevo, String valorActual) {
-        String valor = valorNuevo != null ? valorNuevo : valorActual;
-        return valor == null ? null : valor.trim();
-    }
-
-    private String normalizarDia(String dia) {
-        String n = Normalizer.normalize(dia.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD);
-        return n.replaceAll("\\p{M}", "");
     }
 
     private String describirMetodo(TipoCompensacion tipo, String descripcion, boolean activo) {

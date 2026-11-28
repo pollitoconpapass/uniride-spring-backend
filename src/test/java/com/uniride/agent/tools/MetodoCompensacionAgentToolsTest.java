@@ -1,8 +1,10 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.shared.CompensacionTools;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
-import com.uniride.agent.AgentQueryService;
+import com.uniride.agent.support.AgentQueryService;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.MetodoCompensacionRequest;
@@ -17,7 +19,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class MetodoCompensacionAgentToolsTest {
     private final AgentQueryService consultas = mock(AgentQueryService.class);
     private final ConfirmationService confirmaciones = mock(ConfirmationService.class);
-    private final MetodoCompensacionAgentTools tools = new MetodoCompensacionAgentTools(consultas, confirmaciones);
+    private final CompensacionTools tools = new CompensacionTools(consultas, confirmaciones);
 
     @Test void prepararNoRegistraMetodo() {
         var request = new MetodoCompensacionRequest(TipoCompensacion.GASOLINA, "Compartir combustible", true);

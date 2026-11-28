@@ -1,8 +1,11 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.Aclaraciones;
+import com.uniride.agent.conversation.IntencionAclarable;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.uniride.agent.Aclaraciones.Campo;
+import com.uniride.agent.conversation.Aclaraciones.Campo;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;

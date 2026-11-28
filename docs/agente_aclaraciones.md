@@ -329,3 +329,21 @@ Si la ruta seleccionada cambió o dejó de estar disponible, el agente solicita 
 | `prepararDescargaHistorialPdf` | Período, extremos de fechas o rol en el historial |
 
 Las aclaraciones se generan en Java. Los turnos locales aprovechan los datos ya identificados, y cuando una herramienta del modelo detecta un argumento faltante produce el mismo tipo de respuesta. El flujo mantiene el presupuesto por turno y la preparación y confirmación separadas. [Flujo completo del agente](agente_flujo.md)
+
+El mismo descriptor v1 cubre perfil, rol y cursos. `editarPerfil` puede ofrecer
+`campoPerfil` como selector y después pedir el nuevo valor tipado.
+`editarInfoAdicional` admite gustos, hobbies y datos curiosos. `cambiarRol`
+ofrece los dos roles permitidos. `registrarCurso` pide únicamente
+`nombreCurso`, `dia`, `horaInicio` y `horaFin` que falten.
+`accionCurso` permite indicar que una descripción de un curso se quiere
+convertir en propuesta. `eliminarCurso` ofrece `curso` cuando hay varias
+coincidencias propias. Para `solicitarUnirse`, el selector `viaje` vincula las
+opciones de la consulta reciente y conserva la selección al pedir compensación.
+
+Un envío parcial se valida con el UUID vigente y conserva los demás valores en
+el borrador. Por ejemplo, con nombre e inicio ya enviados, `10:00` puede
+completar por texto o voz el campo único `horaFin`. Para varios campos se pueden
+indicar etiquetas, como `Hora de inicio: 08:00; Hora de fin: 10:00`.
+El formulario genérico de Angular admite estos identificadores y tipos.
+
+La conversación conserva un borrador activo tipado y su formulario vigente. Las referencias autorizadas de coordinación del conductor se guardan con la sesión. `AgentRouter` prioriza el callback del formulario activo cuando hay una ronda semántica. [Arquitectura del agente](agente_arquitectura.md)
