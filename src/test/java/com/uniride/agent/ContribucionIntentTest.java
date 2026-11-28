@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.ContribucionIntent;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.uniride.agent.dto.ContribucionFiltros;

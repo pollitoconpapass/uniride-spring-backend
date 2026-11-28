@@ -1,11 +1,13 @@
 package com.uniride.agent;
 
+import com.uniride.agent.support.AgentQueryService;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.agent.dto.ContribucionResultado.Estado;
 import com.uniride.agent.dto.RutaResumen;
-import com.uniride.agent.tools.ContribucionAgentTools;
+import com.uniride.agent.tools.pasajero.ContribucionTools;
 import com.uniride.dto.responses.RutaRespuesta;
 import com.uniride.entities.*;
 import com.uniride.enums.*;
@@ -41,7 +43,7 @@ import tools.jackson.databind.ObjectMapper;
 
 @DataJpaTest
 @Import({AgentQueryService.class, AgentQueryPersistenceTest.QueryConfig.class,
-        ContribucionAgentTools.class, ContribucionService.class, PerfilRolService.class})
+        ContribucionTools.class, ContribucionService.class, PerfilRolService.class})
 class AgentQueryPersistenceTest {
     @Autowired AgentQueryService queries;
     @Autowired UsuarioRepository users;
@@ -51,7 +53,7 @@ class AgentQueryPersistenceTest {
     @Autowired SolicitudRepository applications;
     @Autowired PerfilRolService roles;
     @Autowired EntityManager em;
-    @Autowired ContribucionAgentTools contributionTool;
+    @Autowired ContribucionTools contributionTool;
     @Autowired PlatformTransactionManager transactionManager;
     @MockitoBean UsuarioService current;
     @MockitoBean SolicitudService requests;
@@ -237,19 +239,19 @@ class AgentQueryPersistenceTest {
         var mapper = new ObjectMapper();
         assertThat(AopUtils.isAopProxy(contributionTool)).isTrue();
         var callback = ToolCallbacks.from(contributionTool)[0];
-        assertThat(callback.getToolDefinition().name()).isEqualTo(ContribucionAgentTools.NOMBRE);
+        assertThat(callback.getToolDefinition().name()).isEqualTo(ContribucionTools.NOMBRE);
         assertThat(mapper.readTree(callback.getToolDefinition().inputSchema()).path("properties").isEmpty()).isTrue();
 
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
             var sinCantidad = new ContribucionFiltros(origen, "UPC", null, fecha, hora, null, null, false);
             var falta = mapper.readTree(callback.call("{}", new ToolContext(Map.of(
-                    ContribucionAgentTools.CONTEXTO_FILTROS, sinCantidad))));
+                    ContribucionTools.CONTEXTO_FILTROS, sinCantidad))));
             assertThat(falta.path("estado").asText()).isEqualTo("FALTAN_PASAJEROS");
             assertThat(status.isRollbackOnly()).isFalse();
 
             var conCantidad = new ContribucionFiltros(origen, "UPC", null, fecha, hora, 2, null, false);
             var resultado = mapper.readTree(callback.call("{}", new ToolContext(Map.of(
-                    ContribucionAgentTools.CONTEXTO_FILTROS, conCantidad))));
+                    ContribucionTools.CONTEXTO_FILTROS, conCantidad))));
             assertThat(resultado.path("estado").asText()).isEqualTo("SUGERIDA");
             assertThat(resultado.path("sugerencia").path("viajeId").asLong()).isEqualTo(viaje.getId());
             assertThat(resultado.path("sugerencia").path("aporteEstimado").asDouble()).isEqualTo(6.0);
@@ -272,7 +274,7 @@ class AgentQueryPersistenceTest {
             return Usuario.builder().id(1L).rolPrincipal(Rol.PASAJERO).build();
         });
         var filtros = new ContribucionFiltros(UUID.randomUUID().toString(), "UPC", null, null, null, 1, null, false);
-        var contexto = new ToolContext(Map.of(ContribucionAgentTools.CONTEXTO_FILTROS, filtros));
+        var contexto = new ToolContext(Map.of(ContribucionTools.CONTEXTO_FILTROS, filtros));
 
         assertThat(contributionTool.sugerirContribucionViaje(contexto).estado()).isEqualTo(Estado.NO_ENCONTRADO);
     }

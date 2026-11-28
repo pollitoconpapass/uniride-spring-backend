@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.ConfirmationIntent;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.params.ParameterizedTest;

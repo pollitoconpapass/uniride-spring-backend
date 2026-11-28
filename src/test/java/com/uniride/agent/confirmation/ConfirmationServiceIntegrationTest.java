@@ -7,7 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.uniride.agent.AgentConversationFixture;
-import com.uniride.agent.AgentConversationStore;
+import com.uniride.agent.conversation.AgentConversationStore;
 import com.uniride.agent.AgentService;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;

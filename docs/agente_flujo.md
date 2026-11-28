@@ -13,10 +13,10 @@ flowchart TD
     C[AgentController] --> S[AgentService]
     S --> M[AgentConversationStore: RAM limitada]
     S -->|Turno que necesita el modelo| CC[ChatClient / Groq]
-    CC --> R[AgentToolRegistry: recibos por petición]
+    CC --> R[AgentRouter: permisos y recibos por turno]
     S -->|Gestiona compensaciones y US29 en Java| R
     S -->|Completa reportes omitidos| R
-    R --> T[AgentTools]
+    R --> T[Tools de conductor, pasajero y compartidas]
     T --> Q[AgentQueryService: solo lectura]
     T --> A[EstadisticasService: reportes personales]
     T --> O[ContribucionService: estimación US29]
@@ -33,7 +33,7 @@ flowchart TD
 
 Java resuelve los turnos identificados de métodos de compensación y sugerencias US29. Cuando hace falta Groq, el modelo recibe las herramientas disponibles para el rol activo y la petición. Una preparación de rutas, viajes o solicitudes, o un listado de métodos interpretado por el modelo, puede terminar con el recibo de la herramienta tras la primera ronda con Groq. Los turnos que pueden incluir varias consultas conservan el flujo de varias herramientas.
 
-Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentToolRegistry` conserva el resultado real de cada callback y construye la parte estructurada de la respuesta con los datos entregados por Java.
+Las consultas recuperan datos autorizados, la herramienta de historial prepara una descarga y las herramientas de escritura preparan propuestas. Una decisión escrita en el chat o una petición a los endpoints dedicados resuelve la misma propuesta con `ConfirmationService`. `AgentRouter` conserva los recibos de los callbacks del turno. `AgentService` entrega la respuesta basada en esos recibos. [Arquitectura y selección por rol](agente_arquitectura.md)
 
 El modelo responde en texto natural. No se usa `.entity(ChatResponse.class)` ni `response_format=json_schema` durante tool calling: Groq no admite Structured Outputs junto con herramientas. No existe una herramienta `json` y la validación de herramientas permanece activada. Ver [diagnóstico y fuentes](auditoria-hardening-agente-ia.md).
 

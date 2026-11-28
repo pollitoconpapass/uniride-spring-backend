@@ -1,10 +1,14 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.conductor.ViajeConductorTools;
+import com.uniride.agent.tools.pasajero.ViajePasajeroTools;
+import com.uniride.services.NotificacionService;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-import com.uniride.agent.AgentQueryService;
+import com.uniride.agent.support.AgentQueryService;
 import com.uniride.agent.confirmation.ConfirmationService;
 import com.uniride.agent.dto.*;
 import com.uniride.config.TiempoConfig;
@@ -28,7 +32,8 @@ class ViajeAgentToolsTest {
     @Mock AgentQueryService consultas;
     @Mock ConfirmationService confirmaciones;
     @Mock UsuarioService usuarioService;
-    private ViajeAgentTools tools;
+    private ViajeConductorTools tools;
+    private ViajePasajeroTools viajesPasajero;
     private Usuario pasajero;
     private Usuario conductor;
 
@@ -36,8 +41,9 @@ class ViajeAgentToolsTest {
     void preparar() {
         pasajero = Usuario.builder().id(1L).rolPrincipal(Rol.PASAJERO).build();
         conductor = Usuario.builder().id(2L).rolPrincipal(Rol.CONDUCTOR).build();
-        tools = new ViajeAgentTools(consultas, confirmaciones, usuarioService,
-                Clock.fixed(Instant.parse("2026-11-23T15:00:00Z"), TiempoConfig.LIMA));
+        tools = new ViajeConductorTools(consultas, confirmaciones, usuarioService,
+                Clock.fixed(Instant.parse("2026-11-23T15:00:00Z"), TiempoConfig.LIMA), mock(NotificacionService.class));
+        viajesPasajero = new ViajePasajeroTools(consultas, confirmaciones, usuarioService);
     }
 
     @Test
@@ -46,7 +52,7 @@ class ViajeAgentToolsTest {
                 LocalTime.of(7, 0), "Parque", "Ana", 4, EstadoViaje.PROGRAMADO, null);
         when(consultas.buscar(null, null, "miércoles", null, null, null))
                 .thenReturn(new PaginaAgente<>(List.of(trip), 0, 10, 1, false));
-        assertThat(tools.buscarViajes(null, null, "miércoles", null)).containsExactly(trip);
+        assertThat(viajesPasajero.buscarViajes(null, null, "miércoles", null)).containsExactly(trip);
         verifyNoInteractions(confirmaciones);
     }
 
@@ -58,7 +64,7 @@ class ViajeAgentToolsTest {
         when(consultas.buscar(null, "UPC", null, manana, null, null, null, "temprano", 0))
                 .thenReturn(new PaginaAgente<>(List.of(trip), 0, 10, 1, false));
 
-        var resultado = tools.buscarViajes(null, "UPC", null, manana, null, null, null, "temprano", 0);
+        var resultado = viajesPasajero.buscarViajes(null, "UPC", null, manana, null, null, null, "temprano", 0);
         assertThat(resultado.items()).containsExactly(trip);
         verify(consultas).buscar(null, "UPC", null, manana, null, null, null, "temprano", 0);
         verifyNoInteractions(confirmaciones);
@@ -67,7 +73,7 @@ class ViajeAgentToolsTest {
     @Test
     void solicitarUnirseRechazaAlConductorSinConsultarViajes() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        assertThat(tools.solicitarUnirse(null, null, null, null, null, TipoCompensacion.FAVOR).estado())
+        assertThat(viajesPasajero.solicitarUnirse(null, null, null, null, null, TipoCompensacion.FAVOR).estado())
                 .isEqualTo(EstadoOperacion.ERROR);
         verifyNoInteractions(consultas, confirmaciones);
     }
@@ -75,7 +81,7 @@ class ViajeAgentToolsTest {
     @Test
     void solicitarUnirseExigePreferenciaDeCompensacion() {
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
-        var resultado = tools.solicitarUnirse("Surco", "UPC", null, null, null, null);
+        var resultado = viajesPasajero.solicitarUnirse("Surco", "UPC", null, null, null, null);
 
         assertThat(resultado.estado()).isEqualTo(EstadoOperacion.DATOS_FALTANTES);
         assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
@@ -91,7 +97,7 @@ class ViajeAgentToolsTest {
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
         when(consultas.identificarViajes(null, null, null, null, null))
                 .thenReturn(new PageImpl<>(List.of(viaje(7L), viaje(8L)), PageRequest.of(0, 2), 125));
-        assertThat(tools.solicitarUnirse(null, null, null, null, null, TipoCompensacion.DINERO).estado())
+        assertThat(viajesPasajero.solicitarUnirse(null, null, null, null, null, TipoCompensacion.DINERO).estado())
                 .isEqualTo(EstadoOperacion.AMBIGUO);
         verifyNoInteractions(confirmaciones);
     }
@@ -106,7 +112,7 @@ class ViajeAgentToolsTest {
         var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma el cupo.");
         when(confirmaciones.prepararSolicitud(eq(7L), any())).thenReturn(pendiente);
 
-        assertThat(tools.solicitarUnirse("Surco", "UPC", "Lunes", fecha, hora, TipoCompensacion.GASOLINA))
+        assertThat(viajesPasajero.solicitarUnirse("Surco", "UPC", "Lunes", fecha, hora, TipoCompensacion.GASOLINA))
                 .isSameAs(pendiente);
         var captor = ArgumentCaptor.forClass(SolicitudRequest.class);
         verify(confirmaciones).prepararSolicitud(eq(7L), captor.capture());
@@ -237,7 +243,7 @@ class ViajeAgentToolsTest {
         when(usuarioService.usuarioActual()).thenReturn(pasajero);
         when(consultas.candidatasCancelacion(null, null, null, null, null))
                 .thenReturn(List.of(solicitud(1L), solicitud(2L)));
-        assertThat(tools.cancelarSolicitud(null, null, null, null, null, false).estado())
+        assertThat(viajesPasajero.cancelarSolicitud(null, null, null, null, null, false).estado())
                 .isEqualTo(EstadoOperacion.AMBIGUO);
         verifyNoInteractions(confirmaciones);
     }
@@ -250,7 +256,7 @@ class ViajeAgentToolsTest {
         when(consultas.candidatasCancelacion(null, null, null, null, null))
                 .thenReturn(List.of(solicitud(1L), solicitud));
 
-        var resultado = tools.cancelarSolicitud(null, null, null, null, null, false);
+        var resultado = viajesPasajero.cancelarSolicitud(null, null, null, null, null, false);
 
         assertThat(resultado.estado()).isEqualTo(EstadoOperacion.AMBIGUO);
         assertThat(resultado.aclaracion().campos()).singleElement().satisfies(campo -> {
@@ -268,13 +274,13 @@ class ViajeAgentToolsTest {
         var pendiente = new OperacionResumen(EstadoOperacion.CONFIRMACION_REQUERIDA, null, "Confirma la cancelación.");
         when(confirmaciones.prepararCancelacionSolicitudes(candidatas)).thenReturn(pendiente);
 
-        assertThat(tools.cancelarSolicitud(null, null, null, null, null, true)).isSameAs(pendiente);
+        assertThat(viajesPasajero.cancelarSolicitud(null, null, null, null, null, true)).isSameAs(pendiente);
     }
 
     @Test
     void cancelarSolicitudRechazaAlConductor() {
         when(usuarioService.usuarioActual()).thenReturn(conductor);
-        assertThat(tools.cancelarSolicitud(null, null, null, null, null, true).estado())
+        assertThat(viajesPasajero.cancelarSolicitud(null, null, null, null, null, true).estado())
                 .isEqualTo(EstadoOperacion.ERROR);
         verifyNoInteractions(consultas, confirmaciones);
     }

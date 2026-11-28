@@ -1,13 +1,15 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.pasajero.ContribucionTools;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.uniride.agent.AgentQueryService;
-import com.uniride.agent.AgentQueryService.ViajeContribucion;
+import com.uniride.agent.support.AgentQueryService;
+import com.uniride.agent.support.AgentQueryService.ViajeContribucion;
 import com.uniride.agent.dto.ContribucionFiltros;
 import com.uniride.agent.dto.ContribucionResultado.Estado;
 import com.uniride.agent.dto.ContribucionResultado.Opcion;
@@ -39,11 +41,11 @@ class ContribucionAgentToolsTest {
 
     @Mock AgentQueryService consultas;
     @Mock ContribucionService contribuciones;
-    private ContribucionAgentTools herramienta;
+    private ContribucionTools herramienta;
 
     @BeforeEach
     void configurar() {
-        herramienta = new ContribucionAgentTools(consultas, contribuciones);
+        herramienta = new ContribucionTools(consultas, contribuciones);
     }
 
     @Test
@@ -152,6 +154,6 @@ class ContribucionAgentToolsTest {
     }
 
     private static ToolContext contexto(ContribucionFiltros filtros) {
-        return new ToolContext(Map.of(ContribucionAgentTools.CONTEXTO_FILTROS, filtros));
+        return new ToolContext(Map.of(ContribucionTools.CONTEXTO_FILTROS, filtros));
     }
 }

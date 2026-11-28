@@ -1,5 +1,8 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.Aclaraciones;
+import com.uniride.agent.voice.TextoHablado;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.uniride.agent.dto.ChatResponse;
@@ -8,7 +11,7 @@ import com.uniride.agent.dto.OpcionAclaracion;
 import com.uniride.agent.dto.ResultadoAgente;
 import com.uniride.agent.dto.RutaResumen;
 import com.uniride.agent.dto.ViajeResumen;
-import com.uniride.agent.tools.ContribucionAgentTools;
+import com.uniride.agent.tools.pasajero.ContribucionTools;
 import com.uniride.enums.EstadoRuta;
 import com.uniride.enums.EstadoSolicitud;
 import com.uniride.enums.EstadoViaje;
@@ -94,7 +97,7 @@ class TextoHabladoTest {
         var datos = new ObjectMapper().valueToTree(Map.of("estado", "SUGERIDA", "sugerencia",
                 Map.of("pasajeros", 3, "aporteEstimado", 2.67, "litrosGasolinaAprox", 0.49)));
         var respuesta = new ChatResponse("Detalle en pantalla.", List.of(), List.of(), List.of(), null,
-                List.of(new ResultadoAgente(ContribucionAgentTools.NOMBRE, datos)));
+                List.of(new ResultadoAgente(ContribucionTools.NOMBRE, datos)));
 
         assertThat(TextoHablado.desde(respuesta)).isEqualTo("Para 3 pasajeros, el aporte estimado por pasajero "
                 + "es de 2,67 soles o 0,49 litros de gasolina. También puedes ofrecer un favor equivalente. "
@@ -105,7 +108,7 @@ class TextoHabladoTest {
     void keepsTheContributionClarificationWhenThereIsNoEstimate() {
         var datos = new ObjectMapper().valueToTree(Map.of("estado", "FALTAN_PASAJEROS"));
         var respuesta = new ChatResponse("¿Cuántos pasajeros harán el viaje?", List.of(), List.of(), List.of(),
-                null, List.of(new ResultadoAgente(ContribucionAgentTools.NOMBRE, datos)));
+                null, List.of(new ResultadoAgente(ContribucionTools.NOMBRE, datos)));
 
         assertThat(TextoHablado.desde(respuesta)).isEqualTo("¿Cuántos pasajeros harán el viaje?");
     }

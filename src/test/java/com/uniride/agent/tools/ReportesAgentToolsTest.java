@@ -1,5 +1,7 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.shared.ReportesTools;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -8,7 +10,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
-import com.uniride.agent.HistorialPdfIntent.Filtros;
+import com.uniride.agent.conversation.HistorialPdfIntent.Filtros;
 import com.uniride.dto.responses.DiaCantidadRespuesta;
 import com.uniride.dto.responses.EstadisticasRespuesta;
 import com.uniride.dto.responses.RutaFrecuenteRespuesta;
@@ -53,7 +55,10 @@ class ReportesAgentToolsTest {
             usuarios, mock(UsuarioMapper.class), mock(PerfilRolService.class));
     private final EstadisticasService estadisticas = new EstadisticasService(
             viajes, solicitudes, penalidades, usuarioService);
-    private final ReportesAgentTools tools = new ReportesAgentTools(estadisticas, usuarioService);
+    private final com.uniride.agent.tools.conductor.RutaTools rutas = new com.uniride.agent.tools.conductor.RutaTools(
+            mock(com.uniride.agent.support.AgentQueryService.class), mock(com.uniride.agent.confirmation.ConfirmationService.class),
+            usuarioService, estadisticas);
+    private final ReportesTools tools = new ReportesTools(estadisticas, usuarioService);
 
     @AfterEach
     void limpiarIdentidad() {
@@ -149,7 +154,7 @@ class ReportesAgentToolsTest {
         when(viajes.penalidadesPorRutaComoConductor(ID))
                 .thenReturn(List.<Object[]>of(new Object[]{"Barranco", "UPC", 3L}));
 
-        var respuesta = tools.consultarRankingMisRutas();
+        var respuesta = rutas.consultarRankingMisRutas();
 
         assertThat(respuesta.suficientesDatos()).isTrue();
         assertThat(respuesta.mensaje()).isNull();
@@ -167,7 +172,7 @@ class ReportesAgentToolsTest {
     void rechazaRankingConRolActivoPasajeroAunqueLaAutoridadAnteriorSeaConductor() {
         autenticar(Rol.PASAJERO, Rol.CONDUCTOR);
 
-        assertThatThrownBy(tools::consultarRankingMisRutas).isInstanceOf(NoPermitidoException.class);
+        assertThatThrownBy(rutas::consultarRankingMisRutas).isInstanceOf(NoPermitidoException.class);
         verifyNoInteractions(viajes, solicitudes, penalidades);
     }
 
@@ -176,7 +181,7 @@ class ReportesAgentToolsTest {
         autenticar(Rol.CONDUCTOR, Rol.CONDUCTOR);
         when(viajes.countByRutaConductorIdAndEstado(ID, EstadoViaje.COMPLETADO)).thenReturn(4L);
 
-        var respuesta = tools.consultarRankingMisRutas();
+        var respuesta = rutas.consultarRankingMisRutas();
 
         assertThat(respuesta.suficientesDatos()).isFalse();
         assertThat(respuesta.mensaje()).isEqualTo("Tienes 4 viaje(s) completado(s) como conductor; "
@@ -193,7 +198,7 @@ class ReportesAgentToolsTest {
 
         assertThatThrownBy(tools::consultarMisEstadisticas).isInstanceOf(NoAutorizadoException.class);
         assertThatThrownBy(tools::consultarMiFrecuenciaViajes).isInstanceOf(NoAutorizadoException.class);
-        assertThatThrownBy(tools::consultarRankingMisRutas).isInstanceOf(NoAutorizadoException.class);
+        assertThatThrownBy(rutas::consultarRankingMisRutas).isInstanceOf(NoAutorizadoException.class);
         assertThatThrownBy(() -> tools.prepararDescargaHistorialPdf(contextoPdf(null, null, "todos")))
                 .isInstanceOf(NoAutorizadoException.class);
         verifyNoInteractions(usuarios, viajes, solicitudes, penalidades);
@@ -241,7 +246,7 @@ class ReportesAgentToolsTest {
     }
 
     private ToolContext contextoPdf(LocalDate desde, LocalDate hasta, String tipo) {
-        return new ToolContext(Map.of(ReportesAgentTools.CONTEXTO_FILTROS_PDF, new Filtros(desde, hasta, tipo)));
+        return new ToolContext(Map.of(ReportesTools.CONTEXTO_FILTROS_PDF, new Filtros(desde, hasta, tipo)));
     }
 
     private void autenticar(Rol rolActivo, Rol autoridad) {

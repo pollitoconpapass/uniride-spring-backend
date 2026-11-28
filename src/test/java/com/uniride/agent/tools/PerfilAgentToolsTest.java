@@ -1,5 +1,7 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.shared.PerfilTools;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -31,11 +33,11 @@ class PerfilAgentToolsTest {
     @Mock PerfilService perfilService;
     @Mock UsuarioService usuarioService;
     @Mock ConfirmationService confirmaciones;
-    private PerfilAgentTools tools;
+    private PerfilTools tools;
 
     @BeforeEach
     void setup() {
-        tools = new PerfilAgentTools(perfilService, usuarioService, confirmaciones);
+        tools = new PerfilTools(perfilService, usuarioService, confirmaciones);
     }
 
     @Test

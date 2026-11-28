@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.conversation.AgentConversationStore;
+
 import com.uniride.agent.dto.ChatResponse;
 import com.uniride.agent.dto.OperacionResumen;
 import com.uniride.entities.Usuario;

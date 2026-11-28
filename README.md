@@ -101,6 +101,10 @@ El token puede configurarse desde el botón `Authorize` de Swagger UI.
 
 ## Agente de IA
 
+La arquitectura se resume en tres clases. `AgentConfig` carga el prompt Markdown,
+`AgentRouter` registra las 39 herramientas y decide cuáles están disponibles,
+y `AgentService` orquesta el turno de chat o voz con el rol del usuario autenticado.
+
 `POST /api/agent/chat` recibe `{"message":"Consulta mis rutas"}` con JWT.
 La respuesta conserva los campos originales y agrega `conversationId`, `resultados`
 y `advertencia`. Las decisiones de confirmación por texto devuelven también
@@ -134,7 +138,7 @@ a `/api/agent/chat`. La respuesta informa el aporte estimado, su equivalente en
 gasolina y una alternativa de favor acordado. La consulta es informativa y no
 requiere confirmación. [Ejemplos de Swagger y resultado estructurado](docs/agente_flujo.md#sugerencia-de-contribución-us29)
 
-Consulta los [contratos y ejemplos](docs/agente_flujo.md), la
+Consulta la [arquitectura del agente](docs/agente_arquitectura.md), los [contratos y ejemplos](docs/agente_flujo.md), la
 [guía para agregar herramientas](docs/instrucciones_agente_spring_ai.md),
 el [diseño del agente por voz](docs/agente_voz.md) y el
 [informe de auditoría del agente](docs/auditoria-hardening-agente-ia.md).

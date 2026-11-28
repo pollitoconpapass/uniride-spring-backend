@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.support.GroqHttpDiagnostics;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.openai.core.http.Headers;

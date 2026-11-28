@@ -1,5 +1,7 @@
 package com.uniride.agent;
 
+import com.uniride.agent.support.AgentReportIntent;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;

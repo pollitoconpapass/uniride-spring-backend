@@ -1,6 +1,6 @@
 package com.uniride.agent.confirmation;
 
-import com.uniride.agent.AgentConversationStore;
+import com.uniride.agent.conversation.AgentConversationStore;
 import com.uniride.agent.dto.*;
 import com.uniride.dto.requests.*;
 import com.uniride.dto.responses.MetodoCompensacionRespuesta;

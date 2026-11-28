@@ -329,3 +329,5 @@ Si la ruta seleccionada cambió o dejó de estar disponible, el agente solicita 
 | `prepararDescargaHistorialPdf` | Período, extremos de fechas o rol en el historial |
 
 Las aclaraciones se generan en Java. Los turnos locales aprovechan los datos ya identificados, y cuando una herramienta del modelo detecta un argumento faltante produce el mismo tipo de respuesta. El flujo mantiene el presupuesto por turno y la preparación y confirmación separadas. [Flujo completo del agente](agente_flujo.md)
+
+La conversación conserva un borrador activo tipado y su formulario vigente. Las referencias autorizadas de coordinación del conductor se guardan con la sesión. `AgentRouter` prioriza el callback del formulario activo cuando hay una ronda semántica. [Arquitectura del agente](agente_arquitectura.md)

@@ -22,16 +22,16 @@ El [laboratorio original](historico/instrucciones_agente_spring_ai_laboratorio.m
 | AgentConversationStore | Propiedad, TTL, límites, exclusión de mensajes simultáneos y referencia de la propuesta actual |
 | ConfirmationIntent | Reconocer respuestas completas de confirmación o cancelación y distinguirlas de preguntas y decisiones condicionales |
 | AgentConfig | Prompt y construcción de ChatClient; no contiene permisos efectivos |
-| AgentToolRegistry | Filtrado de herramientas por rol e intención, límite por turno, recibos y resultados estructurados |
+| AgentRouter | Catálogo de capacidades, selección por rol y contexto técnico, presupuesto y recibos por turno |
 | GroqHttpDiagnostics | Contar peticiones HTTP del chat y resumir los datos de cuota admitidos en el log |
-| AgentTools | Interpretación de argumentos, consultas autorizadas o preparación de una operación |
+| tools/conductor, tools/pasajero, tools/shared | Consultas autorizadas y preparación de operaciones en sus servicios de dominio |
 | AgentQueryService | Lecturas paginadas sin sincronizaciones ni efectos secundarios |
-| ContribucionAgentTools | Identificación autorizada del viaje y sugerencia referencial para el pasajero |
+| ContribucionTools | Identificación autorizada del viaje y sugerencia referencial para el pasajero |
 | ContribucionService | Reglas y cálculo de US29 compartidos por el endpoint tradicional y el agente |
-| ReportesAgentTools | Consultas personales de solo lectura y validación del rol activo para el ranking |
+| ReportesTools y RutaTools | Estadísticas, frecuencia e historial compartidos y ranking exclusivo del conductor |
 | EstadisticasService | Totales de actividad, frecuencia histórica, ranking de rutas y generación del historial en PDF |
 | HistorialController | Descarga autenticada del PDF mediante `GET /api/historial/pdf` |
-| MetodoCompensacionAgentTools | Consulta de métodos propios y preparación de registro, edición, cambio de estado o eliminación |
+| CompensacionTools | Consulta de métodos propios y preparación de registro, edición, cambio de estado o eliminación |
 | ConfirmationService | Guardar propuestas, validar propietario, estado y expiración, y resolver operaciones de forma transaccional e idempotente |
 | ConfirmationController | Exponer los endpoints autenticados de consulta, confirmación y cancelación |
 | Services existentes | Autoridad de reglas de capacidad, fechas, estados, propiedad y notificaciones |
@@ -40,12 +40,15 @@ Spring descubre los componentes por `@ComponentScan`; usar inyección por constr
 
 ## Contexto y consumo del proveedor
 
-El prompt de sistema concentra las reglas generales y usa las descripciones de
-los callbacks para explicar cada herramienta. Un turno general expone hasta once
-herramientas de `CONDUCTOR` o siete de `PASAJERO`, más la descarga de historial
-cuando Java ya validó su solicitud y filtros. El rol y la propiedad de los datos
-también se comprueban al ejecutar los servicios. El historial que recibe Groq se
-limita a los últimos cuatro intercambios completos, además de la petición actual.
+El prompt de sistema se carga desde `classpath:agent/system-prompt.md`. Cada
+petición incluye las reglas comunes y la sección del rol autenticado. El
+catálogo cuenta 18 capacidades de conductor, 5 de pasajero y 16 compartidas.
+El router prioriza una aclaración activa y filtra las preparaciones cuando detecta
+una negación o una pregunta informativa. En una petición abierta, Spring AI recibe
+los callbacks del ámbito autorizado. Coordinación, contribución y PDF reciben un
+`ToolContext` construido en Java con el mensaje y los datos de la conversación.
+Los servicios comprueban permisos y propiedad. Groq recibe hasta cuatro
+intercambios completos previos además de la petición actual.
 
 Las decisiones de confirmación, las sugerencias US29 reconocidas, las consultas
 explícitas de listado propio de métodos y las preparaciones de compensación con
@@ -63,7 +66,7 @@ compuestas conservan las rondas necesarias para combinar resultados.
 4. Usar paginación estable en SQL para listados. `PaginaAgente<T>` informa `hayMas`, `total`, `pagina` y `tamano`. Para agregaciones de negocio, conservar el contrato del servicio reutilizado.
 5. Crear un DTO pequeño con datos estrictamente autorizados. No devolver entidades JPA, contraseñas, correos de terceros, teléfonos privados ni tokens.
 6. Exponer un método `@Tool` con nombre estable, descripción clara y parámetros opcionales donde se pueda pedir un dato faltante. Validar argumentos en Java.
-7. Registrar el bean en `AgentToolRegistry`. El sobre `ResultadoAgente(tipo,datos)` admite nuevos tipos; solo agregar una proyección a las listas antiguas si el tipo realmente corresponde a viajes/rutas/métodos.
+7. Registrar la capacidad en `AgentRouter` con su ámbito, modo y contexto. El sobre `ResultadoAgente(tipo,datos)` admite nuevos tipos. Las listas heredadas proyectan rutas, viajes y métodos.
 8. Agregar pruebas de rol, propiedad, filtros, página siguiente y ausencia de escrituras. Simular el proveedor; nunca usar una clave real en tests.
 
 `resultados` es el contrato extensible de `ChatResponse`. Las listas heredadas siguen disponibles para los clientes existentes.
@@ -101,7 +104,7 @@ Los métodos de `EstadisticasService` obtienen la identidad a partir de `Usuario
 
 La frecuencia se habilita a partir de cinco viajes completados y conserva los siete días, los recuentos de cancelaciones y los días con cero viajes. El ranking requiere cinco viajes completados como conductor. Si cualquiera de los dos devuelve `suficientesDatos: false`, se conserva el mensaje de negocio. El prompt orienta la selección de la herramienta y describe el alcance histórico sin filtros temporales.
 
-Groq puede devolver texto válido con `STOP` y omitir uno o varios reportes. Después de validar esa respuesta, `AgentService` identifica peticiones explícitas de reportes en el mensaje actual. Los cuatro callbacks de la tabla pueden completar resultados faltantes. El servidor selecciona el nombre desde ese conjunto y usa `{}` como argumento. La ejecución pasa por `AgentToolRegistry` y comparte el presupuesto por turno, los recibos, la verificación de permisos y la captura en `resultados`. Si se agota el presupuesto, se aplica el manejo habitual de `TOOL_LIMIT`. El backend utiliza los datos capturados para componer `message` sin una segunda petición al proveedor.
+Groq puede devolver texto válido con `STOP` y omitir uno o varios reportes. `AgentService` completa los reportes explícitos que quedaron sin recibo. El router usa `{}` como argumento y conserva el mismo presupuesto y las mismas comprobaciones. Si se agota el presupuesto se aplica `TOOL_LIMIT`. Java compone `message` con los datos capturados y reutiliza los recibos del turno.
 
 El esquema de `prepararDescargaHistorialPdf` está vacío para el modelo. Java resuelve `desde`, `hasta` y `tipo` a partir del mensaje actual y pasa los filtros en un `ToolContext` interno. Si la petición de PDF es ambigua o inválida, el chat pide aclaración y conserva los demás resultados válidos del turno. El descriptor solo contiene metadatos y una ruta relativa. El endpoint autenticado aplica los filtros, consulta el historial del usuario y devuelve el PDF al cliente.
 
@@ -117,7 +120,7 @@ Una tool de escritura debe **preparar**, nunca ejecutar el servicio de negocio d
 4. Guardar únicamente parámetros necesarios, ID del usuario autenticado, resumen exacto y snapshot de los datos que acepta el usuario. No almacenar el mensaje completo ni credenciales.
 5. Reutilizar expiración, UUID aleatorio, bloqueo de confirmación propia y comprobación del rol actual. En ejecución, tomar locks compatibles con las operaciones tradicionales y comparar nuevamente el snapshot.
 6. Ejecutar el servicio existente y guardar el resultado en la misma transacción. No marcar EJECUTADA si falla negocio o commit. No introducir reintentos de escrituras.
-7. Registrar el nombre de la preparación en el límite de una operación por turno de `AgentToolRegistry`. Mantener `confirmar` y `cancelar` fuera de las herramientas del modelo.
+7. Registrar la capacidad como preparación en `AgentRouter` y probar el límite de una operación por turno. `ConfirmationService` resuelve las decisiones explícitas del usuario.
 8. Añadir tests de preparación sin efectos, rol cambiado, propiedad ajena, expiración, cancelación, snapshot cambiado, reglas revalidadas, rollback, confirmación duplicada y concurrencia PostgreSQL.
 
 Una operación nueva que utiliza `ConfirmationService` hereda la confirmación y cancelación textual. El chat resuelve respuestas completas como «sí» o «no, gracias» antes de llamar a Groq y recibe el UUID exclusivamente de la conversación autenticada. La aplicación también puede llamar a `POST /api/agent/confirmaciones/{id}/confirmar` o `/cancelar`, sin parámetros ni cuerpo. La misma confirmación persistida respalda ambas vías. Si el resultado de red es incierto, consulta primero el UUID de la propuesta mediante `GET /api/agent/confirmaciones/{id}`. Ver [contrato y ejemplos de Swagger](agente_flujo.md#preparación-y-confirmación).
@@ -126,7 +129,7 @@ La resolución por chat inspecciona el estado persistido bajo el mismo bloqueo q
 
 ### Gestión de métodos de compensación
 
-`MetodoCompensacionAgentTools` define `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. Java identifica el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
+`CompensacionTools` define `actualizarMetodoCompensacion`, `cambiarEstadoMetodoCompensacion` y `eliminarMetodoCompensacion`. Java identifica el método mediante `tipoActual` y `descripcionActual`. `actualizarMetodoCompensacion` admite `nuevoTipo` y `nuevaDescripcion`, y `cambiarEstadoMetodoCompensacion` utiliza `activo` para indicar el estado deseado. `ConfirmationService` consulta las coincidencias propias mediante `MetodoCompensacionService` y detecta ambigüedad antes de preparar el cambio.
 
 `ConfirmationService` guarda el estado del método al preparar la operación y compara ese estado al confirmar. Los tres tipos nuevos reutilizan `MetodoCompensacionService` para aplicar los cambios, validar duplicados y conservar las solicitudes vinculadas. Flyway V8 amplía la restricción `CHECK` del tipo en `agent_confirmaciones`. El protocolo conserva el límite de una preparación por turno y comparte las validaciones entre chat y endpoints dedicados.
 

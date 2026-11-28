@@ -1,5 +1,7 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.shared.PerfilTools;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -22,11 +24,11 @@ class UsuarioAgentToolsTest {
 
     @Mock UsuarioService usuarioService;
     @Mock ConfirmationService confirmaciones;
-    private UsuarioAgentTools tools;
+    private PerfilTools tools;
 
     @BeforeEach
     void setup() {
-        tools = new UsuarioAgentTools(usuarioService, confirmaciones);
+        tools = new PerfilTools(mock(com.uniride.services.PerfilService.class), usuarioService, confirmaciones);
     }
 
     @Test

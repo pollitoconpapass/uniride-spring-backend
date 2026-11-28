@@ -1,5 +1,7 @@
 package com.uniride.agent.tools;
 
+import com.uniride.agent.tools.shared.HorarioTools;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -36,13 +38,13 @@ class HorarioAcademicoAgentToolsTest {
     @Mock CursoRepository cursoRepository;
     @Mock UsuarioService usuarioService;
     @Mock ConfirmationService confirmaciones;
-    private HorarioAcademicoAgentTools tools;
+    private HorarioTools tools;
     private Usuario usuario;
 
     @BeforeEach
     void setup() {
         usuario = Usuario.builder().id(11L).build();
-        tools = new HorarioAcademicoAgentTools(horarioService, cursoRepository, usuarioService, confirmaciones);
+        tools = new HorarioTools(horarioService, cursoRepository, usuarioService, confirmaciones);
     }
 
     @Test
