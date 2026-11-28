@@ -2,14 +2,14 @@ package com.uniride.exceptions;
 
 import com.uniride.dto.responses.ErrorRespuesta;
 import com.uniride.services.MensajeService;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -22,8 +22,8 @@ import tools.jackson.core.JacksonException;
 @Slf4j
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(com.uniride.agent.AgentProviderException.class)
-    public ResponseEntity<ErrorRespuesta> proveedorAgente(com.uniride.agent.AgentProviderException e) {
+    @ExceptionHandler(com.uniride.agent.core.AgentProviderException.class)
+    public ResponseEntity<ErrorRespuesta> proveedorAgente(com.uniride.agent.core.AgentProviderException e) {
         return ResponseEntity.status(e.status())
                 .body(new ErrorRespuesta(e.getMessage(), Map.of("codigo", e.code())));
     }
